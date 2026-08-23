@@ -1,0 +1,81 @@
+{
+  "name": "beamerapp",
+  "version": "0.1.0",
+  "description": "Research Beamer — Markdown-based academic slide deck editor (Chinese/English, 4:3/16:9)",
+  "license": "Apache-2.0",
+  "author": "Heene",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HeeneFZ/research-beamer.git"
+  },
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "vite build",
+    "start": "electron .",
+    "test": "vitest run",
+    "icon": "electron scripts/make-icon.cjs",
+    "pack": "npm run build && electron-builder --win portable && node scripts/clean-release.cjs"
+  },
+  "build": {
+    "appId": "com.beamerapp.app",
+    "productName": "Research Beamer",
+    "icon": "icon.png",
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "dist/**",
+      "electron/**"
+    ],
+    "extraResources": [
+      {
+        "from": "examples/zh_talk",
+        "to": "examples/zh_talk"
+      },
+      {
+        "from": "examples/en_talk",
+        "to": "examples/en_talk"
+      },
+      {
+        "from": "icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "icon.png"
+    },
+    "portable": {
+      "artifactName": "ResearchBeamer.exe"
+    },
+    "directories": {
+      "output": "release"
+    },
+    "asar": true
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/katex": "^0.16.7",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^26.15.3",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.4"
+  },
+  "dependencies": {
+    "@tiptap/core": "^3.30.1",
+    "@tiptap/extensions": "^3.30.2",
+    "@tiptap/pm": "^3.30.1",
+    "@tiptap/react": "^3.30.1",
+    "@tiptap/starter-kit": "^3.30.1",
+    "js-yaml": "^4.1.0",
+    "katex": "^0.16.11",
+    "pdfjs-dist": "^4.8.69",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.1"
+  }
+}
