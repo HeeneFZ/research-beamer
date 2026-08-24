@@ -70,6 +70,7 @@ const I = {
     <path d="M8 1.3v2.2M8 12.5v2.2M1.3 8h2.2M12.5 8h2.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
   </>),
   blank: <rect x="2.5" y="3.5" width="11" height="9" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.6" />,
+  record: <circle cx="8" cy="8" r="4.5" fill="currentColor" />,
   close: <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />,
 };
 
@@ -99,7 +100,82 @@ export default function Present() {
   // 放映窗的 lightbox 用本地状态；本窗 store 仅承载 pageLayout（编辑器窗扫描产物，见下方 onPresentState）
   const [lightbox, setLightbox] = useState<{ abs: string; ext: string; caption?: string } | null>(null);
 
-  const computed: Computed | null = useMemo(() => (st ? computeDeck(st.deck) : null), [st?.deck, st?.nonce]);
+  // ---- 放映录制（60Hz 屏幕画面 + 系统声音 loopback + 麦克风人声混音 → webm） ----
+  const [recording, setRecording] = useState(false);
+  const [recErr, setRecErr] = useState<string | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recChunksRef = useRef<Blob[]>([]);
+
+  const startRecording = async () => {
+    setRecErr(null);
+    try {
+      // 屏幕视频 + 系统声音：main.cjs 的 setDisplayMediaRequestHandler 自动选放映屏 + loopback
+      const disp = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 60 } },
+        audio: true,
+      });
+      // 麦克风人声：失败（无麦/拒绝）不阻断录制——系统声已可用
+      let mic: MediaStream | null = null;
+      try {
+        mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch { /* 无麦克风或被拒绝：仅系统声 */ }
+      // 混音：WebAudio 声明周期与 recorder 绑定，停止时一并断开
+      const tracks = [disp.getVideoTracks()[0]];
+      const ctx = new AudioContext();
+      const dest = ctx.createMediaStreamDestination();
+      let mixed = false;
+      if (disp.getAudioTracks().length) {
+        ctx.createMediaStreamSource(new MediaStream([disp.getAudioTracks()[0]])).connect(dest);
+        mixed = true;
+      }
+      if (mic) {
+        ctx.createMediaStreamSource(mic).connect(dest);
+        mixed = true;
+      }
+      const stream = mixed
+        ? new MediaStream([...tracks, ...dest.stream.getAudioTracks()])
+        : new MediaStream(tracks);
+      const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8_000_000 } : undefined);
+      recChunksRef.current = [];
+      rec.ondataavailable = (e) => { if (e.data.size > 0) recChunksRef.current.push(e.data); };
+      rec.onstop = async () => {
+        try {
+          const blob = new Blob(recChunksRef.current, { type: mime || 'video/webm' });
+          // 释放采集设备
+          stream.getTracks().forEach((t) => t.stop());
+          mic?.getTracks().forEach((t) => t.stop());
+          void ctx.close();
+          if (blob.size === 0) return;
+          const ts = new Date();
+          const pad = (n: number) => String(n).padStart(2, '0');
+          const name = `rec-${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.webm`;
+          const buf = await blob.arrayBuffer();
+          const r = await window.api.saveRecording({ folder: st?.folder ?? null, name, data: buf });
+          if (r && !r.error) window.api.sendPresentEvent({ type: 'recSaved', label: r.path } as unknown as PresentEvent);
+          else if (r && r.error) setRecErr('录像保存失败：' + r.error);
+        } catch (e) {
+          setRecErr('录像保存失败：' + String(e));
+        }
+      };
+      // 用户从浏览器级「停止共享」栏结束录制（不经控件按钮）
+      disp.getVideoTracks()[0].addEventListener('ended', () => {
+        if (recorderRef.current && recorderRef.current.state !== 'inactive') stopRecording();
+      });
+      recorderRef.current = rec;
+      rec.start(1000); // 1s 分片：长录制内存峰值受控
+      setRecording(true);
+    } catch (e) {
+      setRecErr('录制启动失败：' + String(e));
+    }
+  };
+
+  const stopRecording = () => {
+    const rec = recorderRef.current;
+    if (rec && rec.state !== 'inactive') rec.stop();
+    recorderRef.current = null;
+    setRecording(false);
+  };
 
   useEffect(() => {
     window.api.sendPresentEvent({ type: 'ready' });
@@ -110,6 +186,13 @@ export default function Present() {
       setSt(ps);
     });
     return off;
+  }, []);
+
+  // 卸载守卫：放映窗直接关闭时停掉录制（closed 前 stop，onstop 落盘链路仍可用）
+  useEffect(() => () => {
+    const rec = recorderRef.current;
+    if (rec && rec.state !== 'inactive') rec.stop();
+    recorderRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -125,6 +208,8 @@ export default function Present() {
   const send = useCallback((evt: PresentEvent) => {
     window.api.sendPresentEvent(evt);
   }, []);
+
+  const computed: Computed | null = useMemo(() => (st ? computeDeck(st.deck) : null), [st?.deck, st?.nonce]);
 
   // 返回引用跳转原处（Alt+← / Backspace / 鼠标后退侧键，与编辑器共用输入层）
   useBackNav(useCallback(() => send({ type: 'back' }), [send]));
@@ -433,8 +518,28 @@ export default function Present() {
         </button>
         <button title="黑屏（B）/ 白屏（W）" className={blank ? 'on' : ''} onClick={() => setBlank((v) => (v ? null : 'black'))}><PIcon>{I.blank}</PIcon></button>
         <span className="pctrl-sep" />
+        <button
+          title={recording ? '停止录制（自动保存到工程目录）' : '录制放映（60Hz · 系统声+麦克风 · 保存到工程目录）'}
+          className={recording ? 'rec on' : 'rec'}
+          onClick={() => { if (recording) stopRecording(); else void startRecording(); }}
+        >
+          {recording
+            ? <span className="pctrl-rec-live"><span className="pctrl-rec-dot" />REC</span>
+            : <PIcon>{I.record}</PIcon>}
+        </button>
+        <span className="pctrl-sep" />
         <button title="结束放映（Esc）" className="danger" onClick={() => send({ type: 'end' })}><PIcon>{I.close}</PIcon></button>
       </div>
+
+      {recording && (
+        <div className="pctrl-rec-badge" title="录制中：屏幕 + 系统声音 + 麦克风">
+          <span className="pctrl-rec-dot" />
+          <span>REC</span>
+        </div>
+      )}
+      {recErr && !recording && (
+        <div className="pctrl-rec-err" onClick={() => setRecErr(null)}>{recErr}（点击关闭）</div>
+      )}
 
       {lightbox && (
         <LightboxInner

@@ -31,4 +31,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   saveMediaAs: (p) => ipcRenderer.invoke('media:saveAs', p),
   printPDF: (p) => ipcRenderer.invoke('pdf:print', p),
+  readHistory: (folder) => ipcRenderer.invoke('history:read', folder),
+  writeHistory: (p) => ipcRenderer.invoke('history:write', p),
+  saveRecording: (p) => ipcRenderer.invoke('rec:save', p),
 });

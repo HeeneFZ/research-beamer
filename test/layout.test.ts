@@ -11,7 +11,7 @@ import {
 } from '../src/model/layoutSpec';
 import { parseMarkdown, serializeMarkdown } from '../src/model/markdown';
 import { Block, newId } from '../src/model/types';
-import { colRegionAt, colEndPlan } from '../src/model/segments';
+import { colRegionAt, colEndPlan, buildSegments } from '../src/model/segments';
 
 const para = (text: string): Block => ({ id: newId(), type: 'paragraph', text });
 const list = (items: string[]): Block => ({ id: newId(), type: 'itemize', items });
@@ -361,6 +361,80 @@ describe('insertColRegion / insertColEnd（store 动作，段结构不损坏）'
     // 二次解析 + 序列化 = 幂等
     const d2 = parseMarkdown(md1);
     expect(serializeMarkdown(d2)).toBe(md1);
+  });
+});
+
+describe('第卅八轮：空栏区收回 / 块复制粘贴 / 撤销栈上限', () => {
+  const MD = (inner: string) => `---\nbeamerapp: 1\n---\n\n:::: slide\n${inner}\n::::\n`;
+
+  it('buildSegments：空栏区（删光内容）不产出段——分割线与栏容器不再残留', () => {
+    const p = (id: string): Block => ({ id, type: 'paragraph', text: 'x' });
+    const mark = (): Block => ({ id: newId(), type: 'colmark' });
+    const end = (): Block => ({ id: newId(), type: 'colend' });
+    // 仅标记（内容删光）→ 无段
+    expect(buildSegments([mark(), mark(), end()])).toHaveLength(0);
+    // 前后单栏 + 中间空栏区 → 空栏区消失，前后各成单栏段（块序不变）
+    const segs = buildSegments([p('pA'), mark(), mark(), end(), p('pB')]);
+    expect(segs).toHaveLength(2);
+    expect(segs.every((s) => s.kind === 'full')).toBe(true);
+    // 单边有内容的栏区仍正常产出
+    expect(buildSegments([mark(), p('pL'), mark(), end()])).toHaveLength(1);
+  });
+
+  it('deleteBlock：删光栏内最后一块自动收回空栏区（数据源清除，md 不残留标记）', async () => {
+    const { useStore } = await import('../src/state/store');
+    const { serializeMarkdown } = await import('../src/model/markdown');
+    const st = () => useStore.getState();
+    st().loadProjectData({ md: MD('::: col\n左\n\n::: col\n右\n\n::: /col\n\n尾\n'), folder: '/tmp/col' });
+    const sl = st().deck.items[0];
+    if (sl.kind !== 'slide') throw new Error('bad');
+    // 删左栏块（右栏还有）：栏区保留
+    const pL = sl.slide.blocks.find((b) => b.type === 'paragraph' && b.text === '左')!;
+    st().deleteBlock(sl.slide.id, pL.id);
+    let now = (() => { const it = st().deck.items[0]; return it && it.kind === 'slide' ? it.slide : null; })()!;
+    expect(now.blocks.some((b) => b.type === 'colmark')).toBe(true);
+    // 删右栏块：栏区清空 → 标记全部收回
+    const pR = now.blocks.find((b) => b.type === 'paragraph' && b.text === '右')!;
+    st().deleteBlock(sl.slide.id, pR.id);
+    now = (() => { const it = st().deck.items[0]; return it && it.kind === 'slide' ? it.slide : null; })()!;
+    expect(now.blocks.filter((b) => b.type !== 'colmark' && b.type !== 'colend').map((b) => b.text)).toEqual(['尾']);
+    expect(now.blocks.some((b) => b.type === 'colmark' || b.type === 'colend')).toBe(false);
+    // md 序列化无栏标记残留
+    expect(serializeMarkdown(st().deck)).not.toMatch(/::: (\/)?col/);
+  });
+
+  it('copyBlock/pasteBlockAfter：复制粘贴块（label/pos 剥除、新 id、落在锚点后）', async () => {
+    const { useStore } = await import('../src/state/store');
+    const st = () => useStore.getState();
+    st().loadProjectData({ md: MD('首段\n\n::: equation label="eq:a"\nx=1\n:::\n'), folder: '/tmp/col' });
+    const sl = st().deck.items[0];
+    if (sl.kind !== 'slide') throw new Error('bad');
+    const eq = sl.slide.blocks.find((b) => b.type === 'equation')!;
+    const p0 = sl.slide.blocks.find((b) => b.type === 'paragraph')!;
+    st().copyBlock(sl.slide.id, eq.id);
+    expect(st().clipBlock?.label).toBe('eq:a');
+    const newId = st().pasteBlockAfter(sl.slide.id, p0.id);
+    expect(newId).toBeTruthy();
+    const now = (() => { const it = st().deck.items[0]; return it && it.kind === 'slide' ? it.slide : null; })()!;
+    expect(now.blocks.map((b) => b.type)).toEqual(['paragraph', 'equation', 'equation']);
+    // 副本：新 id、label 剥除（全 deck 唯一，防引用劫持）
+    const copy = now.blocks.find((b) => b.id === newId)!;
+    expect(copy).toBeTruthy();
+    expect(copy.id).not.toBe(eq.id);
+    expect(copy.label).toBeUndefined();
+    expect(copy.latex).toBe('x=1');
+    // 剪贴板空时粘贴返回 null
+    useStore.setState({ clipBlock: null });
+    expect(st().pasteBlockAfter(sl.slide.id, p0.id)).toBeNull();
+  });
+
+  it('撤销栈上限 100：超限丢最旧（historyDepth 恒 ≤100）', async () => {
+    const { recordHistory, historyDepth, clearHistory } = await import('../src/state/history');
+    clearHistory();
+    for (let i = 0; i < 130; i++) recordHistory({ config: { i } } as never, false);
+    expect(historyDepth()).toBe(100);
+    clearHistory();
+    expect(historyDepth()).toBe(0);
   });
 });
 

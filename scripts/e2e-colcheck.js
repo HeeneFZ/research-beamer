@@ -45,12 +45,11 @@
   };
   if (ratio === 0.5 && !out.colWidths.equalWidths) out.colWidths.pass = false;
 
-  // 编辑态分割线渲染
   const colsCs = getComputedStyle(colsEl, '::before');
   out.divider = {
     content: colsCs.content,
     border: colsCs.borderTopStyle,
-    pass: /dashed/.test(colsCs.borderTopStyle || ''),
+    pass: colsCs.borderTopStyle === 'solid' && parseFloat(colsCs.borderTopWidth) <= 1,
   };
 
   // ---- 2) colend：公式块逃出栏区 ----

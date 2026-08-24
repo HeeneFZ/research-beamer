@@ -23,13 +23,19 @@ export function buildSegments(blocks: Block[]): Segment[] {
     if (full.blocks.length) segs.push(full);
     full = { kind: 'full', blocks: [] };
   };
+  // 空栏区（左右皆无内容）不产出段：删光内容后残留的 colmark/colend 不再渲染
+  // 栏区容器与分割线（否则编辑画布出现悬空虚线框）
+  const flushCols = () => {
+    if (cols && (cols.left.length || cols.right.length)) segs.push(cols);
+    cols = null;
+  };
   for (const b of blocks) {
     if (b.type === 'colmark') {
       if (!cols) {
         flushFull();
         cols = { kind: 'cols', left: [], right: [], switched: false };
       } else if (cols.switched) {
-        segs.push(cols);
+        flushCols();
         cols = { kind: 'cols', left: [], right: [], switched: false };
       } else {
         cols.switched = true;
@@ -37,10 +43,7 @@ export function buildSegments(blocks: Block[]): Segment[] {
       continue;
     }
     if (b.type === 'colend') {
-      if (cols) {
-        segs.push(cols);
-        cols = null;
-      }
+      flushCols();
       continue;
     }
     if (cols) {
@@ -50,9 +53,53 @@ export function buildSegments(blocks: Block[]): Segment[] {
       full.blocks.push(b);
     }
   }
-  if (cols) segs.push(cols);
+  flushCols();
   flushFull();
   return segs;
+}
+
+/** 删除空栏区的全部标记（colmark×2 + colend）：删光栏内最后一块时自动收回双栏，
+ *  避免残留标记永远留在 md 里（渲染层 buildSegments 已跳过空栏区，这里清数据源）。
+ *  栏内有任何内容块则原样保留。 */
+export function stripEmptyColRegions(blocks: Block[]): Block[] {
+  const out: Block[] = [];
+  let regionStart = -1; // out 中本栏区首个标记的下标；-1 = 当前不在栏区
+  let switched = false; // 本栏区已见切栏标记
+  let hasContent = false;
+  const settle = () => {
+    if (regionStart < 0) return;
+    if (!hasContent) out.length = regionStart; // 空栏区：整段标记丢弃
+    regionStart = -1;
+    switched = false;
+    hasContent = false;
+  };
+  for (const b of blocks) {
+    if (b.type === 'colmark') {
+      if (regionStart < 0) {
+        regionStart = out.length;
+        out.push(b);
+      } else if (!switched) {
+        switched = true;
+        out.push(b);
+      } else {
+        // 第三个 colmark：隐式收栏 + 开新栏区（buildSegments 同款状态机）
+        settle();
+        regionStart = out.length;
+        out.push(b);
+      }
+      continue;
+    }
+    if (b.type === 'colend') {
+      // 有内容的栏区保留收栏标记；空栏区连 colend 一起丢；孤立 colend（无开栏）直接清
+      if (regionStart >= 0 && hasContent) out.push(b);
+      settle();
+      continue;
+    }
+    if (regionStart >= 0) hasContent = true;
+    out.push(b);
+  }
+  settle();
+  return out;
 }
 
 /** 块所属栏区（null = 单栏段）。与 buildSegments 同一状态机，判定口径永远一致。 */

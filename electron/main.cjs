@@ -164,6 +164,7 @@ if (!gotLock) {
   });
   app.whenReady().then(() => {
     createWindow();
+    setupRecordingHandlers();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
@@ -462,6 +463,73 @@ ipcMain.handle('pdf:print', async (_e, { savePath }) => {
     });
     fs.writeFileSync(savePath, data);
     return { path: savePath, bytes: data.length };
+  } catch (e) {
+    return { error: String(e) };
+  }
+});
+
+// ---------- 撤销历史持久化（工程目录 .beamer-history.json 隐藏文件） ----------
+ipcMain.handle('history:read', (_e, folder) => {
+  try {
+    if (!folder || typeof folder !== 'string') return null;
+    const p = path.join(folder, '.beamer-history.json');
+    if (!fs.existsSync(p)) return null;
+    return { json: fs.readFileSync(p, 'utf8') };
+  } catch (e) {
+    return { error: String(e) };
+  }
+});
+
+ipcMain.handle('history:write', (_e, { folder, json }) => {
+  try {
+    if (!folder || typeof folder !== 'string' || typeof json !== 'string') return { error: 'bad args' };
+    fs.writeFileSync(path.join(folder, '.beamer-history.json'), json, 'utf8');
+    return { ok: true };
+  } catch (e) {
+    return { error: String(e) };
+  }
+});
+
+// ---------- 放映录制 ----------
+function setupRecordingHandlers() {
+  const { session, desktopCapturer } = require('electron');
+  // getDisplayMedia 自动选源（无系统选择器）：放映窗所在屏幕 + 系统声音 loopback。
+  // 渲染进程 getDisplayMedia({video:{frameRate:60}, audio:true}) 直达这里。
+  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
+      let src = sources[0];
+      try {
+        if (presentWin && !presentWin.isDestroyed()) {
+          const b = presentWin.getBounds();
+          const cx = b.x + b.width / 2;
+          const cy = b.y + b.height / 2;
+          const { screen } = require('electron');
+          const d = screen.getAllDisplays().find((dd) =>
+            cx >= dd.bounds.x && cx < dd.bounds.x + dd.bounds.width
+            && cy >= dd.bounds.y && cy < dd.bounds.y + dd.bounds.height);
+          if (d) src = sources.find((s) => s.display_id === String(d.id)) || src;
+        }
+      } catch (_) { /* 定位失败退回主屏 */ }
+      // audio: 'loopback' = Windows 系统声音回环采集（放映中的视频/音效）
+      callback(src ? { video: src, audio: 'loopback' } : {});
+    }).catch(() => callback({}));
+  });
+  // 麦克风（用户人声）授权：仅放行 media，其余权限维持默认拒绝
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'media');
+  });
+}
+
+// 录像落盘：默认工程根目录（无工程文件夹时退回「文档」）
+ipcMain.handle('rec:save', (_e, { folder, name, data }) => {
+  try {
+    const dir = folder && typeof folder === 'string' && fs.existsSync(folder)
+      ? folder
+      : app.getPath('documents');
+    const safe = String(name || 'recording.webm').replace(/[^\w.-]/g, '_');
+    const p = path.join(dir, safe);
+    fs.writeFileSync(p, Buffer.from(data));
+    return { path: p };
   } catch (e) {
     return { error: String(e) };
   }

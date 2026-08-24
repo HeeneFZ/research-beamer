@@ -254,19 +254,23 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 .col-r { flex: 1; min-width: 0; }
 .seg-full { display: block; }
 
-/* 编辑态栏区边界提示：栏区上下细虚线，单栏/双栏区域一眼可辨（用户建议）。
-   仅编辑画布（mode-edit）；半透明灰（不与内容/主题色争抢）。
+/* 栏区边界提示：栏区上下细实线，单栏/双栏区域一眼可辨（用户建议）。
+   编辑画布与放映窗可见（mode-edit/mode-present）；胶片缩略与打印/PDF 不渲染。
+   半透明灰、比虚线更细的观感（实线 1px + 低不透明度）。
    顶线不贴边：内容块「段前 0」，top:0 会压到首行文字/图片——
    用 transform 上移 0.45em 退进上方块间隙（纯绘制位移，零布局影响），
-   胶片缩略/放映/打印与溢出扫描的测量口径均不受扰动。 */
-.mode-edit .cols { position: relative; }
-.mode-edit .cols::before,
-.mode-edit .cols::after {
+   溢出扫描的测量口径不受扰动。 */
+.cols::before,
+.cols::after {
   content: ''; position: absolute; left: 0; right: 0; height: 0;
-  border-top: 1px dashed rgba(90, 100, 112, .45);
+  border-top: 1px solid rgba(90, 100, 112, .35);
+  display: none;
 }
-.mode-edit .cols::before { top: 0; transform: translateY(-0.45em); }
-.mode-edit .cols::after { bottom: 0; transform: translateY(0.3em); }
+.mode-edit .cols, .mode-present .cols { position: relative; }
+.mode-edit .cols::before, .mode-present .cols::before,
+.mode-edit .cols::after, .mode-present .cols::after { display: block; }
+.cols::before { top: 0; transform: translateY(-0.45em); }
+.cols::after { bottom: 0; transform: translateY(0.3em); }
 
 /* ---- 页脚：分割线 + 短题名 | (参考文献位) | 页码，约占页高 7% ---- */
 .s-footer {
@@ -753,6 +757,36 @@ body.dark .bb-sep { background: #333a44; }
 .pctrl button.danger:hover { background: #c0392b; border-color: #c0392b; }
 .pctrl .pctrl-sep { width: 1px; height: 16px; background: #3a424d; }
 .pctrl-color { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
+/* 录制按钮态：进行中红底白字；REC 圆点呼吸 */
+.pctrl button.rec.on {
+  background: #c0392b; border-color: #e74c3c; color: #fff; min-width: 56px;
+}
+.pctrl-rec-live {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .5px;
+}
+.pctrl-rec-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #ff5f52;
+  animation: pctrl-rec-pulse 1.2s ease-in-out infinite;
+}
+@keyframes pctrl-rec-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+/* 录制中页角徽标（不依赖控件条悬停可见） */
+.pctrl-rec-badge {
+  position: fixed; top: 14px; right: 16px; z-index: 951;
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(28, 33, 40, .85); border: 1px solid #e74c3c; border-radius: 8px;
+  color: #fff; font-size: 12px; font-weight: 700; letter-spacing: .8px;
+  padding: 5px 12px; pointer-events: none;
+}
+/* 录制启动失败提示（点击关闭） */
+.pctrl-rec-err {
+  position: fixed; top: 14px; right: 16px; z-index: 951;
+  background: rgba(192, 57, 43, .94); border-radius: 8px; color: #fff;
+  font-size: 12.5px; padding: 8px 14px; cursor: pointer; max-width: 46vw;
+}
 
 /* 透镜选框（PowerPoint 放大镜式选区）：跟随鼠标的 1/4 页选框 */
 .lens-rect {

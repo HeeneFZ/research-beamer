@@ -130,6 +130,7 @@ export default function App() {
       else if (evt.type === 'goto') s.gotoPage(Math.min(evt.index ?? 0, s.computed.pages.length - 1), true);
       else if (evt.type === 'ref' && evt.label) s.jumpToRef(evt.label);
       else if (evt.type === 'back') s.backJump();
+      else if (evt.type === 'recSaved' && evt.label) s.setFlashMsg('录像已保存 → ' + evt.label);
       else if (evt.type === 'end') s.endPresent();
       else if (evt.type === 'ready') setPresentNonce((n) => n + 1); // 放映窗就绪：重播状态
     });

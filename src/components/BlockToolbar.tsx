@@ -151,6 +151,16 @@ export function BlockToolbar({ slide, block }: {
   const canDown = downNeighbor != null && moveTargetOf(slide.blocks, block.id, afterDown ? afterDown.id : null) != null;
   // 结束双栏区只对栏内块有意义：栏外点击应 disable（判定与 store 共用 colRegionAt）
   const canColEnd = colRegionAt(slide.blocks, block.id) != null;
+  // 块剪贴板（复制/粘贴按钮）：订阅 clipBlock 驱动粘贴按钮可用态
+  const clipBlock = useStore((s) => s.clipBlock);
+  const pasteBlock = () => {
+    const s = useStore.getState();
+    const id = s.pasteBlockAfter(slide.id, block.id);
+    if (id != null && (s.clipBlock?.type === 'paragraph' || s.clipBlock?.type === 'itemize')) {
+      s.setFocus(id, 'start');
+    }
+  };
+
   if (!visible || !pos) return null;
 
   return createPortal(
@@ -166,6 +176,8 @@ export function BlockToolbar({ slide, block }: {
       >
         <button disabled={!canUp} title={upNeighbor && !canUp ? '已到栏顶（跨栏调序不支持）' : '上移'} onClick={() => canUp && moveBlockBefore(slide.id, block.id, upNeighbor!.id)}>↑</button>
         <button disabled={!canDown} title={downNeighbor && !canDown ? '已到栏底（跨栏调序不支持）' : '下移'} onClick={() => canDown && moveBlockBefore(slide.id, block.id, afterDown ? afterDown.id : null)}>↓</button>
+        <button title="复制块（粘贴到任意块之后）" onClick={() => { useStore.getState().copyBlock(slide.id, block.id); useStore.getState().setFlashMsg('已复制块：在目标块的 ⧉→📋 处粘贴'); }}>⧉</button>
+        <button disabled={!clipBlock} title={clipBlock ? `粘贴${clipBlock.type === 'paragraph' ? '段落' : clipBlock.type === 'itemize' ? '列表' : clipBlock.type === 'equation' ? '公式' : clipBlock.type === 'annoeq' ? '注释公式' : clipBlock.type === 'figure' ? '图片' : clipBlock.type === 'video' ? '视频' : '表格'}到此处（此块之后）` : '剪贴板为空（先用 ⧉ 复制一个块）'} onClick={pasteBlock}>📋</button>
         <button title="插入" className={menu ? 'on' : ''} onClick={() => setMenu(!menu)}>＋</button>
         <button title="删除" className="danger" onClick={() => deleteBlock(slide.id, block.id)}>🗑</button>
       </div>

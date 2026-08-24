@@ -4,9 +4,9 @@ import {
 } from '../model/types';
 import { SpacingState } from '../model/layoutSpec';
 import { computeDeck, Computed, refPageIndex, refParts } from '../model/numbering';
-import { colEndPlan, colRegionAt } from '../model/segments';
+import { colEndPlan, colRegionAt, stripEmptyColRegions } from '../model/segments';
  import { serializeMarkdown, parseMarkdown } from '../model/markdown';
-import { clearHistory, recordHistory, takeRedo, takeUndo } from './history';
+import { attachHistoryFolder, clearHistory, recordHistory, takeRedo, takeUndo } from './history';
 
 export interface FlashState {
   page: number;
@@ -54,6 +54,10 @@ interface StoreState {
   /** 页级排版状态（key = slideId|aspect；内存态，不入 md/历史；全模式共享，
    *  由 useLayoutScan 静默探测写入，SlideView 各模式统一读取——编辑/胶片/放映/PDF 一致） */
   pageLayout: Record<string, SpacingState>;
+  /** 块剪贴板（复制/粘贴按钮；内存态跨页跨工程有效，不入 md/历史） */
+  clipBlock: Block | null;
+  copyBlock(slideId: string, blockId: string): void;
+  pasteBlockAfter(slideId: string, afterId: string | null): string | null;
 
   setConfig(patch: Partial<DeckConfig>): void;
   updateSlide(slideId: string, patch: Partial<Slide>): void;
@@ -137,6 +141,34 @@ export const useStore = create<StoreState>((set, get) => {
     presentStart: 0,
     presenting: false,
     pageLayout: {},
+    clipBlock: null,
+
+    /** 复制块到剪贴板（内存态；粘贴时重新生成 id/剥除全局唯一字段） */
+    copyBlock: (slideId, blockId) => {
+      const s = get();
+      const it = s.deck.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
+      const b = it && it.kind === 'slide' ? it.slide.blocks.find((x) => x.id === blockId) : undefined;
+      if (b) set({ clipBlock: JSON.parse(JSON.stringify(b)) });
+    },
+
+    /** 粘贴块：插到 afterId 之后（与 insertBlock 同锚点语义）。
+     *  剥除 label（全 deck 唯一键，副本会静默劫持 [@fig:x] 引用——同 duplicateSlide）；
+     *  剥除 pos（自由定位块粘贴会与原件完全重叠，回流式更可预期）。 */
+    pasteBlockAfter: (slideId, afterId) => {
+      const s = get();
+      if (!s.clipBlock) return null;
+      const id = newId();
+      const { label: _l, pos: _p, ...rest } = s.clipBlock;
+      const copy: Block = { ...JSON.parse(JSON.stringify(rest)), id };
+      mutate((d) => {
+        const it = d.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
+        if (!it || it.kind !== 'slide') return;
+        const at = afterId ? it.slide.blocks.findIndex((x) => x.id === afterId) : -1;
+        if (at >= 0) it.slide.blocks.splice(at + 1, 0, copy);
+        else it.slide.blocks.push(copy);
+      }, false);
+      return id;
+    },
 
     setConfig: (patch) => mutate((d) => { d.config = { ...d.config, ...patch }; }),
 
@@ -193,7 +225,9 @@ export const useStore = create<StoreState>((set, get) => {
       mutate((d) => {
         const it = d.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
         if (!it || it.kind !== 'slide') return;
-        it.slide.blocks = it.slide.blocks.filter((b) => b.id !== blockId);
+        // 删块后顺手收回空栏区：删光栏内最后一块时自动移除残留的 colmark/colend
+        //（否则双栏分割线与栏容器永远渲染——「删光元素意图退出双栏」的用户路径）
+        it.slide.blocks = stripEmptyColRegions(it.slide.blocks.filter((b) => b.id !== blockId));
       }, false),
 
     /** 拖拽调序：把 blockId 移动到 beforeId 之前（beforeId=null 移到所在栏末尾）。
@@ -436,6 +470,7 @@ export const useStore = create<StoreState>((set, get) => {
 
     newProject: () => {
       clearHistory();
+      attachHistoryFolder(null, '');
       const d = freshDeck();
       set({ deck: d, computed: computeDeck(d), folder: null, current: 0, dirty: false, pageLayout: {} });
     },
@@ -451,6 +486,8 @@ export const useStore = create<StoreState>((set, get) => {
       try {
         const deck = parseMarkdown(md);
         recordHistory(deck);
+        // 历史 adopt：读回该工程目录下的 .beamer-history.json 恢复撤销栈
+        attachHistoryFolder(folder, JSON.stringify(deck));
         set({ deck, computed: computeDeck(deck), folder, current: 0, dirty: false, pageLayout: {} });
       } catch (e) {
         set({ flashMsg: '工程解析失败：' + String(e) });
@@ -471,6 +508,8 @@ export const useStore = create<StoreState>((set, get) => {
       const md = serializeMarkdown(s.deck);
       const r = await window.api.saveProject({ folder: s.folder, md });
       if (r && r.folder) {
+        // 首次另存到新文件夹：历史只改写入目标，不 adopt（防吃到别的工程的旧历史文件）
+        if (s.folder !== r.folder) attachHistoryFolder(r.folder, JSON.stringify(s.deck), false);
         set({ folder: r.folder, dirty: false, flashMsg: '已保存 → ' + r.folder });
       } else if (r && r.error) {
         set({ flashMsg: '保存失败：' + r.error });

@@ -24,6 +24,9 @@ declare global {
       sendPresentEvent(e: { type: string; index?: number; label?: string }): void;
       onPresentState(cb: (p: unknown) => void): () => void;
       onPresentEvent(cb: (e: { type: string; index?: number; label?: string }) => void): () => void;
+      readHistory(folder: string): Promise<{ json?: string; error?: string } | null>;
+      writeHistory(p: { folder: string; json: string }): Promise<{ ok?: boolean; error?: string }>;
+      saveRecording(p: { folder: string | null; name: string; data: ArrayBuffer }): Promise<{ path: string; error?: string }>;
       printPDF(p: { savePath: string }): Promise<{ path: string; bytes: number } | { error?: string }>;
     };
   }
