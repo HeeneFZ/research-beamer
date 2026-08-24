@@ -256,14 +256,14 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 
 /* 栏区边界提示：栏区上下细实线，单栏/双栏区域一眼可辨（用户建议）。
    编辑画布与放映窗可见（mode-edit/mode-present）；胶片缩略与打印/PDF 不渲染。
-   半透明灰、比虚线更细的观感（实线 1px + 低不透明度）。
+   观感尽量轻：0.5px 物理线 + 高透明度灰（rgba α=.16）——可见但绝不抢内容。
    顶线不贴边：内容块「段前 0」，top:0 会压到首行文字/图片——
    用 transform 上移 0.45em 退进上方块间隙（纯绘制位移，零布局影响），
    溢出扫描的测量口径不受扰动。 */
 .cols::before,
 .cols::after {
   content: ''; position: absolute; left: 0; right: 0; height: 0;
-  border-top: 1px solid rgba(90, 100, 112, .35);
+  border-top: 0.5px solid rgba(90, 100, 112, .16);
   display: none;
 }
 .mode-edit .cols, .mode-present .cols { position: relative; }

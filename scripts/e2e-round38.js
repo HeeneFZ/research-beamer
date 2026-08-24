@@ -38,13 +38,13 @@
     pass: Math.abs(lw - avail * ratio) < 0.5 && Math.abs(rw - avail * (1 - ratio)) < 0.5 && Math.abs(lw + gap + rw - total) < 0.5,
   };
 
-  // 分割线：细实线（≤1px，高 DPI 下计算样式可为分数 px），半透明灰
+  // 分割线：0.5px 细实线 + α .16 高透明度灰（第卅九轮再调轻）
   const csB = getComputedStyle(colsEl, '::before');
   out.divider = {
     style: csB.borderTopStyle,
     color: csB.borderTopColor,
     width: csB.borderTopWidth,
-    pass: csB.borderTopStyle === 'solid' && parseFloat(csB.borderTopWidth) <= 1 && /rgba\(90, 100, 112/.test(csB.borderTopColor),
+    pass: csB.borderTopStyle === 'solid' && parseFloat(csB.borderTopWidth) <= 0.8 && /rgba\(90, 100, 112, 0\.16\)/.test(csB.borderTopColor),
   };
 
   // ---- 2) 块复制粘贴（真实 UI 路径） ----

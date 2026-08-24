@@ -49,7 +49,8 @@
   out.divider = {
     content: colsCs.content,
     border: colsCs.borderTopStyle,
-    pass: colsCs.borderTopStyle === 'solid' && parseFloat(colsCs.borderTopWidth) <= 1,
+    // 0.5px 物理线（高 DPI 下计算样式 ≤0.8px）+ α .16 高透明度灰
+    pass: colsCs.borderTopStyle === 'solid' && parseFloat(colsCs.borderTopWidth) <= 0.8 && /rgba\(90, 100, 112, 0\.16\)/.test(colsCs.borderTopColor),
   };
 
   // ---- 2) colend：公式块逃出栏区 ----
