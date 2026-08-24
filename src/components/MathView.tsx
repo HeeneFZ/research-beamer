@@ -91,8 +91,34 @@ export function preprocessMath(latex: string, palette: Palette): { tex: string; 
   return { tex: out, legend };
 }
 
+/** 数学排版风格宏：现代科学风格（ISO 80000-2 / GB 3102.11，isomath 家族），
+ *  替代 KaTeX 默认的传统 TeX 风格。与传统风格在多类符号上的差异：
+ *  - 向量 \vec{x}：黑斜体（\boldsymbol），不再是箭头重音（isomath：\vec -> \vectorsym）
+ *  - \mathbf{X}：并入黑斜体（fixmath：ISO 粗体 = 粗斜体，向量/矩阵不使用正体粗体）
+ *  - 大写希腊字母：斜体（\Gamma -> \varGamma 等 11 个；TeX 默认大写希腊正体）
+ *  常数 e/i、微分 d 的正体化属语义信息（同一字形可作变量），词法层无法判别，
+ *  仍按显式 \mathrm{e}/\mathrm{d} 书写（KaTeX 亦无正体小写希腊字形，π 无法正体化）。
+ *  每次 render 传浅拷贝，防公式内 \gdef 写入共享对象。 */
+export const MATH_STYLE_MACROS: Record<string, string> = {
+  '\\vec': '\\boldsymbol',
+  '\\mathbf': '\\boldsymbol',
+  // 大写希腊直达 \mathit{字面字符} 终止形态——不可写 \varGamma：KaTeX 内置
+  // \varGamma 即 \mathit{\Gamma}，会回引本宏形成 \Gamma→\varGamma→\Gamma 无限循环
+  '\\Gamma': '\\mathit{Γ}',
+  '\\Delta': '\\mathit{Δ}',
+  '\\Theta': '\\mathit{Θ}',
+  '\\Lambda': '\\mathit{Λ}',
+  '\\Xi': '\\mathit{Ξ}',
+  '\\Pi': '\\mathit{Π}',
+  '\\Sigma': '\\mathit{Σ}',
+  '\\Upsilon': '\\mathit{Υ}',
+  '\\Phi': '\\mathit{Φ}',
+  '\\Psi': '\\mathit{Ψ}',
+  '\\Omega': '\\mathit{Ω}',
+};
+
 export function katexHtml(tex: string, displayMode: boolean): string {
-  return katex.renderToString(tex, { displayMode, throwOnError: false, strict: false });
+  return katex.renderToString(tex, { displayMode, throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
 }
 
 /** 行内公式（text 模式，不弹块级 margin） */
