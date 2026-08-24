@@ -6,7 +6,7 @@
 //
 // Body syntax:
 //   # 节 {#sec:label} / ## 小节 / ### 子小节      结构标题（不属于任何页）
-//   :::: slide layout="content|twoCol" title=".." ratio="0.55"   页容器
+//   :::: slide layout="content|twoCol" title=".." ratio="0.5"   页容器
 //   :::: title / :::: toc / :::: end [title=".."]                特殊页
 //   ::: notes ... :::                            本页演讲稿
 //   ::: col                                      twoCol 栏标记（第二个起右栏）

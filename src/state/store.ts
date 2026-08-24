@@ -4,7 +4,8 @@ import {
 } from '../model/types';
 import { SpacingState } from '../model/layoutSpec';
 import { computeDeck, Computed, refPageIndex, refParts } from '../model/numbering';
-import { serializeMarkdown, parseMarkdown } from '../model/markdown';
+import { colEndPlan, colRegionAt } from '../model/segments';
+ import { serializeMarkdown, parseMarkdown } from '../model/markdown';
 import { clearHistory, recordHistory, takeRedo, takeUndo } from './history';
 
 export interface FlashState {
@@ -71,6 +72,7 @@ interface StoreState {
   presentAdvance(): void;
   presentSkip(): void;
   presentReverse(): void;
+  insertColEnd(slideId: string, blockId: string): void;
   insertColRegion(slideId: string, afterId: string): string;
   setPageLayout(key: string, st: SpacingState): void;
   setEditing(e: EditState | null): void;
@@ -288,8 +290,27 @@ export const useStore = create<StoreState>((set, get) => {
         const it = d.items.find((x) => x.kind === 'section' && x.section.id === sectionId);
         if (it && it.kind === 'section') it.section.title = title;
       }),
+    /** 结束双栏区：点击块逃出栏区成为首个单栏块（语义与开始双栏区对称）。
+     *  落点/清理由 colEndPlan 纯函数决定——colend 插在点击块之前，
+     *  旧 colend / 切栏标记按需删除，栏区清空则连开栏标记一起移除。 */
+    insertColEnd: (slideId, blockId) => {
+      mutate((d) => {
+        const it = d.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
+        if (!it || it.kind !== 'slide') return;
+        const plan = colEndPlan(it.slide.blocks, blockId);
+        if (!plan) return;
+        // 删除下标全部大于插入点（开栏标记只在「栏区清空不插入」分支删除），先删后插无需换算
+        for (const i of [...plan.deleteIdx].sort((a, b) => b - a)) it.slide.blocks.splice(i, 1);
+        if (plan.insertAt >= 0) it.slide.blocks.splice(plan.insertAt, 0, { id: newId(), type: 'colend' });
+      }, false);
+    },
 
-    /** 原子插入双栏区：colmark+左空段+colmark+右空段（单次 mutate，无中间渲染态） */
+    /** 原子插入双栏区：colmark+左空段+colmark+右空段（单次 mutate，无中间渲染态）。
+     *  点击块在栏区内时新栏区让位到该栏区终结处（栏区不可嵌套）。
+     *  落点须避开「栏区仍开着」的位置：组的首个 colmark 会把未切栏的栏区切成
+     *  右栏（新组被吸进旧栏区），故取栏区终结标记——显式 colend 之前
+     *  （colend 改收新栏区，后续内容不动）；无显式收栏则取隐式终结标记
+     *  （下一个 colmark/colend）之前或页尾。 */
     insertColRegion: (slideId, afterId) => {
       const leftId = newId();
       mutate((d) => {
@@ -297,7 +318,19 @@ export const useStore = create<StoreState>((set, get) => {
         if (!it || it.kind !== 'slide') return;
         const blocks = it.slide.blocks;
         const at = afterId ? blocks.findIndex((b) => b.id === afterId) : -1;
-        const idx = at >= 0 ? at + 1 : blocks.length;
+        const reg = at >= 0 ? colRegionAt(blocks, afterId) : null;
+        let idx: number;
+        if (!reg) {
+          idx = at >= 0 ? at + 1 : blocks.length;
+        } else if (reg.endIdx >= 0) {
+          idx = reg.endIdx;
+        } else {
+          idx = blocks.length;
+          const bodyEnd = Math.max(reg.lastIdx, reg.switchIdx);
+          for (let i = bodyEnd + 1; i < blocks.length; i++) {
+            if (blocks[i].type === 'colmark' || blocks[i].type === 'colend') { idx = i; break; }
+          }
+        }
         blocks.splice(idx, 0,
           { id: newId(), type: 'colmark' },
           { id: leftId, type: 'paragraph', text: '' },

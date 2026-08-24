@@ -84,7 +84,7 @@ palette:
 同一页内可多段交替，图文对照页一文一图，代码讲解页左码右注：
 
 ```markdown
-:::: slide layout="twoCol" ratio="0.55" title="方法对比"
+:::: slide layout="twoCol" ratio="0.5" title="方法对比"
 ::: col
 文字与列表放左栏……
 ::: col

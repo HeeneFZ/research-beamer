@@ -61,7 +61,7 @@ z = x + \\mu
 :::
 ::::
 
-:::: slide layout="twoCol" ratio="0.55"
+:::: slide layout="twoCol" ratio="0.5"
 ::: col
 左栏文字，含 [@sec:intro] 引用。
 ::: col
@@ -127,7 +127,7 @@ describe('markdown contract', () => {
   it('twoCol 栏标记与 ratio', () => {
     const deck = parseMarkdown(SAMPLE);
     const two = deck.items.find((x) => x.kind === 'slide' && x.slide.layout === 'twoCol');
-    expect(two && two.kind === 'slide' && two.slide.ratio).toBeCloseTo(0.55);
+    expect(two && two.kind === 'slide' && two.slide.ratio).toBeCloseTo(0.5);
     const marks = two && two.kind === 'slide' ? two.slide.blocks.filter((b) => b.type === 'colmark') : [];
     expect(marks).toHaveLength(2);
   });

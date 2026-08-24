@@ -245,11 +245,28 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 
 /* ---- 段式双栏（colmark/colend 区段；--col-ratio 为左栏占比） ----
    间距单一约定：所有块（含 .cols 段）都是「段前 0 + 段后 --gap-para」，
-   任意相邻块间距与类型组合无关（无媒体块段前大段后小的不对称） */
-.cols { display: flex; gap: 4cqw; align-items: flex-start; margin: 0 0 var(--gap-para, 1.6em); }
-.col-l { width: calc(var(--col-ratio, 0.55) * 100%); flex: 0 0 auto; min-width: 0; }
+   任意相邻块间距与类型组合无关（无媒体块段前大段后小的不对称）
+   栏宽按「去栏距后的可用宽」分摊：左 = ratio·(W−g)、右 = (1−ratio)·(W−g)。
+   旧实现左栏 = ratio·W 而栏距全部吃进右栏（ratio=0.5 时左比右宽 4cqw，
+   同内容两栏渲染宽度不等）。 */
+.cols { --col-gap: 4cqw; display: flex; gap: var(--col-gap); align-items: flex-start; margin: 0 0 var(--gap-para, 1.6em); }
+.col-l { width: calc((100% - var(--col-gap)) * var(--col-ratio, 0.5)); flex: 0 0 auto; min-width: 0; }
 .col-r { flex: 1; min-width: 0; }
 .seg-full { display: block; }
+
+/* 编辑态栏区边界提示：栏区上下细虚线，单栏/双栏区域一眼可辨（用户建议）。
+   仅编辑画布（mode-edit）；半透明灰（不与内容/主题色争抢）。
+   顶线不贴边：内容块「段前 0」，top:0 会压到首行文字/图片——
+   用 transform 上移 0.45em 退进上方块间隙（纯绘制位移，零布局影响），
+   胶片缩略/放映/打印与溢出扫描的测量口径均不受扰动。 */
+.mode-edit .cols { position: relative; }
+.mode-edit .cols::before,
+.mode-edit .cols::after {
+  content: ''; position: absolute; left: 0; right: 0; height: 0;
+  border-top: 1px dashed rgba(90, 100, 112, .45);
+}
+.mode-edit .cols::before { top: 0; transform: translateY(-0.45em); }
+.mode-edit .cols::after { bottom: 0; transform: translateY(0.3em); }
 
 /* ---- 页脚：分割线 + 短题名 | (参考文献位) | 页码，约占页高 7% ---- */
 .s-footer {
@@ -1247,6 +1264,7 @@ body.dark .thumb.sel .thumb-no { color: #5b9be6; }
   border-radius: 5px; cursor: pointer; font-size: 12.5px; color: #333;
 }
 .ref-picker-item.sel, .slash-item:hover, .slash-item.sel { background: #eef4fc; }
+.ref-picker-item.disabled { opacity: .45; cursor: default; }
 .ref-kind {
   flex: none; width: 18px; height: 18px; border-radius: 4px; font-size: 10.5px;
   display: flex; align-items: center; justify-content: center;

@@ -199,7 +199,7 @@ function readProjectFromFolder(folder) {
 
 // 解析示例/相对工程路径：开发时在应用目录；打包后在 resources，首次访问复制到 userData（可写，自动保存才能工作）
 // 示例内容升级时递增此版本号——userData 下的旧副本整体换新（用户改过示例会被覆盖，示例本就是演示素材）
-const EXAMPLE_VERSION = '7';
+const EXAMPLE_VERSION = '8';
 function resolveProjectFolder(relPath) {
   if (path.isAbsolute(relPath)) return relPath;
   if (!app.isPackaged) return path.join(app.getAppPath(), relPath);

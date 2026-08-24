@@ -109,7 +109,7 @@ Stress that legend marks (i)(ii) correspond one-to-one to the colored terms; in 
 
 # Experiments {#sec:exp}
 
-:::: slide layout="twoCol" title="Workflow Comparison" ratio="0.52"
+:::: slide layout="twoCol" title="Workflow Comparison" ratio="0.5"
 ::: col
 
 Typesetting time of three workflows:
@@ -170,7 +170,7 @@ EPS needs a local Ghostscript install; otherwise the block shows a hint.
 
 ## Quantitative Results
 
-:::: slide layout="twoCol" title="Quantitative Results" ratio="0.52"
+:::: slide layout="twoCol" title="Quantitative Results" ratio="0.5"
 ::: col
 
 Key metrics over training epochs (see [@fig:curve]):

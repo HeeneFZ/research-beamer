@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { moveTargetOf, useStore } from '../state/store';
 import { defaultAnnoState } from '../model/anno';
 import { Block, Slide } from '../model/types';
+import { colRegionAt } from '../model/segments';
 import { insertMediaBlock } from './BlockEditors';
 import { promptText } from './prompt';
 
@@ -115,6 +116,10 @@ export function BlockToolbar({ slide, block }: {
       // 原子插入双栏区（单次 mutate）：colmark+左段+colmark+右段，无中间渲染态
       const leftId = s.insertColRegion(slide.id, block.id);
       s.setFocus(leftId, 'start');
+    } else if (key === 'colend') {
+      // 结束双栏区：点击块逃出栏区（colend 落其前）。栏标记不渲染——
+      // 绝不能 setEditing 指向它（幽灵编辑态：无 UI 可退出、无面板可交互）
+      s.insertColEnd(slide.id, block.id);
     } else {
       const init =
         key === 'equation' ? { latex: 'x = 1' } :
@@ -144,7 +149,8 @@ export function BlockToolbar({ slide, block }: {
   // 跨栏段移动不支持：按钮须 disable 而非点击后静默失效（判定与 store 共用 moveTargetOf）
   const canUp = upNeighbor != null && moveTargetOf(slide.blocks, block.id, upNeighbor.id) != null;
   const canDown = downNeighbor != null && moveTargetOf(slide.blocks, block.id, afterDown ? afterDown.id : null) != null;
-
+  // 结束双栏区只对栏内块有意义：栏外点击应 disable（判定与 store 共用 colRegionAt）
+  const canColEnd = colRegionAt(slide.blocks, block.id) != null;
   if (!visible || !pos) return null;
 
   return createPortal(
@@ -172,14 +178,21 @@ export function BlockToolbar({ slide, block }: {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="ref-picker-title">插入（在此块之后）</div>
-          {INSERT_ITEMS.map((it) => (
-            <div key={it.key} className="ref-picker-item" onMouseDown={(e) => { e.preventDefault(); insert(it.key); }}>
-              <span className={`ref-kind slash-badge-${it.cls}`}>{it.badge}</span>
-              <span>{it.label}</span>
-              <span className="slash-hint">{it.hint}</span>
-            </div>
-          ))}
-          <div className="bmenu-sep" />
+          {INSERT_ITEMS.map((it) => {
+            const dis = it.key === 'colend' && !canColEnd;
+            return (
+              <div
+                key={it.key}
+                className={'ref-picker-item' + (dis ? ' disabled' : '')}
+                title={dis ? '当前块不在双栏区内' : undefined}
+                onMouseDown={(e) => { e.preventDefault(); if (!dis) insert(it.key); }}
+              >
+                <span className={`ref-kind slash-badge-${it.cls}`}>{it.badge}</span>
+                <span>{it.label}</span>
+                <span className="slash-hint">{dis ? '不在双栏区内' : it.hint}</span>
+              </div>
+            );
+          })}
           <div className="ref-picker-item" onMouseDown={(e) => { e.preventDefault(); void setOrder(); setMenu(false); }}>
             <span className="ref-kind slash-badge-cite">⏱</span>
             <span>出现顺序…</span>

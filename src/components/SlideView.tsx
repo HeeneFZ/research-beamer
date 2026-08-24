@@ -94,7 +94,7 @@ export function SlideView({
   const renderSegments = (blocks: Block[]) =>
     buildSegments(blocks).map((seg, i) => {
       if (seg.kind === 'full') return <div key={i} className="seg-full">{renderFlow(seg.blocks)}</div>;
-      const colsStyle = { '--col-ratio': String(slide0?.ratio ?? 0.55) } as unknown as CSSProperties;
+      const colsStyle = { '--col-ratio': String(slide0?.ratio ?? 0.5) } as unknown as CSSProperties;
       return (
         <div key={i} className="cols" style={colsStyle}>
           <div className="col col-l">{renderFlow(seg.left)}</div>

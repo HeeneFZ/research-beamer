@@ -11,6 +11,7 @@ import {
 } from '../src/model/layoutSpec';
 import { parseMarkdown, serializeMarkdown } from '../src/model/markdown';
 import { Block, newId } from '../src/model/types';
+import { colRegionAt, colEndPlan } from '../src/model/segments';
 
 const para = (text: string): Block => ({ id: newId(), type: 'paragraph', text });
 const list = (items: string[]): Block => ({ id: newId(), type: 'itemize', items });
@@ -191,6 +192,178 @@ describe('store.pageLayout（内存态排版结果，全模式共享）', () => 
     expect(moveTargetOf(twoCol, 'pC', 'pB')).toBe(6);     // 同段内正常调序
   });
 });
+
+describe('colRegionAt / colEndPlan（结束双栏区语义，与开始双栏区对称）', () => {
+  it('colRegionAt：栏内块归属（左/右栏、开/切/收标记位）；栏外与孤立标记返回 null/忽略', () => {
+    const p = (id: string): Block => ({ id, type: 'paragraph', text: 'x' });
+    const mark = (): Block => ({ id: newId(), type: 'colmark' });
+    const end = (): Block => ({ id: newId(), type: 'colend' });
+    const m1 = mark(), m2 = mark(), e1 = end();
+    const blocks = [p('pA'), m1, p('pL'), m2, p('pR1'), p('pR2'), e1, p('pB')];
+    expect(colRegionAt(blocks, 'pL')).toEqual({ col: 'l', openIdx: 1, switchIdx: 3, endIdx: 6, lastIdx: 5 });
+    expect(colRegionAt(blocks, 'pR2')).toEqual({ col: 'r', openIdx: 1, switchIdx: 3, endIdx: 6, lastIdx: 5 });
+    expect(colRegionAt(blocks, 'pA')).toBeNull();   // 栏外
+    expect(colRegionAt(blocks, 'pB')).toBeNull();   // 收栏后
+    // 页尾未收栏：endIdx = -1
+    const open = [p('pA'), m1, p('pL'), m2, p('pR')];
+    expect(colRegionAt(open, 'pR')?.endIdx).toBe(-1);
+    expect(colRegionAt(open, 'pR')?.lastIdx).toBe(4);
+    // 孤立 colend（无开栏）忽略
+    const orphan = [p('pA'), end(), p('pB')];
+    expect(colRegionAt(orphan, 'pA')).toBeNull();
+  });
+
+  it('colEndPlan：右栏首块收栏——左右无法配对，整个栏区拆除回单栏', () => {
+    const p = (id: string): Block => ({ id, type: 'paragraph', text: 'x' });
+    const mark = (): Block => ({ id: newId(), type: 'colmark' });
+    const end = (): Block => ({ id: newId(), type: 'colend' });
+    const m1 = mark(), m2 = mark(), e1 = end();
+    // [pA m1 pL m2 pR1 pR2 e1 pB]，点击 pR1：保留左栏 pL 但右栏空 → 拆除
+    const blocks = [p('pA'), m1, p('pL'), m2, p('pR1'), p('pR2'), e1, p('pB')];
+    expect(colEndPlan(blocks, 'pR1')).toEqual({ insertAt: -1, deleteIdx: [6, 1, 3] });
+  });
+
+  it('colEndPlan：栏尾最后一块收栏——colend 紧贴其后（非哑操作，后续插入落单栏）', () => {
+    const p = (id: string): Block => ({ id, type: 'paragraph', text: 'x' });
+    const mark = (): Block => ({ id: newId(), type: 'colmark' });
+    const m1 = mark(), m2 = mark();
+    // [m1 pL m2 pR1 pR2]（页尾无显式收栏），点击 pR2
+    const blocks = [p('pA'), m1, p('pL'), m2, p('pR1'), p('pR2')];
+    expect(colEndPlan(blocks, 'pR2')).toEqual({ insertAt: 5, deleteIdx: [] });
+  });
+
+  it('colEndPlan：右栏中段收栏——栏区保留至切栏点，点击块及其后并回单栏', () => {
+    const p = (id: string): Block => ({ id, type: 'paragraph', text: 'x' });
+    const mark = (): Block => ({ id: newId(), type: 'colmark' });
+    const m1 = mark(), m2 = mark();
+    // [m1 pL m2 pR1 pR2 pB]，点击 pR2：pL|pR1 配对保留，pR2/pB 单栏
+    const blocks = [m1, p('pL'), m2, p('pR1'), p('pR2'), p('pB')];
+    expect(colEndPlan(blocks, 'pR2')).toEqual({ insertAt: 4, deleteIdx: [] });
+  });
+
+  it('colEndPlan：左栏点击——右栏内容并入其后单栏流，栏区整体拆除（防分裂损坏）', () => {
+    const p = (id: string): Block => ({ id, type: 'paragraph', text: 'x' });
+    const mark = (): Block => ({ id: newId(), type: 'colmark' });
+    const end = (): Block => ({ id: newId(), type: 'colend' });
+    const m1 = mark(), m2 = mark(), e1 = end();
+    // [pA m1 pL m2 pR e1 pB]，点击 pL：切栏后右栏无从配对 → 全部回单栏
+    const blocks = [p('pA'), m1, p('pL'), m2, p('pR'), e1, p('pB')];
+    expect(colEndPlan(blocks, 'pL')).toEqual({ insertAt: -1, deleteIdx: [5, 1, 3] });
+  });
+
+  it('colEndPlan：栏区被收空（左右皆无保留内容）——开栏标记也删，无需插入', () => {
+    const p = (id: string): Block => ({ id, type: 'paragraph', text: 'x' });
+    const mark = (): Block => ({ id: newId(), type: 'colmark' });
+    const m1 = mark(), m2 = mark();
+    // [pA m1 pL m2 pB]：左栏仅 pL（点击块），右栏空 → 整个栏区拆除
+    const blocks = [p('pA'), m1, p('pL'), m2, p('pB')];
+    expect(colEndPlan(blocks, 'pL')).toEqual({ insertAt: -1, deleteIdx: [1, 3] });
+  });
+});
+
+describe('insertColRegion / insertColEnd（store 动作，段结构不损坏）', () => {
+  const MD = (inner: string) => `---\nbeamerapp: 1\n---\n\n:::: slide\n${inner}\n::::\n`;
+  const segsOf = async (inner: string) => {
+    const { useStore } = await import('../src/state/store');
+    const { buildSegments } = await import('../src/model/segments');
+    const st = () => useStore.getState();
+    st().loadProjectData({ md: MD(inner), folder: '/tmp/col' });
+    // mutate 每次整体替换 deck 对象——段结构必须从 store 即时态重读，闭包持引用必陈旧
+    const blocksNow = () => {
+      const it = st().deck.items[0];
+      return it && it.kind === 'slide' ? it.slide.blocks : [];
+    };
+    const sl = st().deck.items[0];
+    if (!sl || sl.kind !== 'slide') throw new Error('bad');
+    return { st, slide: sl.slide, segs: () => buildSegments(blocksNow()) };
+  };
+
+  it('栏内块上开新栏区：让位到栏区终结处，原栏区结构不损坏', async () => {
+    // [colmark pL colmark pR colend pX]，在 pR 上开新栏区
+    const { st, slide, segs } = await segsOf('::: col\n左\n\n::: col\n右\n\n::: /col\n\n尾\n');
+    const pR = slide.blocks.find((b) => b.type === 'paragraph' && b.text === '右')!;
+    st().insertColRegion(slide.id, pR.id);
+    // 期望：原栏区(左|右) + 新栏区(N左|N右) + 单栏尾——原 colend 改收新栏区，尾不动
+    const s = segs();
+    expect(s).toHaveLength(3);
+    expect(s[0].kind).toBe('cols');
+    if (s[0].kind === 'cols') {
+      expect(s[0].left.map((b) => b.text)).toEqual(['左']);
+      expect(s[0].right.map((b) => b.text)).toEqual(['右']);
+    }
+    expect(s[1].kind).toBe('cols');
+    if (s[1].kind === 'cols') {
+      expect(s[1].left.map((b) => b.text)).toEqual(['']);
+      expect(s[1].right.map((b) => b.text)).toEqual(['']);
+    }
+    expect(s[2].kind).toBe('full');
+    if (s[2].kind === 'full') expect(s[2].blocks.map((b) => b.text)).toEqual(['尾']);
+  });
+
+  it('右栏空栏（退化区）上开新栏区：越过切栏标记，不把新组吸进旧栏右栏', async () => {
+    // [colmark pL colmark]（切栏标记后无内容），在 pL 上开新栏区
+    const { st, slide, segs } = await segsOf('::: col\n左\n\n::: col\n');
+    const pL = slide.blocks.find((b) => b.type === 'paragraph')!;
+    st().insertColRegion(slide.id, pL.id);
+    const s = segs();
+    // 旧退化栏区（左|空）保持原状，新栏区在其后自成一体
+    expect(s).toHaveLength(2);
+    expect(s[0].kind).toBe('cols');
+    if (s[0].kind === 'cols') {
+      expect(s[0].left.map((b) => b.text)).toEqual(['左']);
+      expect(s[0].right).toHaveLength(0);
+    }
+    expect(s[1].kind).toBe('cols');
+    if (s[1].kind === 'cols') {
+      expect(s[1].left.map((b) => b.text)).toEqual(['']);
+      expect(s[1].right.map((b) => b.text)).toEqual(['']);
+    }
+  });
+
+  it('insertColEnd：右栏首块收栏——左右无从配对，整个栏区拆除回单栏', async () => {
+    // [colmark pL colmark pR1 pR2 pX]（页尾无收栏），在 pR1 上收栏
+    const { st, slide, segs } = await segsOf('::: col\n左\n\n::: col\n右一\n\n右二\n\n尾\n');
+    const pR1 = slide.blocks.find((b) => b.type === 'paragraph' && b.text === '右一')!;
+    st().insertColEnd(slide.id, pR1.id);
+    const s = segs();
+    expect(s).toHaveLength(1);
+    expect(s[0].kind).toBe('full');
+    if (s[0].kind === 'full') expect(s[0].blocks.map((b) => b.text)).toEqual(['左', '右一', '右二', '尾']);
+  });
+
+  it('insertColEnd：右栏中段收栏——前段配对保留，点击块起并回单栏', async () => {
+    // [colmark pL colmark pR1 pR2 pX]，在 pR2 上收栏：保留 [左|右一]，右二/尾回单栏
+    const { st, slide, segs } = await segsOf('::: col\n左\n\n::: col\n右一\n\n右二\n\n尾\n');
+    const pR2 = slide.blocks.find((b) => b.type === 'paragraph' && b.text === '右二')!;
+    st().insertColEnd(slide.id, pR2.id);
+    const s = segs();
+    expect(s).toHaveLength(2);
+    expect(s[0].kind).toBe('cols');
+    if (s[0].kind === 'cols') {
+      expect(s[0].left.map((b) => b.text)).toEqual(['左']);
+      expect(s[0].right.map((b) => b.text)).toEqual(['右一']);
+    }
+    expect(s[1].kind).toBe('full');
+    if (s[1].kind === 'full') expect(s[1].blocks.map((b) => b.text)).toEqual(['右二', '尾']);
+  });
+
+  it('md 往返：colend 落点/栏区结构序列化幂等', async () => {
+    const { useStore } = await import('../src/state/store');
+    const { serializeMarkdown, parseMarkdown } = await import('../src/model/markdown');
+    const st = () => useStore.getState();
+    const inner = '::: col\n左\n\n::: col\n右一\n\n右二\n\n尾\n';
+    st().loadProjectData({ md: MD(inner), folder: '/tmp/col' });
+    const sl = st().deck.items[0];
+    if (sl.kind !== 'slide') throw new Error('bad');
+    const pR1 = sl.slide.blocks.find((b) => b.type === 'paragraph' && b.text === '右一')!;
+    st().insertColEnd(sl.slide.id, pR1.id);
+    const md1 = serializeMarkdown(st().deck);
+    // 二次解析 + 序列化 = 幂等
+    const d2 = parseMarkdown(md1);
+    expect(serializeMarkdown(d2)).toBe(md1);
+  });
+});
+
 
 describe('复制页剥除交叉引用标签（第廿二轮修复）', () => {
   const MD = '---\nbeamerapp: 1\n---\n\n:::: slide\n::: figure src="media/a.png" label="fig:x" caption="原图"\n:::\n::::\n\n:::: slide\n正文\n::::\n';

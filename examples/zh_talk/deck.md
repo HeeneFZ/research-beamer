@@ -118,7 +118,7 @@ z = \frac{x - \mu}{\sigma}, \quad \annotate[accent]{\mu}{均值：数据中心},
 
 ## 定性对比
 
-:::: slide layout="twoCol" title="排版效果对比" ratio="0.52"
+:::: slide layout="twoCol" title="排版效果对比" ratio="0.5"
 ::: col
 
 三种工作流的排版耗时对比：
@@ -179,7 +179,7 @@ EPS 需本机安装 Ghostscript；未安装时该图块会给出提示。
 
 ## 定量结果
 
-:::: slide layout="twoCol" title="定量结果" ratio="0.52"
+:::: slide layout="twoCol" title="定量结果" ratio="0.5"
 ::: col
 
 关键指标随训练轮次的变化如 [@fig:curve] 所示：
