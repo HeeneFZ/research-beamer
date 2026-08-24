@@ -5,7 +5,7 @@ import {
 import { SpacingState } from '../model/layoutSpec';
 import { computeDeck, Computed, refPageIndex, refParts } from '../model/numbering';
 import { colEndPlan, colRegionAt, stripEmptyColRegions } from '../model/segments';
- import { serializeMarkdown, parseMarkdown } from '../model/markdown';
+import { serializeMarkdown, parseMarkdown, normLabel, LABEL_PREFIX, dedupeRefLabel } from '../model/markdown';
 import { attachHistoryFolder, clearHistory, recordHistory, takeRedo, takeUndo } from './history';
 
 export interface FlashState {
@@ -185,6 +185,17 @@ export const useStore = create<StoreState>((set, get) => {
         const i = it.slide.blocks.findIndex((b) => b.id === blockId);
         if (i < 0) return;
         const prev = it.slide.blocks[i];
+        // label 归一（单一事实源）：所有面板/未来入口在此兜底——裸键补前缀、
+        // 双重前缀剥除（dedupeRefLabel）、空白串视为清除。缺了这层，块上存
+        // 'pos' 而查表键是 'eq:pos'，引用一律 eq(?)（annoeq 报障的另一半根因）
+        if (patch.label != null) {
+          const raw = String(patch.label).trim();
+          if (!raw) patch = { ...patch, label: undefined };
+          else {
+            const normed = normLabel(LABEL_PREFIX[prev.type] ?? 'eq', dedupeRefLabel(raw));
+            if (normed !== patch.label) patch = { ...patch, label: normed };
+          }
+        }
         // items 变更后 itemOrders 重对齐：公共前缀 + 公共后缀对齐（中部增删/改写段
         // 置 undefined）——纯按下标前缀对齐会在「删首项/中部插入」时把后续项顺序
         // 整体错一档；编辑器每次提交全量 items，无法携带对齐信息

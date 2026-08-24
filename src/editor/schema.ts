@@ -54,6 +54,12 @@ export const InlineMath = Node.create({
     ];
   },
 });
+/** 芯片 label 统一为裸键：剥除与 kind 重复的前缀（'eq:pos' → 'pos'）。
+ *  芯片序列化写 [@kind:label]，label 必须不带前缀——picker/粘贴/历史脏文本
+ *  三条入口统一经此归一，杜绝 [@eq:eq:x] 双重前缀再次落盘 */
+export function bareRefKey(kind: string, label: string): string {
+  return label.startsWith(kind + ':') ? label.slice(kind.length + 1) : label;
+}
 
 export const RefChip = Node.create({
   name: 'refChip',
@@ -73,11 +79,11 @@ export const RefChip = Node.create({
   },
   addInputRules() {
     return [
-      // 完整输入 [@eq:x] 自动转芯片
+      // 完整输入 [@eq:x] 自动转芯片（label 归一为裸键，双重前缀同样剥除）
       new InputRule({
         find: /\[@(eq|fig|sec|tab):([A-Za-z0-9_:-]+)\]$/,
         handler: ({ range, match, chain }) => {
-          chain().insertContentAt(range, { type: 'refChip', attrs: { kind: match[1], label: match[2] } }).run();
+          chain().insertContentAt(range, { type: 'refChip', attrs: { kind: match[1], label: bareRefKey(match[1], match[2]) } }).run();
         },
       }),
     ];
@@ -143,7 +149,7 @@ function textToInlineNodes(text: string): PmNode[] {
   while ((m = INLINE_TOKEN_RE.exec(text))) {
     if (m.index > last) pushText(out, text.slice(last, m.index));
     if (m[1] !== undefined) out.push({ type: 'inlineMath', attrs: { latex: m[1] } });
-    else if (m[2]) out.push({ type: 'refChip', attrs: { kind: m[2], label: m[3] } });
+    else if (m[2]) out.push({ type: 'refChip', attrs: { kind: m[2], label: bareRefKey(m[2], m[3]) } });
     else if (m[4] !== undefined) {
       // 粗体 **..**（进入编辑也所见即所得，不再露 ** 源码）
       out.push({ type: 'text', text: m[4], marks: [{ type: 'bold', attrs: {} }] });

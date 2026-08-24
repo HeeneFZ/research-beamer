@@ -91,13 +91,20 @@ function q(v: string): string {
 
 const LAYOUTS: Layout[] = ['title', 'toc', 'section', 'content', 'twoCol', 'end'];
 
-const LABEL_PREFIX: Partial<Record<Block['type'], string>> = {
+export const LABEL_PREFIX: Partial<Record<Block['type'], string>> = {
   equation: 'eq', figure: 'fig', table: 'tab', annoeq: 'eq', video: 'vid',
 };
 
 /** 裸标签补前缀：gauss -> eq:gauss（已带 xxx: 前缀的原样保留） */
 export function normLabel(kind: string, label: string): string {
   return /^\w+:/.test(label) ? label : `${kind}:${label}`;
+}
+
+/** 去除引用键的双重前缀自愈：eq:eq:x -> eq:x（无重复原样返回）。
+ *  picker 旧 bug 曾把带前缀的 label 再拼一次 kind 写入 [@eq:eq:x]——
+ *  解析/渲染/存储三层统一在此剥除，历史脏 md 打开即修复显示 */
+export function dedupeRefLabel(label: string): string {
+  return label.replace(/^(\w+):\1:/, '$1:');
 }
 
 function blockOf(type: Block['type'], attrs: Record<string, string>): Block {

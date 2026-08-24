@@ -2,7 +2,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { parseMarkdown, serializeMarkdown } from '../src/model/markdown';
-import { computeDeck, refDisplay, refParts } from '../src/model/numbering';
+import { computeDeck, refDisplay, refParts, refPageIndex } from '../src/model/numbering';
 import { tokenizeInline, InlineToken } from '../src/model/inline';
 import { preprocessMath } from '../src/components/MathView';
 import { annoFromJson, annoToJson } from '../src/model/anno';
@@ -450,6 +450,88 @@ describe('表格空单元格（第廿一轮修复：空首/尾单元格按内容
     const t = sl.kind === 'slide' ? sl.slide.blocks.find((b) => b.type === 'table') : undefined;
     expect(t?.cells).toEqual([['a', 'b'], ['c', 'd'], ['x | y', 'z']]);
     expect(serializeMarkdown(parseMarkdown(serializeMarkdown(deck)))).toBe(serializeMarkdown(deck));
+  });
+});
+
+describe('引用标签双重前缀自愈（第四十轮修复：picker 曾落盘 [@eq:eq:x]）', () => {
+  it('tokenizeInline：双重前缀 [@eq:eq:x] 剥除为 eq:x——显示层不再露源码；正常引用不受影响', () => {
+    const tok = tokenizeInline('将[@eq:eq:pos_trans]代入[@eq:eq:pos]和[@eq:momentum]');
+    const refs = tok.filter((t) => t.t === 'ref');
+    expect(refs.map((t) => (t as { t: 'ref'; label: string }).label))
+      .toEqual(['eq:pos_trans', 'eq:pos', 'eq:momentum']);
+    // 图/表/节同族
+    expect(tokenizeInline('[@fig:fig:a]')[0]).toMatchObject({ t: 'ref', label: 'fig:a' });
+    expect(tokenizeInline('[@tab:tab:b]')[0]).toMatchObject({ t: 'ref', label: 'tab:b' });
+    // 非重复前缀不误伤：[@eq:pos] 原样；跨类前缀 [@eq:fig:x] 非自愈对象，按旧规则露原文
+    expect(tokenizeInline('[@eq:pos]')[0]).toMatchObject({ t: 'ref', label: 'eq:pos' });
+    expect(tokenizeInline('[@eq:fig:x]')[0]).toMatchObject({ t: 'text', v: '[@eq:fig:x]' });
+  });
+
+  it('bareRefKey：剥除与 kind 重复的前缀；裸键原样（芯片 label 唯一入口归一）', async () => {
+    const { bareRefKey } = await import('../src/editor/schema');
+    expect(bareRefKey('eq', 'eq:pos')).toBe('pos');
+    expect(bareRefKey('eq', 'pos')).toBe('pos');
+    expect(bareRefKey('fig', 'fig:a')).toBe('a');
+    expect(bareRefKey('fig', 'eq:x')).toBe('eq:x'); // 跨类前缀不剥
+  });
+
+  it('编辑器往返自愈：含 [@eq:eq:x] 的文本进编辑态即剥除，序列化回写干净 [@eq:x]', async () => {
+    const { textToDoc, docToText } = await import('../src/editor/schema');
+    const dirty = '将[@eq:eq:pos]代入[@eq:momentum]';
+    const doc = textToDoc(dirty);
+    // doc 形状：doc.content[0].content 为行内节点数组（textToDoc 契约）
+    const para = (doc as { content: { content?: unknown }[] }).content?.[0];
+    const nodes = (para && typeof para === 'object' && 'content' in para ? para.content : []) as { type: string; attrs?: { kind?: string; label?: string } }[];
+    const chips = nodes.filter((n) => n.type === 'refChip').map((n) => ({ kind: n.attrs?.kind, label: n.attrs?.label }));
+    expect(chips).toEqual([{ kind: 'eq', label: 'pos' }, { kind: 'eq', label: 'momentum' }]);
+    expect(docToText(doc as never)).toBe('将[@eq:pos]代入[@eq:momentum]');
+  });
+
+  it('store.updateBlock label 归一：裸键补前缀 / 双重前缀剥除 / 空串清除（annoeq 报障根因兜底）', async () => {
+    const { useStore } = await import('../src/state/store');
+    const st = () => useStore.getState();
+    st().loadProjectData({
+      md: '---\nbeamerapp: 1\n---\n\n:::: slide\n::: annoeq\n%%anno {"marks":[],"annotations":[]}\nx=1\n:::\n::::\n',
+      folder: '/tmp/lbl',
+    });
+    const sl = st().deck.items[0];
+    if (sl.kind !== 'slide') throw new Error('bad');
+    const id = sl.slide.blocks[0].id;
+    const now = () => {
+      const it = st().deck.items[0];
+      return it && it.kind === 'slide' ? it.slide.blocks[0] : null;
+    };
+    // 裸键 → eq:pos（查表键一致，引用立即生效）
+    st().updateBlock(sl.slide.id, id, { label: 'pos' });
+    expect(now()?.label).toBe('eq:pos');
+    // 双重前缀 → 剥除
+    st().updateBlock(sl.slide.id, id, { label: 'eq:eq:pos' });
+    expect(now()?.label).toBe('eq:pos');
+    // 已带正确前缀原样
+    st().updateBlock(sl.slide.id, id, { label: 'eq:momentum' });
+    expect(now()?.label).toBe('eq:momentum');
+    // 空串 = 清除
+    st().updateBlock(sl.slide.id, id, { label: '  ' });
+    expect(now()?.label).toBeUndefined();
+    // 图族同规则（fig 前缀）
+    const figId = st().insertBlock(sl.slide.id, null, 'figure', { src: 'media/a.png' });
+    st().updateBlock(sl.slide.id, figId, { label: 'arch' });
+    const it2 = st().deck.items[0];
+    const figNow = it2 && it2.kind === 'slide' ? it2.slide.blocks.find((b) => b.id === figId) : null;
+    expect(figNow?.label).toBe('fig:arch');
+  });
+
+  it('端到端链路：annoeq 带 label + 段落引用 [@eq:x] 全部解析出编号（含历史脏数据形态）', () => {
+    const MD = '---\nbeamerapp: 1\nlanguage: zh\n---\n\n:::: slide\n::: annoeq label="pos"\n%%anno {"marks":[],"annotations":[]}\nx=1\n:::\n\n将[@eq:eq:pos]与[@eq:pos]代入。\n::::\n';
+    const deck = parseMarkdown(MD);
+    const computed = computeDeck(deck);
+    for (const t of tokenizeInline('将[@eq:eq:pos]与[@eq:pos]代入。')) {
+      if (t.t !== 'ref') continue;
+      const parts = refParts(t.label);
+      expect(parts).toEqual({ kind: 'eq', key: 'pos' });
+      expect(refDisplay(parts!.kind, parts!.key, computed, 'zh')).toBe('式 (1)');
+      expect(refPageIndex(t.label, computed)).toBe(0);
+    }
   });
 });
 

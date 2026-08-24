@@ -40,11 +40,11 @@ export function tokenizeInline(src: string): InlineToken[] {
         continue;
       }
     }
-    // 引用 [@eq:x]
+    // 引用 [@eq:x]；双重前缀（[@eq:eq:x]，picker 旧 bug 的历史脏数据）自愈剥除
     if (c === '[' && src[i + 1] === '@') {
       const end = src.indexOf(']', i + 2);
       if (end > 0) {
-        const label = src.slice(i + 2, end);
+        const label = src.slice(i + 2, end).replace(/^(\w+):\1:/, '$1:');
         if (/^\w+:[\w-]+$/.test(label)) {
           flushText();
           out.push({ t: 'ref', label });

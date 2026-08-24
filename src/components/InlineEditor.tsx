@@ -12,7 +12,7 @@ import { Fragment, Slice, Node as PMNode } from '@tiptap/pm/model';
 import { Block, Slide } from '../model/types';
 import { useStore } from '../state/store';
 import {
-  InlineMath, RefChip, ColorSpan, BgSpan, BlockKeys,
+  InlineMath, RefChip, ColorSpan, BgSpan, BlockKeys, bareRefKey,
   textToDoc, itemsToDoc, docToText, docToItems,
 } from '../editor/schema';
 import { insertMediaBlock } from './BlockEditors';
@@ -330,9 +330,11 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
 
   const pickRef = (cand: RefCandidate) => {
     if (!editor || !picker) return;
+    // 候选的 label 是块上带前缀的完整标签（eq:pos）；芯片 label 必须是裸键——
+    // 序列化写 [@kind:label]，直接塞完整标签会落盘 [@eq:eq:pos] 双重前缀
     editor.chain().focus()
       .deleteRange({ from: picker.start, to: editor.state.selection.$from.pos })
-      .insertContent({ type: 'refChip', attrs: { kind: cand.kind, label: cand.label } })
+      .insertContent({ type: 'refChip', attrs: { kind: cand.kind, label: bareRefKey(cand.kind, cand.label) } })
       .run();
     setPicker(null);
   };
