@@ -19,6 +19,7 @@ declare global {
       winClose(): void;
       saveMediaAs(p: { srcPath: string }): Promise<{ path: string; error?: string } | null>;
       openPresent(): Promise<{ ok: boolean; display?: number }>;
+      swapPresentScreens(): Promise<{ ok: boolean; error?: string }>;
       closePresent(): void;
       sendPresentState(p: unknown): void;
       sendPresentEvent(e: { type: string; index?: number; label?: string }): void;

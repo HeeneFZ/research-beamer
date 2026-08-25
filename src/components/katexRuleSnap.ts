@@ -36,8 +36,18 @@ function restyleRule(el: HTMLElement): void {
   // 设计宽度规格：KaTeX inline style 'border-bottom-width:0.04em'（吸附前）
   const bwEm = parseFloat(el.style.borderBottomWidth) || 0.04;
   const fs = parseFloat(getComputedStyle(el).fontSize) || 12;
-  const hVisual = Math.max(1 / dpr, bwEm * fs * scale);
-  const hLocal = hVisual / scale;
+  let hVisual = Math.max(1 / dpr, bwEm * fs * scale);
+  let hLocal = hVisual / scale;
+  // 多屏分式线消失修复（第卌一轮物理墨迹实测）：分数 DPR 屏（Windows 125% 缩放）上，
+  // 合成器可能以 ≈dpr 的分辨率栅格化被 transform scale 放大的图层（不含 transform scale，
+  // 实测有效 raster ≈1.33 而 dpr=1 窗口按最终 ≈4.2× 分辨率 AA 栅格化）。亚像素背景带
+  // 在纹理空间被整数量化：hLocal×raster < 0.5 纹素 → 舍入到 0 行 → 分式线彻底消失
+  // （0.36px 消失 / 0.38px 可见，临界实测）。给 local 带高加下限，保证最坏栅格化
+  // （raster ≥ dpr）下至少落 1 纹素行；dpr=1 实测按最终分辨率 AA，维持设计线重不加下限。
+  if (dpr > 1) {
+    hLocal = Math.max(hLocal, 0.55 / dpr);
+    hVisual = hLocal * scale;
+  }
   el.style.borderBottomColor = 'transparent';
   el.style.backgroundImage = 'linear-gradient(currentColor, currentColor)';
   el.style.backgroundSize = `100% ${hLocal.toFixed(4)}px`;

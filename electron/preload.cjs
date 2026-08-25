@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   winClose: () => ipcRenderer.invoke('win:close'),
   openPresent: () => ipcRenderer.invoke('present:open'),
   closePresent: () => ipcRenderer.invoke('present:close'),
+  swapPresentScreens: () => ipcRenderer.invoke('present:swapScreens'),
   sendPresentState: (payload) => ipcRenderer.send('present:state', payload),
   sendPresentEvent: (evt) => ipcRenderer.send('present:event', evt),
   onPresentState: (cb) => {

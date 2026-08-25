@@ -423,6 +423,44 @@ ipcMain.handle('present:close', () => {
   presentWin?.close();
 });
 
+// 交换放映窗与主窗（监看）所在屏幕：多屏演讲时放映/监看互换
+// Windows 下直接搬全屏窗会保留旧屏尺寸/DPI——先退全屏、setBounds 到目标屏、再进全屏
+ipcMain.handle('present:swapScreens', async () => {
+  if (!presentWin || presentWin.isDestroyed()) return { ok: false, error: 'no-present-window' };
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, error: 'no-main-window' };
+  const { screen } = require('electron');
+  const displays = screen.getAllDisplays();
+  if (displays.length < 2) return { ok: false, error: 'single-display' };
+  // 先取两窗当前所在屏（搬动前快照）
+  const dPresent = screen.getDisplayMatching(presentWin.getBounds());
+  const dMain = screen.getDisplayMatching(mainWindow.getBounds());
+  if (dPresent.id === dMain.id) return { ok: false, error: 'same-display' };
+
+  // 主窗 → 放映窗原屏：保留尺寸（工作区夹紧、居中），还原最大化/全屏态
+  const mainBounds = mainWindow.getBounds();
+  const wasMax = mainWindow.isMaximized();
+  const wasFull = mainWindow.isFullScreen();
+  if (wasFull) mainWindow.setFullScreen(false);
+  if (wasMax) mainWindow.unmaximize();
+  const wa = dPresent.workArea;
+  const w = Math.min(mainBounds.width, wa.width);
+  const h = Math.min(mainBounds.height, wa.height);
+  mainWindow.setBounds({
+    x: wa.x + Math.floor((wa.width - w) / 2),
+    y: wa.y + Math.floor((wa.height - h) / 2),
+    width: w,
+    height: h,
+  });
+  if (wasFull) mainWindow.setFullScreen(true);
+  else if (wasMax) mainWindow.maximize();
+
+  // 放映窗 → 主窗原屏：退全屏 → 搬 → 重新全屏
+  presentWin.setFullScreen(false);
+  presentWin.setBounds(dMain.bounds);
+  presentWin.setFullScreen(true);
+  return { ok: true };
+});
+
 // 编辑器 → 放映窗：整页状态广播（deck 序列化 + 当前页 + 已出现 order）
 ipcMain.on('present:state', (_e, payload) => {
   if (presentWin && !presentWin.isDestroyed()) {

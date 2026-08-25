@@ -70,6 +70,12 @@ const I = {
     <path d="M8 1.3v2.2M8 12.5v2.2M1.3 8h2.2M12.5 8h2.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
   </>),
   blank: <rect x="2.5" y="3.5" width="11" height="9" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.6" />,
+  swap: (<>
+    <rect x="1.5" y="1.5" width="6.5" height="4.5" rx="0.8" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    <rect x="8" y="10" width="6.5" height="4.5" rx="0.8" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    <path d="M2 12.3h5.2M6 10.7l1.6 1.6L6 13.9" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M14 3.7H8.8M10 2.1 8.4 3.7l1.6 1.6" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+  </>),
   record: <circle cx="8" cy="8" r="4.5" fill="currentColor" />,
   close: <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />,
 };
@@ -527,6 +533,11 @@ export default function Present() {
             ? <span className="pctrl-rec-live"><span className="pctrl-rec-dot" />REC</span>
             : <PIcon>{I.record}</PIcon>}
         </button>
+        <span className="pctrl-sep" />
+        <button
+          title="交换放映/监看屏幕（多屏互换放映屏与监看屏）"
+          onClick={() => { void window.api.swapPresentScreens(); }}
+        ><PIcon>{I.swap}</PIcon></button>
         <span className="pctrl-sep" />
         <button title="结束放映（Esc）" className="danger" onClick={() => send({ type: 'end' })}><PIcon>{I.close}</PIcon></button>
       </div>
