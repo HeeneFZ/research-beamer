@@ -425,11 +425,14 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 .imath { margin: 0 .12em; }
 .imath .katex { font-size: 1em; }
 
-/* 公式：与所有块同款「段前 0 + 段后统一」（--gap-para）；公式与编号均与正文等大（1em，用户合约） */
+/* 公式：与所有块同款「段前 0 + 段后统一」（--gap-para）；公式与编号均与正文等大（1em，用户合约）
+   裁切合约：仅横向裁（超宽公式不越栏挤编号），纵向不裁——KaTeX 的 hat/tilde 等上下沿
+   墨迹会超出自身行盒若干 px（KaTeX 上游假设祖先不裁溢出），overflow:hidden 会切掉
+   帽顶与分母下沿（Chromium 对 clip 允许另一轴保持 visible；hidden 会把 visible 变 auto） */
 .eq-outer { margin: 0 0 var(--gap-para, 1.6em); }
 .eq-row { display: flex; align-items: flex-start; }
-.eq-body { flex: 1; min-width: 0; text-align: center; overflow: hidden; }
-.eq-disp { overflow: hidden; }
+.eq-body { flex: 1; min-width: 0; text-align: center; overflow: clip visible; }
+.eq-disp { overflow: clip visible; }
 .eq-disp .katex-display { margin: 0; }
 .eq-disp .katex { font-size: 1em; }
 .eq-num { min-width: 8cqw; text-align: right; font-size: 1em; color: var(--p-muted); padding-top: 1.78cqh; }

@@ -8,6 +8,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   computeLayoutSpec, spacingFor, defaultSpacing, layoutCssVars,
   FIT_MIN, PAGE_FONT_MIN, PAGE_FONT_MAX, IMG_H_MIN, IMG_H_MAX,
+  compressBest, FIT_TOL, OverflowProbe,
 } from '../src/model/layoutSpec';
 import { parseMarkdown, serializeMarkdown } from '../src/model/markdown';
 import { Block, newId } from '../src/model/types';
@@ -643,5 +644,55 @@ describe('配色 preset 保留（切回 blue 的回归根因）', () => {
     st().setConfig({ palette: { ...PRESETS['academic-blue'], preset: 'academic-blue' } });
     expect(st().deck.config.palette.preset).toBe('academic-blue');
     expect(st().deck.config.palette.primary.base).toBe('#0F66AD');
+  });
+});
+
+describe('compressBest（压缩阶梯粗步 + 连续细化：消除粗步过冲的底部空隙）', () => {
+  const spec = computeLayoutSpec({ blocks: [] });
+
+  it('Given 标称态放得下 When 求解 Then 原样返回零压缩', () => {
+    const r = compressBest(spec, () => 0);
+    expect(r.st).toEqual(defaultSpacing(spec));
+    expect(r.over).toBe(0);
+  });
+
+  it('Given 间距阶段存在换行悬崖（s=0.25 溢出、s=0.5 放得下）When 求解 Then s 细化到悬崖边缘而非整档 0.5', () => {
+    // 悬崖在 s=0.4：粗步 0.25 失败 / 0.5 成功，细化应收敛到 (0.4, 0.42]
+    const probe: OverflowProbe = (st) => (st.s < 0.4 ? 20 : 0);
+    const r = compressBest(spec, probe);
+    expect(r.st.s).toBeGreaterThan(0.4);
+    expect(r.st.s).toBeLessThanOrEqual(0.42);
+    expect(r.st.fit).toBe(1);
+    expect(probe(r.st)).toBeLessThanOrEqual(FIT_TOL);
+  });
+
+  it('Given 字号阶段悬崖（fit>0.67 溢出、0.65 放得下）且留有余量 When 求解 Then fit 细化上探且 s 回松', () => {
+    // fit 悬崖 0.67；s 越松内容越高（(1-s)*60），0.65 档在 s=1 有 60px 余量可回松
+    const probe: OverflowProbe = (st) => (st.fit > 0.67 ? 500 : 0) + (1 - st.s) * 60;
+    const r = compressBest(spec, probe);
+    expect(r.st.fit).toBeGreaterThan(0.65);   // 字号比粗步档更大（合约：余量优先还给字号）
+    expect(r.st.fit).toBeLessThanOrEqual(0.67);
+    expect(r.st.s).toBeLessThan(1);           // 剩余余量用间距松度吸收 → 内容贴页脚
+    expect(probe(r.st)).toBeLessThanOrEqual(FIT_TOL);
+  });
+
+  it('Given 全程放不下 When 求解 Then 返回溢出最小态（字/距/图全到底）', () => {
+    const probe: OverflowProbe = (st) => 100 - st.s * 20 - (1 - st.fit) * 50 - (spec.imgHNom - st.imgH) * 0.5;
+    const r = compressBest(spec, probe);
+    expect(r.st.s).toBe(1);
+    expect(r.st.fit).toBeCloseTo(spec.fitMin, 6);
+    expect(r.st.imgH).toBeCloseTo(IMG_H_MIN, 6);
+    expect(r.over).toBeGreaterThan(FIT_TOL);  // 容忍溢出（上层 toast 建议删减）
+  });
+
+  it('Given 图高阶段悬崖（imgH>40 溢出、≤40 放得下）When 求解 Then imgH 细化到悬崖边缘（图尽量大）', () => {
+    // 字/距全到底仍溢出，只有压图放得下：悬崖在 imgH=40，粗步 55→46.75 失败 → 39.74 成功
+    const probe: OverflowProbe = (st) => (st.s < 1 || st.fit > spec.fitMin || st.imgH > 40 ? 500 : 0);
+    const r = compressBest(spec, probe);
+    expect(r.st.s).toBe(1);
+    expect(r.st.fit).toBeCloseTo(spec.fitMin, 6);
+    expect(r.st.imgH).toBeGreaterThan(39);
+    expect(r.st.imgH).toBeLessThanOrEqual(40.1);
+    expect(probe(r.st)).toBeLessThanOrEqual(FIT_TOL);
   });
 });

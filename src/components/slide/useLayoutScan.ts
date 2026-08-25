@@ -4,7 +4,9 @@
 //   算出「放得下的最宽松状态」后一次性提交 store.pageLayout（唯一一次可见变化）。
 //   压缩阶梯（用户合约·第廿九轮起，图优先于字）：① 间距（行距/段距，s 0→1）
 //   → ② 字号（fit 步进 −0.05，下限 spec.fitMin）→ ③ 图高（天花板 55cqh 起 ×0.85 递减至下限，
-//   溢出则容忍并 toast 建议删减）。宽度权威：图按宽度需求占位、挤压链先压文字体系，
+//   溢出则容忍并 toast 建议删减）。每阶段粗步落定后连续二分细化（compressBest）：
+//   取「放得下的最宽松参数」，消除粗步+换行悬崖的过冲（压得厉害却离页脚很远）。
+//   宽度权威：图按宽度需求占位、挤压链先压文字体系，
 //   图只在字距到底仍放不下时让步；不再做任何文本量估算预压（估错即冤案且棘轮单向回不来）。
 //   结果对内容+比例+字号配置确定（无状态机/无回滚/不写 md）：
 //   进页重扫得到同一终态 → setPageLayout 相同值不提交 → 零视觉变化、零振荡。
@@ -15,15 +17,12 @@
 import { RefObject, useEffect } from 'react';
 import { useStore } from '../../state/store';
 import {
-  computeLayoutSpec, defaultSpacing, layoutCssVars, IMG_H_MIN, LayoutSpec, SpacingState,
+  computeLayoutSpec, compressBest, layoutCssVars, FIT_TOL, LayoutSpec, SpacingState,
 } from '../../model/layoutSpec';
 import { Aspect } from '../../model/types';
 
 /** 探测覆写的变量子集（字号体系 --fs-* 固定不参与探测；间距单通道 --gap-para） */
 const PROBE_VARS = ['--lh', '--gap-para', '--gap-item', '--img-max-h', '--body-fit'];
-
-const S_LADDER = [0.25, 0.5, 0.75, 1];
-const FIT_STEP = 0.05;
 
 export function useLayoutScan(
   ref: RefObject<HTMLElement | null>,
@@ -63,42 +62,11 @@ export function useLayoutScan(
       return over;
     };
 
-    /** 一次成型计算：返回放得下的最宽松状态（都不放得下则取全程溢出最小者） */
+    /** 一次成型计算：压缩阶梯粗步 + 连续细化（layoutSpec.compressBest 纯函数），
+     *  返回放得下的最宽松状态（都不放得下则取全程溢出最小者） */
     const computeBest = (): { st: SpacingState; over: number } => {
       const spec = getSpec();
-      let best = defaultSpacing(spec);
-      let bestOver = probeOver(best, spec);
-      if (bestOver <= 8) return { st: best, over: bestOver };
-
-      // ① 间距阶梯：压实行距/段距（字号、图都不动）
-      for (const s of S_LADDER) {
-        const st: SpacingState = { s, imgH: spec.imgHNom, fit: 1 };
-        const over = probeOver(st, spec);
-        if (over < bestOver) { best = st; bestOver = over; }
-        if (over <= 8) return { st, over };
-      }
-
-      // ② 字号兜底：步进 −0.05 至下限（图仍不动——挤压链先压文字体系）
-      for (let f = 1 - FIT_STEP; f >= spec.fitMin - 0.005; f -= FIT_STEP) {
-        const fit = Math.max(spec.fitMin, Math.round(f * 100) / 100);
-        const st: SpacingState = { s: 1, imgH: spec.imgHNom, fit };
-        const over = probeOver(st, spec);
-        if (over < bestOver) { best = st; bestOver = over; }
-        if (over <= 8) return { st, over };
-        if (fit <= spec.fitMin + 0.005) break;
-      }
-
-      // ③ 图高压实：从天花板 ×0.85 递减到下限（字/距已到底后的终极让步——
-      //    唯二的图像受限合法理由：宽度已顶栏宽；或字/距压缩殆尽仍放不下）
-      let imgH = spec.imgHNom;
-      while (imgH > IMG_H_MIN + 0.5) {
-        imgH = Math.max(IMG_H_MIN, imgH * 0.85);
-        const st: SpacingState = { s: 1, imgH, fit: spec.fitMin };
-        const over = probeOver(st, spec);
-        if (over < bestOver) { best = st; bestOver = over; }
-        if (over <= 8) return { st, over };
-      }
-      return { st: best, over: bestOver };
+      return compressBest(spec, (st) => probeOver(st, spec));
     };
 
     const tick = () => {
@@ -124,7 +92,7 @@ export function useLayoutScan(
       const { st, over } = computeBest();
       const changed = !prev || prev.s !== st.s || prev.imgH !== st.imgH || prev.fit !== st.fit;
       useStore.getState().setPageLayout(key, st);
-      if (over > 8 && changed) {
+      if (over > FIT_TOL && changed) {
         useStore.getState().setFlashMsg('内容超出页面（字号已到排版下限），建议删减或分页');
       }
       // 复核轮（晚到资源/字体可能漂移）；结果稳定即收工（相同值提交为 no-op）

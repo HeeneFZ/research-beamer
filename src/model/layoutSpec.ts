@@ -104,6 +104,104 @@ export function defaultSpacing(spec: LayoutSpec): SpacingState {
   return { s: 0, imgH: spec.imgHNom, fit: 1 };
 }
 
+/** 压缩阶梯粗步（间距压实度 s 的离散档位：宽松 → 紧凑） */
+export const S_LADDER = [0.25, 0.5, 0.75, 1];
+/** 字号兜底步进（fit 每步 −0.05） */
+export const FIT_STEP = 0.05;
+/** 「放得下」判定容差（px）：溢出不超过此值视为放得下（亚像素级裁切不算溢出） */
+export const FIT_TOL = 8;
+
+/** 溢出探测回调：st → 溢出 px（scrollHeight − clientHeight，恒 ≥ 0） */
+export type OverflowProbe = (st: SpacingState) => number;
+
+/** 二分细化：lo 恒为失败态、hi 恒为成功态（数值大小关系不限，mid 取算术中点），
+ *  沿 param 收敛到「距失败边界最近的成功值」——即该参数的最宽松可行值。
+ *  语义按参数方向统一：s 收敛到最小可行（最松间距）、fit/imgH 收敛到最大可行（字号/图最大）。 */
+function refineBetween(
+  probe: OverflowProbe, lo: number, hi: number,
+  param: 's' | 'fit' | 'imgH', base: SpacingState,
+): number {
+  let a = lo, b = hi;
+  for (let i = 0; i < 6; i++) {
+    const mid = (a + b) / 2;
+    if (probe({ ...base, [param]: mid }) <= FIT_TOL) b = mid;
+    else a = mid;
+  }
+  return b;
+}
+
+const round4 = (v: number) => Math.round(v * 10_000) / 10_000;
+
+/** 压缩阶梯求解（纯函数）：粗步定位 + 连续细化，返回「放得下的最宽松状态」。
+ *  次序合约（第廿九轮起）不变：① 间距（s，0→1）→ ② 字号（fit，s=1）→ ③ 图高（s=1+fit=fitMin）。
+ *  每阶段粗步落定后对该阶段参数二分细化，消除粗步过冲（换行悬崖：字号/间距的微小变化
+ *  会离散增删整行，5% 粗步可过冲数十 px，表现为「压得厉害却仍离页脚很远」）：
+ *    ① 细化 s → 最小可行压实度；② 先细化 fit → s=1 下最大可行字号，再回松 s
+ *    （字号优先于间距的合约取向：余量优先还给字号，剩余再用间距松度吸收）；
+ *    ③ 细化 imgH → 最大可行图高。
+ *  全程放不下时返回全程溢出最小态（容忍溢出，由调用方提示删减）。 */
+export function compressBest(
+  spec: LayoutSpec, probe: OverflowProbe,
+): { st: SpacingState; over: number } {
+  const fitMin = spec.fitMin;
+  const nom = { imgH: spec.imgHNom, fit: 1 } as const;
+
+  // 标称态（最宽松）
+  let best = defaultSpacing(spec);
+  let bestOver = probe(best);
+  if (bestOver <= FIT_TOL) return { st: best, over: bestOver };
+
+  // ① 间距阶梯：粗步找首个放得下的档，再细化 s（最小可行压实度）
+  let prev = best; // 上一失败态（更宽松）
+  for (const s of S_LADDER) {
+    const st: SpacingState = { s, ...nom };
+    const over = probe(st);
+    if (over < bestOver) { best = st; bestOver = over; }
+    if (over <= FIT_TOL) {
+      const final: SpacingState = { s: round4(refineBetween(probe, prev.s, s, 's', st)), ...nom };
+      return { st: final, over: probe(final) };
+    }
+    prev = st;
+  }
+
+  // ② 字号阶梯（间距已到最紧）：粗步找首个放得下的字号，先细化 fit（最大可行字号），
+  //    再回松 s（用余量换更松间距——两轴都优于粗步结果，合约取向不破坏）
+  prev = { s: 1, ...nom };
+  for (let f = 1 - FIT_STEP; f >= fitMin - 0.005; f -= FIT_STEP) {
+    const fit = Math.max(fitMin, Math.round(f * 100) / 100);
+    const st: SpacingState = { s: 1, ...nom, fit };
+    const over = probe(st);
+    if (over < bestOver) { best = st; bestOver = over; }
+    if (over <= FIT_TOL) {
+      const fitRef = round4(refineBetween(probe, prev.fit, fit, 'fit', { s: 1, ...nom }));
+      // 回松 s：s=0 也放得下（粗步严重过冲的罕见态）直接取 0，否则在 (0,1] 二分
+      const base: SpacingState = { s: 1, ...nom, fit: fitRef };
+      const sRef = probe({ ...base, s: 0 }) <= FIT_TOL
+        ? 0
+        : round4(refineBetween(probe, 0, 1, 's', base));
+      const final: SpacingState = { s: sRef, ...nom, fit: fitRef };
+      return { st: final, over: probe(final) };
+    }
+    prev = st;
+  }
+
+  // ③ 图高阶梯（字/距已到底）：粗步找首个放得下的图高，再细化 imgH（最大可行图高）
+  let prevImg = spec.imgHNom;
+  let imgH = spec.imgHNom;
+  while (imgH > IMG_H_MIN + 0.5) {
+    imgH = Math.max(IMG_H_MIN, imgH * 0.85);
+    const st: SpacingState = { s: 1, imgH, fit: fitMin };
+    const over = probe(st);
+    if (over < bestOver) { best = st; bestOver = over; }
+    if (over <= FIT_TOL) {
+      const final: SpacingState = { s: 1, imgH: round4(refineBetween(probe, prevImg, imgH, 'imgH', { s: 1, imgH: spec.imgHNom, fit: fitMin })), fit: fitMin };
+      return { st: final, over: probe(final) };
+    }
+    prevImg = imgH;
+  }
+  return { st: best, over: bestOver };
+}
+
 /** 规格 + 页级状态 → 注入 .sv 根 style 的 CSS 变量（header/footer/body 共享） */
 export function layoutCssVars(spec: LayoutSpec, st: SpacingState): Record<string, string> {
   const sp = spacingFor(spec, st.s);
