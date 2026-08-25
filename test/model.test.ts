@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { parseMarkdown, serializeMarkdown } from '../src/model/markdown';
 import { computeDeck, refDisplay, refParts, refPageIndex } from '../src/model/numbering';
 import { tokenizeInline, InlineToken } from '../src/model/inline';
-import { preprocessMath } from '../src/components/MathView';
+import { preprocessMath, boldGreekFix } from '../src/components/MathView';
 import { annoFromJson, annoToJson } from '../src/model/anno';
 import { stripMathDelims } from '../src/components/LatexEditor';
 import { defaultConfig } from '../src/model/types';
@@ -545,5 +545,33 @@ describe('示例工程完整性（examples/ 随包发布，用户首见内容）
       // 作者上标 ^1 ^2 与单位清单一一对应（封面单位展开的数据前提）
       expect(deck.config.affiliations.split(';').map((s) => s.trim()).filter(Boolean)).toHaveLength(2);
     }
+  });
+});
+
+describe('boldGreekFix（向量语境大写希腊加粗：KaTeX 对 \\mathit{Γ} 静默丢粗的补丁）', () => {
+  it('\\vec/\\mathbf/\\boldsymbol/\\bm 参数组内希腊宏 → 裸字面量（KaTeX 数学体加粗路径）', () => {
+    expect(boldGreekFix(String.raw`\vec{\Gamma}`)).toBe(String.raw`\vec{Γ}`);
+    expect(boldGreekFix(String.raw`\mathbf{\Delta t}`)).toBe(String.raw`\mathbf{Δ t}`);
+    expect(boldGreekFix(String.raw`\boldsymbol{\Omega}`)).toBe(String.raw`\boldsymbol{Ω}`);
+    expect(boldGreekFix(String.raw`\bm{\Sigma}`)).toBe(String.raw`\bm{Σ}`);
+    // var 形式（显式斜体）同样进粗体路径
+    expect(boldGreekFix(String.raw`\vec{\varGamma}`)).toBe(String.raw`\vec{Γ}`);
+  });
+
+  it('组内任意深度（嵌套分数/上下标）与嵌套粗体组都替换', () => {
+    expect(boldGreekFix(String.raw`\vec{\frac{\partial \Gamma}{\partial t}}`))
+      .toBe(String.raw`\vec{\frac{\partial Γ}{\partial t}}`);
+    expect(boldGreekFix(String.raw`\boldsymbol{A\vec{\Delta}^2}`))
+      .toBe(String.raw`\boldsymbol{A\vec{Δ}^2}`);
+  });
+
+  it('无花括号单记号：\\vec\\Gamma → \\vec{Γ}；拉丁单记号不动', () => {
+    expect(boldGreekFix(String.raw`\vec \Gamma + \vec x`)).toBe(String.raw`\vec {Γ} + \vec x`);
+  });
+
+  it('粗体组之外保持宏形态（独立态 ISO 斜体由渲染宏负责）；命令名不误匹配', () => {
+    expect(boldGreekFix(String.raw`\Gamma + \Delta t`)).toBe(String.raw`\Gamma + \Delta t`);
+    expect(boldGreekFix(String.raw`\vector{\Gamma}`)).toBe(String.raw`\vector{\Gamma}`);
+    expect(boldGreekFix(String.raw`\vec{\Gammax}`)).toBe(String.raw`\vec{\Gammax}`);
   });
 });

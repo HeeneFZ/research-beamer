@@ -103,7 +103,9 @@ export const MATH_STYLE_MACROS: Record<string, string> = {
   '\\vec': '\\boldsymbol',
   '\\mathbf': '\\boldsymbol',
   // 大写希腊直达 \mathit{字面字符} 终止形态——不可写 \varGamma：KaTeX 内置
-  // \varGamma 即 \mathit{\Gamma}，会回引本宏形成 \Gamma→\varGamma→\Gamma 无限循环
+  // \varGamma 即 \mathit{\Gamma}，会回引本宏形成 \Gamma→\varGamma→\Gamma 无限循环。
+  // 注意：\mathit 形态在粗体语境（\vec/\boldsymbol）会被 KaTeX 静默丢粗，
+  // 由 boldGreekFix 在渲染入口改写为裸字面量补上（见下方）。
   '\\Gamma': '\\mathit{Γ}',
   '\\Delta': '\\mathit{Δ}',
   '\\Theta': '\\mathit{Θ}',
@@ -116,9 +118,63 @@ export const MATH_STYLE_MACROS: Record<string, string> = {
   '\\Psi': '\\mathit{Ψ}',
   '\\Omega': '\\mathit{Ω}',
 };
+/** 粗体语境（\vec/\mathbf/\boldsymbol/\bm 参数组）内的大写希腊宏 → 裸字面量。
+ *  KaTeX 的 \boldsymbol 对显式字体组（\mathit{Γ} 等）静默丢粗——字体一旦固定即免疫
+ *  粗体变体切换；裸字面量则正常加粗（mathbf/Main-Bold）。独立书写仍保持 ISO 斜体
+ *  （MATH_STYLE_MACROS 的 \mathit 形态），仅向量语境换成可加粗形态。
+ *  var 形式（\varGamma 等）同样替换：显式斜体进粗体组同样丢粗。
+ *  应用在三个 KaTeX 入口（katexHtml / engine.annLabelText / engine.annoKatexHtml）。 */
+const GREEK_CAP_CHARS: Record<string, string> = {
+  Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ', Xi: 'Ξ', Pi: 'Π',
+  Sigma: 'Σ', Upsilon: 'Υ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
+};
+// var 形式更长且含同名子串（\varGamma ⊃ \Gamma）——交替顺序即优先级
+const GREEK_RE = /\\var(Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega)(?![a-zA-Z])|\\(Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega)(?![a-zA-Z])/g;
+/** 任一希腊宏出现即命中（快速跳过纯拉丁公式，免去逐字符扫描） */
+const GREEK_HINT_RE = /\\(?:var)?(?:Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega)(?![a-zA-Z])/;
+const BOLD_GROUP_CMDS = ['\\boldsymbol', '\\mathbf', '\\bm', '\\vec'];
+
+const replaceGreekInBold = (s: string): string =>
+  s.replace(GREEK_RE, (_m, varName, name) => GREEK_CAP_CHARS[varName ?? name]);
+
+export function boldGreekFix(latex: string): string {
+  if (!GREEK_HINT_RE.test(latex)) return latex;
+  let out = '';
+  let i = 0;
+  while (i < latex.length) {
+    const rest = latex.slice(i);
+    const cmd = BOLD_GROUP_CMDS.find((c) => rest.startsWith(c) && !/[a-zA-Z]/.test(rest[c.length] ?? ''));
+    if (cmd) {
+      out += cmd;
+      i += cmd.length;
+      while (i < latex.length && /\s/.test(latex[i])) { out += latex[i]; i++; }
+      // 花括号参数组：组内任意深度的希腊宏全部替换（嵌套粗体组一并覆盖）
+      if (latex[i] === '{') {
+        const br = readBrace(latex, i);
+        if (br) {
+          out += '{' + replaceGreekInBold(br.content) + '}';
+          i = br.next;
+          continue;
+        }
+      } else {
+        // 无花括号单记号形式：\vec\Gamma → \vec{Γ}（拉丁单记号 \vec x 不动）
+        const m = /^\\(?:var)?(?:Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega)(?![a-zA-Z])/.exec(latex.slice(i));
+        if (m) {
+          out += '{' + replaceGreekInBold(m[0]) + '}';
+          i += m[0].length;
+          continue;
+        }
+      }
+      continue;
+    }
+    out += latex[i];
+    i++;
+  }
+  return out;
+}
 
 export function katexHtml(tex: string, displayMode: boolean): string {
-  return katex.renderToString(tex, { displayMode, throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
+  return katex.renderToString(boldGreekFix(tex), { displayMode, throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
 }
 
 /** 行内公式（text 模式，不弹块级 margin） */

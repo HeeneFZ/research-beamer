@@ -8,7 +8,7 @@
 
 import katex from 'katex';
 import { AnnoMark, AnnoState } from '../../model/anno';
-import { MATH_STYLE_MACROS } from '../MathView';
+import { MATH_STYLE_MACROS, boldGreekFix } from '../MathView';
 
 export interface Pt { x: number; y: number }
 export interface Rect { x: number; y: number; w: number; h: number }
@@ -33,7 +33,7 @@ export function annLabelText(text: string): string {
       const math = j === -1 ? text.slice(i + 1) : text.slice(i + 1, j);
       flush();
       try {
-        out += katex.renderToString(math, { throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
+        out += katex.renderToString(boldGreekFix(math), { throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
       } catch {
         out += '<span style="color:#c0392b">' + escHtml(math) + '</span>';
       }
@@ -200,7 +200,7 @@ interface AnnPath { color: string; pts: Pt[]; both: boolean }
 
 /** LaTeX 公式 KaTeX HTML（display 模式；错误内联红显，与全局 katexHtml 一致） */
 export function annoKatexHtml(latex: string): string {
-  return katex.renderToString(latex, { displayMode: true, throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
+  return katex.renderToString(boldGreekFix(latex), { displayMode: true, throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
 }
 
 export function createAnnoRenderer(surface: AnnoSurface, opts: RendererOpts) {
