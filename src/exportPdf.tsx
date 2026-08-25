@@ -3,6 +3,7 @@
 import { createRoot } from 'react-dom/client';
 import { useStore } from './state/store';
 import { SlideView } from './components/SlideView';
+import { restyleRulesForPrint } from './components/katexRuleSnap';
 import { Deck, PAGE_SIZE } from './model/types';
 
 function countMedia(deck: Deck): number {
@@ -52,6 +53,9 @@ export async function exportPDF(): Promise<void> {
       poll();
     });
     await new Promise((r2) => setTimeout(r2, 300)); // 字体/布局稳定
+    // 规则线（分数线等）按打印矢量口径重算：屏幕态的 1 设备行下限在矢量输出中
+    // 会让规则线比字形笔画粗 ~2×，PDF 需要纯 0.04em 设计值
+    restyleRulesForPrint();
 
     const size = PAGE_SIZE[s.deck.config.aspect];
     style.textContent = `@page { size: ${size.w}mm ${size.h}mm !important; margin: 0; }`;
