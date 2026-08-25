@@ -445,14 +445,6 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 .eq-legend-item { display: flex; align-items: baseline; gap: 1.4cqw; }
 .eq-legend-mark { font-weight: 700; border-bottom: 2px solid currentColor; padding: 0 .3cqw; flex: 0 0 auto; }
 
-/* 分数线/上下划线的光学权重对齐（第卌一轮：用户实测「分数线明显比等号/加减号粗」）：
-   KaTeX 规则线是 0.04em CSS 边框，幻灯片字号（~13px × DPR 1.25 ≈ 0.68 设备像素）下
-   Chromium 将其栅格化为 2 设备像素抗锯齿灰带（实测墨迹 308），而 =/+ 字形笔画经字体
-   hinting 收成 1 像素实线（墨迹 242）——规则线视觉粗近一倍且随子像素位置漂移。
-   border-width 无法修正（子像素宽度存在栅格化下限：0.5px 与 0.04em 渲染逐像素相同），
-   以 opacity 0.8 压回等重（252≈242）；大字号下规则线本就细于运算符（TeX 经典比例
-   ~0.67），0.8 后 ~0.54 仍在经典范围。annotate 下划线（.underline-line）同理。 */
-.katex .frac-line, .katex .overline .overline-line, .katex .underline .underline-line { opacity: 0.8; }
 .eq-legend-mark[data-box='1'] { border: 1.5px solid currentColor; border-radius: .6cqw; }
 
 /* ---- 注释公式块（annoeq）：KaTeX 公式 + 绝对定位标注层 ----
