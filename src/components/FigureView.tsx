@@ -2,7 +2,7 @@
 // PDF/EPS 矢量按 600DPI 渲染进 canvas；图片 object-fit contain 等比（width 为页宽比例）
 // 编辑态支持边缘拖拽调宽（EdgeResizeHandles）：指针靠近图左/右缘出现拖拽条
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Block, Palette } from '../model/types';
 import { Computed } from '../model/numbering';
 import { InlineText } from './InlineText';
@@ -86,7 +86,9 @@ export function PdfCanvas({ abs }: { abs: string }) {
     return () => { alive = false; };
   }, [abs]);
 
-  useEffect(() => {
+  // useLayoutEffect：重挂（页切换回来）时 aspect 已在 aspectCache 同步命中，
+  // 位图缓存同步贴回赶在首帧绘制前——挂载帧即出图，零白屏间隙
+  useLayoutEffect(() => {
     const canvas = canvasRef.current;
     const box = canvas?.parentElement;
     if (!canvas || !box || !aspect) return;

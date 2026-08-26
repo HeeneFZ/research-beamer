@@ -79,6 +79,13 @@ const taskQueue: CanvasTask[] = [];
 let running = false;
 const canvasTasks = new Map<HTMLCanvasElement, CanvasTask>();
 
+/** 每画布最近一次成功渲染的 (abs@像素宽)——RO 初次回调与 effect 首绘同尺寸时跳过，
+ *  避免同尺寸重置 canvas（width 赋值即使同值也清位图→600DPI 大画布白闪） */
+const canvasDone = new WeakMap<HTMLCanvasElement, string>();
+
+/** 每文档最近一次渲染位图（LRU≤6）：页面切换重挂画布时同步贴回，零白屏间隙 */
+const bitmapCache = new Map<string, { bmp: OffscreenCanvas; w: number; h: number }>();
+
 function pumpQueue(): void {
   if (running) return;
   const t = taskQueue.shift();
@@ -90,8 +97,28 @@ function pumpQueue(): void {
   });
 }
 
-/** 把 PDF 首页按 cssWidth * pixelScale 像素宽渲染进 canvas */
+/** 把 PDF 首页按 cssWidth * pixelScale 像素宽渲染进 canvas。
+ *  页面切换重挂/RO 同尺寸重复触发曾两次重置 canvas（width 赋值即使同值也清位图）
+ *  并全量重渲——600DPI 大画布上即用户看到的反复白闪。现在：
+ *  ① 同画布同尺寸已绘成 → 直接跳过；② 命中文档位图缓存 → 入口同步贴回
+ *  （不进异步队列，挂载帧内出图）；③ 才走 pdf.js 渲染并写回缓存（LRU≤6）。
+ *  目标像素宽统一按 floor(cssWidth×pixelScale) 计算（viewport.width 与其至多差
+ *  浮点尾数，统一口径保证缓存键两侧一致）。 */
 export function renderPdfToCanvas(abs: string, canvas: HTMLCanvasElement, cssWidth: number, pixelScale: number): void {
+  const w = Math.max(1, Math.floor(cssWidth * pixelScale));
+  const key = `${abs}@${w}`;
+  if (canvasDone.get(canvas) === key && canvas.width === w) return; // RO 初次回调与首绘重复
+  const cached = bitmapCache.get(abs);
+  if (cached && cached.w === w) {
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      canvas.width = w;
+      canvas.height = cached.h;
+      ctx.drawImage(cached.bmp, 0, 0);
+      canvasDone.set(canvas, key);
+      return;
+    }
+  }
   const prev = canvasTasks.get(canvas);
   if (prev) prev.cancelled = true;
   const task: CanvasTask = {
@@ -104,14 +131,28 @@ export function renderPdfToCanvas(abs: string, canvas: HTMLCanvasElement, cssWid
       const page = await doc.getPage(1);
       if (task.cancelled) return;
       const base = page.getViewport({ scale: 1 });
-      const viewport = page.getViewport({ scale: (cssWidth * pixelScale) / base.width });
-      canvas.width = Math.max(1, Math.floor(viewport.width));
-      canvas.height = Math.max(1, Math.floor(viewport.height));
+      const h = Math.max(1, Math.round(w * base.height / base.width));
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
+      canvas.width = w;
+      canvas.height = h;
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(0, 0, w, h);
+      const viewport = page.getViewport({ scale: w / base.width });
       await page.render({ canvasContext: ctx, viewport }).promise;
+      if (task.cancelled) return;
+      canvasDone.set(canvas, key);
+      // 写回文档级缓存（离屏位图；OffscreenCanvas 不可用时静默跳过）
+      try {
+        const bmp = new OffscreenCanvas(w, h);
+        bmp.getContext('2d')!.drawImage(canvas, 0, 0);
+        bitmapCache.delete(abs);
+        bitmapCache.set(abs, { bmp, w, h });
+        if (bitmapCache.size > 6) {
+          const oldest = bitmapCache.keys().next().value;
+          if (oldest !== undefined && oldest !== abs) bitmapCache.delete(oldest);
+        }
+      } catch { /* 缓存不可用不致命 */ }
     },
   };
   canvasTasks.set(canvas, task);

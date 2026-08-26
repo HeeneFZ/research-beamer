@@ -504,20 +504,31 @@ export function createAnnoRenderer(surface: AnnoSurface, opts: RendererOpts) {
       return e ? e.start + offset : null;
     }
     if (!eqn.contains(container)) return null;
+    // 选区端点落在元素上：以第 offset 个子节点为文档序参照。
+    // offset 越界（含空元素 offset=0，如 KaTeX 分式两侧的 .mclose.nulldelimiter）
+    // 表示位置在容器末尾——参照退化为容器自身，按容器内/前/后条目折算，
+    // 绝不能映射到全文末尾（曾致拖选整个分式时 needle 扩成全文/带尾缀）。
     const kids = container.childNodes;
-    if (offset >= kids.length) return ti.text.length;
-    const ref = kids[offset];
-    if (isStart) {
-      for (const e of ti.entries) {
-        if (ref.contains(e.node) || ref.compareDocumentPosition(e.node) & Node.DOCUMENT_POSITION_FOLLOWING) return e.start;
+    const ref: Node = offset < kids.length ? kids[offset] : container;
+    const atRef = (e: TextIndexEntry, before: boolean): boolean => {
+      if (ref === container) {
+        if (container.contains(e.node)) return before; // 容器内条目均在容器末尾之前
+        const pos = container.compareDocumentPosition(e.node);
+        return before ? !!(pos & Node.DOCUMENT_POSITION_PRECEDING)
+          : !!(pos & Node.DOCUMENT_POSITION_FOLLOWING);
       }
-      return 0;
+      if (before) return !!(ref.compareDocumentPosition(e.node) & Node.DOCUMENT_POSITION_PRECEDING);
+      return ref.contains(e.node)
+        || !!(ref.compareDocumentPosition(e.node) & Node.DOCUMENT_POSITION_FOLLOWING);
+    };
+    if (isStart) {
+      for (const e of ti.entries) if (atRef(e, false)) return e.start;
+      return ti.text.length; // 位置已在全部文本之后（如末尾空元素）→ 映射到末尾（选区随即被 d<=s 拒绝）
     }
     let last = 0;
     for (const e of ti.entries) {
-      if (ref.compareDocumentPosition(e.node) & Node.DOCUMENT_POSITION_PRECEDING) {
-        last = Math.max(last, e.start + e.node.data.length);
-      } else break;
+      if (atRef(e, true)) last = Math.max(last, e.start + e.node.data.length);
+      else break;
     }
     return last;
   }
@@ -526,7 +537,16 @@ export function createAnnoRenderer(surface: AnnoSurface, opts: RendererOpts) {
    *  vpRect 供 fixed 定位浮动条用——绘制 px（rect 布局 px × k）。 */
   function captureSelection(sel: Selection): { needle: string; occ: number; vpRect: { left: number; top: number; w: number; h: number } } | null {
     if (!ti || sel.rangeCount === 0 || sel.isCollapsed) return null;
-    if (!eqn.contains(sel.anchorNode) || !eqn.contains(sel.focusNode)) return null;
+    const inA = eqn.contains(sel.anchorNode), inF = eqn.contains(sel.focusNode);
+    if (!inA && !inF) return null;
+    if (!inA || !inF) {
+      // 一端在公式上、另一端拖出公式边缘（如落在 .ae-marks 覆盖层）：界外端须仍在
+      // 画布内，钳到公式起/末（globalIndexAt 对界外节点返回 null，下方回退完成钳位）；
+      // 拖进面板/其他 UI 则整体拒绝
+      const out = (!inA ? sel.anchorNode : sel.focusNode) as Node | null;
+      const el = out ? (out.nodeType === Node.TEXT_NODE ? out.parentElement : (out as HTMLElement)) : null;
+      if (!el || !el.closest('.ae-canvas')) return null;
+    }
     const range = sel.getRangeAt(0);
     let s = globalIndexAt(range.startContainer, range.startOffset, true);
     let d = globalIndexAt(range.endContainer, range.endOffset, false);
