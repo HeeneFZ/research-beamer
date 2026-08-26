@@ -159,9 +159,9 @@ export const defaultConfig: DeckConfig = {
   fontSize: 16,
   palette: {
     preset: 'academic-blue',
-    primary: { base: '#0F66AD', deep: '#0A4373' },
-    accent: { base: '#E8912D', deep: '#B96A12' },
-    emphasis: { base: '#2E9E6B', deep: '#1D7A50' },
+    primary: { base: '#0F66AD', deep: '#083264' },
+    accent: { base: '#E8912D', deep: '#AB540F' },
+    emphasis: { base: '#2E9E6B', deep: '#186D52' },
     text: '#1F2328',
     textMuted: '#5A6470',
     bg: '#FFFFFF',

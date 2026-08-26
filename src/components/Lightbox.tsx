@@ -5,9 +5,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { fileUrl, renderPdfToCanvas } from './pdfRaster';
-import { InlineText } from './InlineText';
+import { IcoZoomIn, IcoZoomOut, IcoReset, IcoClose } from './icons';
 import { Computed } from '../model/numbering';
 import { Palette } from '../model/types';
+import { InlineText } from './InlineText';
 
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 40;
@@ -161,11 +162,11 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
       </div>
       <div className="lb-toolbar" onMouseDown={(e) => e.stopPropagation()}>
         <span className="lb-name">{lb.abs.split(/[\\/]/).pop()}</span>
-        <button onClick={() => setZoom((z) => Math.max(MIN_ZOOM, z / 1.2))}>−</button>
+        <button onClick={() => setZoom((z) => Math.max(MIN_ZOOM, z / 1.2))}><IcoZoomOut /></button>
         <span className="lb-zoomval">{Math.round(zoom * 100)}%</span>
-        <button onClick={() => setZoom((z) => Math.min(MAX_ZOOM, z * 1.2))}>＋</button>
-        <button title="重置" onClick={reset}>⟳</button>
-        <button title="关闭 (Esc)" onClick={close}>✕</button>
+        <button onClick={() => setZoom((z) => Math.min(MAX_ZOOM, z * 1.2))}><IcoZoomIn /></button>
+        <button title="重置" onClick={reset}><IcoReset /></button>
+        <button title="关闭 (Esc)" onClick={close}><IcoClose /></button>
       </div>
       {/* 题注固定在视口底部（不随图片缩放），位于操作提示上方 */}
       {lb.caption && (

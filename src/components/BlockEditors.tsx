@@ -14,7 +14,7 @@ import { absMediaPath } from './paths';
 import { fileUrl } from './pdfRaster';
 import { PdfCanvas, EpsFigure } from './FigureView';
 import { LatexEditor, stripMathDelims } from './LatexEditor';
-
+import { IcoClose } from './icons';
 const closeEditing = () => useStore.getState().setEditing(null);
 
 const num = (v: string): number | undefined => {
@@ -39,7 +39,7 @@ export function Modal({ title, children, onClose, wide, extra }: {
       <div className={'modal' + (wide ? ' modal-wide' : '') + (extra ? ' ' + extra : '')}>
         <div className="modal-head">
           <span>{title}</span>
-          <button className="modal-close" onMouseDown={(e) => e.preventDefault()} onClick={onClose}>✕</button>
+          <button className="modal-close" onMouseDown={(e) => e.preventDefault()} onClick={onClose}><IcoClose /></button>
         </div>
         <div className="modal-body">{children}</div>
       </div>

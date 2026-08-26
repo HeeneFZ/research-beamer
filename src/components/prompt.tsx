@@ -1,9 +1,10 @@
-// 模态输入框：window.prompt 的自绘替代——Electron 渲染进程不支持 prompt()
-// （调用即同步抛 "prompt() is not supported."，原生入口在仓内从未真正可用）。
+// 轻量文本输入弹窗（节标题改名/出现顺序等）：Enter 确认、Esc 取消
+import { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
+import { IcoClose } from './icons';
 // 复用 modal-mask/modal/txt/modal-actions 样式族；独立 createRoot 挂载——
 // 调用方多为菜单/工具栏条目，弹窗状态无须侵入各自组件树。
 
-import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 /** 弹出单行输入框；确认（Enter/确定）resolve 输入串，取消（Esc/✕/遮罩/取消）resolve null */
@@ -47,7 +48,7 @@ function PromptDialog({ title, initial, onDone }: {
       <div className="modal">
         <div className="modal-head">
           <span>{title}</span>
-          <button className="modal-close" onMouseDown={(e) => e.preventDefault()} onClick={() => onDone(null)}>✕</button>
+          <button className="modal-close" onMouseDown={(e) => e.preventDefault()} onClick={() => onDone(null)}><IcoClose /></button>
         </div>
         <div className="modal-body">
           <input

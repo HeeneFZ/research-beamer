@@ -1,7 +1,7 @@
 // 轻量 LaTeX 编辑器（移植自 EditorApp，逐字保持）：语法高亮（透明 textarea 叠加高亮层）
 // + `\` 命令联想（↑↓ 选择，Tab/Enter 补全，Esc 关闭；宿主给回调时 Enter 提交 / Esc 取消）
 
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 const LATEX_COMMANDS = [
   '\\frac', '\\sqrt', '\\sum', '\\prod', '\\int', '\\iint', '\\oint', '\\lim',
@@ -54,13 +54,23 @@ export function LatexEditor({ value, onChange, rows = 5, autoFocus, onSubmit, on
   const hlRef = useRef<HTMLPreElement>(null);
   const [ac, setAc] = useState<{ start: number; list: string[]; idx: number } | null>(null);
 
+  // 高亮层与 textarea 折行对齐：textarea 可用内容宽 = 客户宽 − 滚动条，
+  // 高亮层不预留会每行多 ~11px → 折行错位 → 光标与文字错位（曾致行内公式
+  // 浮层编辑困难）。滚动条宽度实测注入 padding-right；resize 后再同步
+  const syncGutter = () => {
+    const ta = taRef.current, hl = hlRef.current;
+    if (!ta || !hl) return;
+    const gutter = ta.offsetWidth - ta.clientWidth;
+    const pad = parseFloat(getComputedStyle(hl).paddingRight) || 0;
+    const want = gutter + (parseFloat(getComputedStyle(ta).paddingRight) || 0);
+    if (Math.abs(pad - want) > 0.5) hl.style.paddingRight = want + 'px';
+  };
   const syncScroll = () => {
     if (taRef.current && hlRef.current) {
       hlRef.current.scrollTop = taRef.current.scrollTop;
       hlRef.current.scrollLeft = taRef.current.scrollLeft;
     }
   };
-
   const detect = (v: string, caret: number) => {
     const m = /\\[a-zA-Z]*$/.exec(v.slice(0, caret));
     if (!m) { setAc(null); return; }
@@ -81,7 +91,15 @@ export function LatexEditor({ value, onChange, rows = 5, autoFocus, onSubmit, on
       ta.selectionStart = ta.selectionEnd = ac!.start + cmd.length;
     });
   };
-
+  // 滚动条出现/消失（内容长度、rows、resize 变化）后重对齐高亮层折行
+  useEffect(() => {
+    syncGutter();
+    const ta = taRef.current;
+    if (!ta || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(syncGutter);
+    ro.observe(ta);
+    return () => ro.disconnect();
+  });
   return (
     <div className="lx-wrap">
       <pre ref={hlRef} className="lx-hl" aria-hidden>{highlightLatex(value)}</pre>

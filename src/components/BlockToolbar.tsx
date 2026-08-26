@@ -10,6 +10,7 @@ import { defaultAnnoState } from '../model/anno';
 import { Block, Slide } from '../model/types';
 import { colRegionAt } from '../model/segments';
 import { insertMediaBlock } from './BlockEditors';
+import { IcoUp, IcoDown, IcoCopy, IcoPaste, IcoPlus, IcoTrash } from './icons';
 import { promptText } from './prompt';
 
 const INSERT_ITEMS = [
@@ -174,12 +175,12 @@ export function BlockToolbar({ slide, block }: {
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
-        <button disabled={!canUp} title={upNeighbor && !canUp ? '已到栏顶（跨栏调序不支持）' : '上移'} onClick={() => canUp && moveBlockBefore(slide.id, block.id, upNeighbor!.id)}>↑</button>
-        <button disabled={!canDown} title={downNeighbor && !canDown ? '已到栏底（跨栏调序不支持）' : '下移'} onClick={() => canDown && moveBlockBefore(slide.id, block.id, afterDown ? afterDown.id : null)}>↓</button>
-        <button title="复制块（粘贴到任意块之后）" onClick={() => { useStore.getState().copyBlock(slide.id, block.id); useStore.getState().setFlashMsg('已复制块：在目标块的 ⧉→📋 处粘贴'); }}>⧉</button>
-        <button disabled={!clipBlock} title={clipBlock ? `粘贴${clipBlock.type === 'paragraph' ? '段落' : clipBlock.type === 'itemize' ? '列表' : clipBlock.type === 'equation' ? '公式' : clipBlock.type === 'annoeq' ? '注释公式' : clipBlock.type === 'figure' ? '图片' : clipBlock.type === 'video' ? '视频' : '表格'}到此处（此块之后）` : '剪贴板为空（先用 ⧉ 复制一个块）'} onClick={pasteBlock}>📋</button>
-        <button title="插入" className={menu ? 'on' : ''} onClick={() => setMenu(!menu)}>＋</button>
-        <button title="删除" className="danger" onClick={() => deleteBlock(slide.id, block.id)}>🗑</button>
+        <button disabled={!canUp} title={upNeighbor && !canUp ? '已到栏顶（跨栏调序不支持）' : '上移'} onClick={() => canUp && moveBlockBefore(slide.id, block.id, upNeighbor!.id)}><IcoUp /></button>
+        <button disabled={!canDown} title={downNeighbor && !canDown ? '已到栏底（跨栏调序不支持）' : '下移'} onClick={() => canDown && moveBlockBefore(slide.id, block.id, afterDown ? afterDown.id : null)}><IcoDown /></button>
+        <button title="复制块（粘贴到任意块之后）" onClick={() => { useStore.getState().copyBlock(slide.id, block.id); useStore.getState().setFlashMsg('已复制块：在目标块的 复制→粘贴 处粘贴'); }}><IcoCopy /></button>
+        <button disabled={!clipBlock} title={clipBlock ? `粘贴${clipBlock.type === 'paragraph' ? '段落' : clipBlock.type === 'itemize' ? '列表' : clipBlock.type === 'equation' ? '公式' : clipBlock.type === 'annoeq' ? '注释公式' : clipBlock.type === 'figure' ? '图片' : clipBlock.type === 'video' ? '视频' : '表格'}到此处（此块之后）` : '剪贴板为空（先用复制按钮复制一个块）'} onClick={pasteBlock}><IcoPaste /></button>
+        <button title="插入" className={menu ? 'on' : ''} onClick={() => setMenu(!menu)}><IcoPlus /></button>
+        <button title="删除" className="danger" onClick={() => deleteBlock(slide.id, block.id)}><IcoTrash /></button>
       </div>
       {menu && (
         <div

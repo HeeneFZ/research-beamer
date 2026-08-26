@@ -217,21 +217,34 @@ function inlineNodesToText(nodes: PmNode[] | undefined): string {
   }).join('');
 }
 
-/** PM doc JSON -> markdown 源码（段落类块） */
+/** PM doc JSON -> markdown 源码（段落类块）。
+ *  粘贴闭合段落级切片（如整块 Ctrl+C→V）会在段内劈出多个 <p>：
+ *  只取第一段会静默丢字（曾致粘贴含公式文本后块只剩劈分首段）——
+ *  全段落序列化、以 \n 相连（与 pushText 的 hardBreak→\n 互逆，文本模型单行存储） */
 export function docToText(doc: { content?: unknown[] }): string {
-  const para = doc?.content?.[0] as { content?: PmNode[] } | undefined;
-  if (!para) return '';
-  return inlineNodesToText(para.content);
+  const paras = (doc?.content ?? []) as { content?: PmNode[] }[];
+  return paras.map((p) => inlineNodesToText(p.content)).join('\n');
 }
 
-/** PM doc JSON -> itemize items */
+/** PM doc JSON -> itemize items。
+ *  与 docToText 同族防线：粘贴闭合段落/列表级切片会产生多个顶层节点
+ *  （bulletList + paragraph 混排），只读首个会静默丢项——
+ *  全顶层节点遍历：bulletList 展开各项，paragraph 追加为独立项 */
 export function docToItems(doc: { content?: unknown[] }): string[] {
-  const list = doc?.content?.[0] as { type?: string; content?: { content?: { content?: PmNode[] }[] }[] } | undefined;
-  if (!list || list.type !== 'bulletList') return [];
-  return (list.content ?? []).map((li) => {
-    const p = li.content?.[0];
-    return p ? inlineNodesToText(p.content) : '';
-  });
+  const out: string[] = [];
+  for (const top of (doc?.content ?? []) as { type?: string; content?: unknown[] }[]) {
+    if (top.type === 'bulletList') {
+      for (const li of top.content ?? []) {
+        const l = li as { content?: { type?: string; content?: PmNode[] }[] };
+        const p = l.content?.[0];
+        out.push(p ? inlineNodesToText(p.content) : '');
+      }
+    } else if (top.type === 'paragraph') {
+      const p = top as { content?: PmNode[] };
+      out.push(inlineNodesToText(p.content));
+    }
+  }
+  return out;
 }
 
 export interface BlockKeyHandlers {

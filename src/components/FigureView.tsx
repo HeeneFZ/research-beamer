@@ -8,7 +8,7 @@ import { Computed } from '../model/numbering';
 import { InlineText } from './InlineText';
 import { cancelCanvasRender, ensurePdfAspect, fileUrl, pdfAspectSync, renderPdfToCanvas } from './pdfRaster';
 import { absMediaPath } from './paths';
-
+import { IcoLens } from './icons';
 /** PDF 首页渲染精度：600 DPI */
 const PDF_DPI_SCALE = 600 / 96;
 
@@ -189,7 +189,7 @@ export function FigureView({
           className="fig-zoom-btn"
           title="放大查看"
           onClick={(e) => { e.stopPropagation(); onZoom(abs, ext, block.caption); }}
-        >⤢</button>
+        ><IcoLens /></button>
       )}
       {onWidthChange && <EdgeResizeHandles hostRef={figRef} block={block} onWidthChange={onWidthChange} />}
       {block.caption != null && (

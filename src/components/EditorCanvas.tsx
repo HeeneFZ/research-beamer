@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { SlideView } from './SlideView';
+import { IcoZoomIn, IcoZoomOut, IcoReset } from './icons';
 import { PAGE_SIZE } from '../model/types';
 import { onOverlay } from './overlays';
 
@@ -93,10 +94,10 @@ export function EditorCanvas() {
       }}
     >
       <div className="zoom-bar">
-        <button onClick={() => setZoom(zoom / 1.15)}>−</button>
+        <button onClick={() => setZoom(zoom / 1.15)}><IcoZoomOut /></button>
         <span className="zoom-val">{Math.round(zoom * 100)}%</span>
-        <button onClick={() => setZoom(zoom * 1.15)}>＋</button>
-        <button title="重置（适页 = 100%）" onClick={() => setZoom(1)}>⟳</button>
+        <button onClick={() => setZoom(zoom * 1.15)}><IcoZoomIn /></button>
+        <button title="重置（适页 = 100%）" onClick={() => setZoom(1)}><IcoReset /></button>
       </div>
       {/* PowerPoint 状态栏式：右下角放映入口（从当前页开始，F5 同效） */}
       <button

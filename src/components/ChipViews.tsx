@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { NodeViewWrapper, NodeViewProps } from '@tiptap/react';
 import { katexHtml } from './MathView';
-import { LatexEditor } from './LatexEditor';
+import { LatexEditor, stripMathDelims } from './LatexEditor';
 import { refDisplay, refPageIndex, refParts } from '../model/numbering';
 import { useStore } from '../state/store';
 
@@ -27,7 +27,7 @@ function MathFloatEditor({ latex, rect, onCommit, onCancel }: {
   return createPortal(
     <div ref={boxRef} className="math-float" style={{ left: rect.left, top: rect.top }}
       onMouseDown={(e) => e.stopPropagation()}>
-      <LatexEditor value={val} onChange={setVal} rows={2} autoFocus
+      <LatexEditor value={val} onChange={(v) => setVal(stripMathDelims(v))} rows={2} autoFocus
         onSubmit={() => onCommit(val)} onCancel={onCancel} />
       <div className="math-float-hint">Enter 提交 · Esc 取消 · 点外部关闭 · \ 命令联想</div>
     </div>,

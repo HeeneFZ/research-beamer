@@ -21,7 +21,7 @@ import {
   Block, Deck, DeckConfig, DeckItem, Layout, Palette, Pos, Slide, defaultConfig, newId,
 } from './types';
 import { annoFromJson, annoToJson, defaultAnnoState } from './anno';
-
+import { LEGACY_PRESET_TONES, PRESETS } from './palette';
 const SLIDE_OPEN = /^::::+\s*(.*)$/;   // 4+ colons
 const BLOCK_OPEN = /^:::+\s*(.*)$/;    // 3+ colons（块级；在页内出现 4+ 也按块处理）
 
@@ -162,13 +162,21 @@ function parseFrontMatter(md: string): { config: DeckConfig; body: string } {
   const str = (v: unknown, d: string): string => (typeof v === 'string' ? v : d);
   const pRaw = raw.palette;
   const p = (typeof pRaw === 'object' && pRaw !== null ? pRaw : {}) as Record<string, unknown>;
+  const presetName = typeof p.preset === 'string' ? p.preset : undefined;
+  const presetTones = presetName && PRESETS[presetName] ? PRESETS[presetName] : null;
+  const legacyTones = presetName && LEGACY_PRESET_TONES[presetName] ? LEGACY_PRESET_TONES[presetName] : null;
   const mergeTone = (name: 'primary' | 'accent' | 'emphasis'): { base: string; deep: string } => {
-    const d = defaultConfig.palette[name];
+    // 无显式色：预设优先（带 preset 却无 tones 时回落 defaultConfig 是潜在错配）
+    const d = presetTones ? presetTones[name] : defaultConfig.palette[name];
     const t = p[name];
     if (typeof t === 'string') return { base: t, deep: d.deep }; // 允许只给 base 色
     if (typeof t === 'object' && t !== null) {
       const o = t as Record<string, unknown>;
-      return { base: str(o.base, d.base), deep: str(o.deep, d.deep) };
+      const tone = { base: str(o.base, d.base), deep: str(o.deep, d.deep) };
+      // 预设迁移：落盘值与旧预设该档完全一致 → 视为预设引用，升级到当前预设值
+      const legacy = legacyTones?.[name];
+      if (legacy && tone.base === legacy.base && tone.deep === legacy.deep && presetTones) return presetTones[name];
+      return tone;
     }
     return d;
   };
@@ -632,16 +640,27 @@ export function serializeMarkdown(deck: Deck): string {
     fontSize: c.fontSize,
     logo: c.logo || null,
     logoPos: c.logoPos ? `${c.logoPos.x},${c.logoPos.y},${c.logoPos.w}` : null,
-    palette: {
-      ...(c.palette.preset ? { preset: c.palette.preset } : {}),
-      primary: { base: c.palette.primary.base, deep: c.palette.primary.deep },
-      accent: { base: c.palette.accent.base, deep: c.palette.accent.deep },
-      emphasis: { base: c.palette.emphasis.base, deep: c.palette.emphasis.deep },
-      text: c.palette.text,
-      textMuted: c.palette.textMuted,
-      bg: c.palette.bg,
-      bgAlt: c.palette.bgAlt,
-    },
+    palette: (() => {
+      const base: Record<string, unknown> = { ...(c.palette.preset ? { preset: c.palette.preset } : {}) };
+      const pv = PRESETS[c.palette.preset ?? ''];
+      const same = (a: string | undefined, b: string | undefined) => a === b;
+      const isPresetRef = pv
+        && same(c.palette.primary.base, pv.primary.base) && same(c.palette.primary.deep, pv.primary.deep)
+        && same(c.palette.accent.base, pv.accent.base) && same(c.palette.accent.deep, pv.accent.deep)
+        && same(c.palette.emphasis.base, pv.emphasis.base) && same(c.palette.emphasis.deep, pv.emphasis.deep)
+        && same(c.palette.text, pv.text) && same(c.palette.textMuted, pv.textMuted)
+        && same(c.palette.bg, pv.bg) && same(c.palette.bgAlt, pv.bgAlt);
+      if (!isPresetRef) {
+        base.primary = { base: c.palette.primary.base, deep: c.palette.primary.deep };
+        base.accent = { base: c.palette.accent.base, deep: c.palette.accent.deep };
+        base.emphasis = { base: c.palette.emphasis.base, deep: c.palette.emphasis.deep };
+        base.text = c.palette.text;
+        base.textMuted = c.palette.textMuted;
+        base.bg = c.palette.bg;
+        base.bgAlt = c.palette.bgAlt;
+      }
+      return base;
+    })(),
   };
   const body = deck.items
     .map((it) => {

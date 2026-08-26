@@ -152,7 +152,7 @@ button { cursor: pointer; }
   color: #555; border: 1px solid #d8dde3; border-radius: 8px; padding: 3px 10px;
   backdrop-filter: blur(6px); box-shadow: 0 2px 8px rgba(30,40,60,.1);
 }
-.zoom-bar button { background: none; border: none; color: #555; font-size: 14px; }
+.zoom-bar button { background: none; border: none; color: #555; font-size: 14px; display: inline-flex; align-items: center; }
 .zoom-bar .zoom-val { min-width: 46px; text-align: center; font-size: 12px; }
 
 /* 右下角放映入口（PowerPoint 状态栏式，从当前页开始） */
@@ -503,6 +503,7 @@ body.dark .present-fab:hover { background: #2b6fbf; }
   opacity: 0; transition: opacity .12s;
 }
 .fig:hover .fig-zoom-btn { opacity: 1; }
+.fig-zoom-btn svg { width: 1em; height: 1em; } /* 图标随按钮 cqw 字号缩放（页面缩放/比例切换一致） */
 .fig-zoom-btn:hover { background: var(--p-base); }
 
 /* 图/视频/表格边缘拖拽调宽手柄（编辑态）：左右缘热区，悬停浮现 */
@@ -571,8 +572,8 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 }
 .btools-float button:hover { background: #e3eefc; color: #1c5a9e; }
 .btools-float button:disabled { color: #c0c6cf; cursor: default; }
-.btools-float button:disabled:hover { background: #f4f6f9; }
 .btools-float button.on { background: #2470c8; color: #fff; }
+.btools-float button svg { width: 18px; height: 18px; }
 .btools-float button.danger:hover { background: #fdeeee; color: #c0392b; }
 
 /* ＋ 菜单：复用 @ 引用选择器家族（.ref-picker/.ref-kind/.slash-hint 见各自段） */
@@ -1128,7 +1129,9 @@ body.dark .modal td input:focus { border-color: #3584e4; background: #1b1f25; }
 .lx-input {
   position: relative; background: transparent; color: transparent; caret-color: #2470c8;
   border: 1px solid transparent; resize: vertical; outline: none; display: block;
+  overflow-y: scroll;
 }
+.lx-input::-webkit-scrollbar { width: 11px; }
 .lx-input:focus { border-color: transparent; box-shadow: none; }
 .lx-wrap:focus-within .lx-hl { border-color: #2470c8; box-shadow: 0 0 0 3px rgba(36,112,200,.12); }
 .lx-cmd { color: #2470c8; font-weight: 600; }
