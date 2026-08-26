@@ -11,6 +11,8 @@ import { Deck, Page, PAGE_SIZE } from './model/types';
 import { Computed, computeDeck } from './model/numbering';
 import { SlideView } from './components/SlideView';
 import { LightboxInner } from './components/Lightbox';
+import { ensurePdfAspect } from './components/pdfRaster';
+import { absMediaPath } from './components/paths';
 import { useBackNav } from './hooks/useBackNav';
 import { useStore } from './state/store';
 import 'katex/dist/katex.min.css';
@@ -217,6 +219,25 @@ export default function Present() {
 
   const computed: Computed | null = useMemo(() => (st ? computeDeck(st.deck) : null), [st?.deck, st?.nonce]);
 
+  // 放映窗是独立进程：pdf 文档/纵横比缓存冷启动——首次进 PDF 页时 aspect 异步解析
+  // （图先塌陷后展开）且文档现解析。装载后后台预热全部 PDF/EPS 图：首次进页
+  // aspect 同步命中、文档已解析，600DPI 渲染进离屏缓冲一次性贴回（见 pdfRaster）。
+  useEffect(() => {
+    if (!computed || !st?.folder) return;
+    for (const p of computed.pages) {
+      for (const b of p.slide?.blocks ?? []) {
+        if (b.type !== 'figure' || !b.src) continue;
+        const lower = b.src.toLowerCase();
+        if (lower.endsWith('.pdf')) {
+          void ensurePdfAspect(absMediaPath(st.folder, b.src)).catch(() => undefined);
+        } else if (lower.endsWith('.eps')) {
+          void window.api.ensureEpsPdf({ absPath: absMediaPath(st.folder, b.src) })
+            .then((r) => { if (r.pdf) void ensurePdfAspect(r.pdf).catch(() => undefined); })
+            .catch(() => undefined);
+        }
+      }
+    }
+  }, [computed, st?.folder]);
   // 返回引用跳转原处（Alt+← / Backspace / 鼠标后退侧键，与编辑器共用输入层）
   useBackNav(useCallback(() => send({ type: 'back' }), [send]));
 
