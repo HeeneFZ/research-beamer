@@ -215,22 +215,6 @@ body.dark .present-fab:hover { background: #2b6fbf; }
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 5cqw; gap: 4cqw;
 }
-/* 玻璃边缘高光（用户需求定稿）：上边 + 左边硬朗亮线——主题色提亮（混白 25%）。
-   透明度沿边渐变：上边从左到右 → 0，左边从上到下 → 0（mask 方向性淡出，
-   线本体仍为锐利实色，不是线的羽化）。纯伪元素：不参与布局、
-   pointer-events:none 不拦截交互。 */
-.s-header { position: relative; }
-.s-header::after, .cover-card::after {
-  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
-  border-top: 2.5px solid color-mix(in srgb, var(--p-base) 55%, #fff);
-  border-left: 2.5px solid color-mix(in srgb, var(--p-base) 55%, #fff);
-  -webkit-mask: linear-gradient(to right, #000, transparent 88%) top / 100% 100% no-repeat,
-    linear-gradient(to bottom, #000, transparent 88%) left / 100% 100% no-repeat;
-  -webkit-mask-composite: source-in;
-  mask: linear-gradient(to right, #000, transparent 88%) top / 100% 100% no-repeat,
-    linear-gradient(to bottom, #000, transparent 88%) left / 100% 100% no-repeat;
-  mask-composite: intersect;
-}
 /* 帧标题字号全 deck 固定（--fs-title = 标准字号×4/3 物理 pt，页级 fontScale 不涉及页眉） */
 .s-title {
   color: #fff; font-size: var(--fs-title, 13.44pt); font-weight: 700; line-height: 1.2;
