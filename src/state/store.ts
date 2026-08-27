@@ -185,6 +185,16 @@ export const useStore = create<StoreState>((set, get) => {
         const i = it.slide.blocks.findIndex((b) => b.id === blockId);
         if (i < 0) return;
         const prev = it.slide.blocks[i];
+        // LaTeX 源内 \label{..} 自愈（弹窗粘贴整段 LaTeX 的自然写法）：提取为块标签
+        // 并从 latex 剥除——否则 KaTeX 不识别 \label 渲染成红色错误文本、标签也永不注册
+        //（引用芯片红显裸标签）。Label 字段显式提供时字段优先。
+        if (typeof patch.latex === 'string') {
+          const lm = patch.latex.match(/\\label\{([^}]+)\}/);
+          if (lm) {
+            patch = { ...patch, latex: patch.latex.replace(lm[0], '').trim() };
+            if (patch.label == null) patch = { ...patch, label: lm[1] };
+          }
+        }
         // label 归一（单一事实源）：所有面板/未来入口在此兜底——裸键补前缀、
         // 双重前缀剥除（dedupeRefLabel）、空白串视为清除。缺了这层，块上存
         // 'pos' 而查表键是 'eq:pos'，引用一律 eq(?)（annoeq 报障的另一半根因）

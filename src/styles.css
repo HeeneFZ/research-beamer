@@ -301,20 +301,22 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 }
 .cover-card {
   position: relative; z-index: 1; width: 82cqw; padding: 12.4cqh 6cqw;
-  /* 渐变描边高光：层序 = 主体渐变在上（padding-box 覆盖内部），高光层在下
-     （border-box 含边框环）——高光只从边框环透出。
-     关键：环底下是白色页面，白 alpha 环渲染恒为纯白（白叠白）不可见——实测踩坑；
-     环色必须用 base 提亮的浅主题色（随配色走），左上最亮、沿对角渐隐到透明。
-     若高光层放上会罩住整个渐变面（border-box ⊇ padding-box），整卡被洗白——同样实测踩坑。
-     2px 线宽（1.25dpr 下 2.5 物理像素）；边框占位由 padding 12.4cqh 吸收，
-     不影响排版测量（溢出扫描实测 DOM） */
-  border: 2px solid transparent;
+  /* 渐变描边高光（第卌八轮定向，用户定夺：高光在右下角更好）：
+     与卡体渐变（左上 base 浅 → 右下 deep 深）同向，亮边压在最深端呈
+     「轮廓补光」观感。三层自上而下 =
+     ① 主体渐变 padding-box（卡体，与基线逐像素一致）
+     ② 高光环 border-box：右下 base 提亮浅色、沿对角渐隐到透明
+     ③ 同款主体渐变 border-box 垫底——环的远端（左上）露出的是卡片自己的
+       base 浅色，与相邻卡体无缝衔接（不透白页）。
+     线宽 2px→1px（用户要求减半）；边框占位由 padding 吸收，不影响排版测量。 */
+  border: 1px solid transparent;
   background:
     var(--p-grad) padding-box,
     linear-gradient(135deg,
-      color-mix(in srgb, var(--p-base) 35%, #fff) 0%,
-      color-mix(in srgb, var(--p-base) 55%, transparent) 45%,
-      transparent 100%) border-box;
+      transparent 0%,
+      color-mix(in srgb, var(--p-base) 55%, transparent) 55%,
+      color-mix(in srgb, var(--p-base) 35%, #fff) 100%) border-box,
+    var(--p-grad) border-box;
   border-radius: 1.2cqw; color: #fff;
   /* 双层落影（参考 Uiverse 彩影做法——阴影色取渐变中间调而非最深色，
      如 .btn 用 rgba(238,103,97,.5)：嵌套 color-mix = base/deep 55:45 中间调 × 50% alpha）：
@@ -593,9 +595,12 @@ body.dark .present-fab:hover { background: #2b6fbf; }
   display: inline-flex; align-items: center; justify-content: center; padding: 0 6px;
 }
 .btools-float button:hover { background: #e3eefc; color: #1c5a9e; }
-.btools-float button:disabled { color: #c0c6cf; cursor: default; }
-.btools-float button.on { background: #2470c8; color: #fff; }
 .btools-float button svg { width: 18px; height: 18px; }
+/* 图标视觉等重：按钮内 svg 放大到 18px（16 viewBox），笔画经 CSS 收窄到
+   1.42——18/16×1.42 = 1.6px，与其他图标面（pctrl/缩放条 16px×1.6）完全一致，
+   消除「工具栏图标偏粗」的割裂感（CSS 覆盖 SVG presentation attribute） */
+.btools-float button svg :is(path, rect, circle) { stroke-width: 1.42; }
+.btools-float button.on { background: #2470c8; color: #fff; }
 .btools-float button.danger:hover { background: #fdeeee; color: #c0392b; }
 
 /* ＋ 菜单：复用 @ 引用选择器家族（.ref-picker/.ref-kind/.slash-hint 见各自段） */
@@ -697,19 +702,57 @@ body.dark .ord-picker .op-input:focus { border-color: #3584e4; box-shadow: 0 0 0
 .inline-math-node, .chip-node { display: inline; }
 .inline-math-ph { color: #b6bcc4; }
 .inline-math-editing { outline: 1px dashed #2470c8; border-radius: 3px; cursor: text; }
-/* 编辑器内着色/底色标记（与展示态 InlineText 一致；角色色走页面配色变量） */
+/* 编辑器内着色/底色标记（与展示态 InlineText 一致；角色色走页面配色变量）。
+   文字色 = base→deep 轻微渐变（background-clip:text；color 留实色供 currentColor
+   消费——KaTeX 分式线/下划线带、点式下划线等不进渐变）；中性角色 muted/text
+   无渐变意义，保持实色。底色 = 角色 base/deep 两档淡染的轻微渐变。 */
 .block-editor-wrap [data-color-role], .bg-span { border-radius: 3px; }
-[data-color-role='primary'] { color: var(--p-base); }
-[data-color-role='primaryDeep'] { color: var(--p-deep); }
-[data-color-role='accent'] { color: var(--pa-base); }
-[data-color-role='accentDeep'] { color: var(--pa-deep); }
-[data-color-role='emphasis'] { color: var(--pe-base); }
-[data-color-role='emphasisDeep'] { color: var(--pe-deep); }
+[data-color-role='primary'] { --r-hi: var(--p-base); --r-lo: var(--p-deep); }
+[data-color-role='primaryDeep'] { --r-hi: var(--p-deep); --r-lo: color-mix(in srgb, var(--p-deep) 72%, #000); }
+[data-color-role='accent'] { --r-hi: var(--pa-base); --r-lo: var(--pa-deep); }
+[data-color-role='accentDeep'] { --r-hi: var(--pa-deep); --r-lo: color-mix(in srgb, var(--pa-deep) 72%, #000); }
+[data-color-role='emphasis'] { --r-hi: var(--pe-base); --r-lo: var(--pe-deep); }
+[data-color-role='emphasisDeep'] { --r-hi: var(--pe-deep); --r-lo: color-mix(in srgb, var(--pe-deep) 72%, #000); }
 [data-color-role='muted'] { color: var(--p-muted); }
+[data-color-role='text'] { color: var(--p-text); }
+[data-color-role='primary'], [data-color-role='primaryDeep'],
+[data-color-role='accent'], [data-color-role='accentDeep'],
+[data-color-role='emphasis'], [data-color-role='emphasisDeep'] {
+  color: var(--r-hi);
+  background: linear-gradient(135deg, var(--r-hi), var(--r-lo));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+/* 嵌套行内公式不吃文字渐变：text-fill 复位后字形/规则线回到实色渲染；
+   \textcolor 着色片段（KaTeX 内联 style color）同样复位为其自身颜色 */
+[data-color-role] .imath, [data-color-role] .inline-math { -webkit-text-fill-color: currentColor; }
+[data-color-role] .katex [style*='color:'] { -webkit-text-fill-color: currentColor; }
 [data-bg-role], .bg-span { padding: 0 3px; }
-[data-bg-role='primary'], .block-editor-wrap [data-bg-role='primary'] { background: color-mix(in srgb, var(--p-base) 22%, transparent); }
-[data-bg-role='accent'], .block-editor-wrap [data-bg-role='accent'] { background: color-mix(in srgb, var(--pa-base) 26%, transparent); }
-[data-bg-role='emphasis'], .block-editor-wrap [data-bg-role='emphasis'] { background: color-mix(in srgb, var(--pe-base) 22%, transparent); }
+[data-bg-role='primary'], .block-editor-wrap [data-bg-role='primary'] {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--p-base) 15%, transparent), color-mix(in srgb, var(--p-deep) 24%, transparent));
+}
+[data-bg-role='primaryDeep'], .block-editor-wrap [data-bg-role='primaryDeep'] {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--p-deep) 18%, transparent), color-mix(in srgb, var(--p-deep) 30%, transparent));
+}
+[data-bg-role='accent'], .block-editor-wrap [data-bg-role='accent'] {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--pa-base) 18%, transparent), color-mix(in srgb, var(--pa-deep) 27%, transparent));
+}
+[data-bg-role='accentDeep'], .block-editor-wrap [data-bg-role='accentDeep'] {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--pa-deep) 20%, transparent), color-mix(in srgb, var(--pa-deep) 33%, transparent));
+}
+[data-bg-role='emphasis'], .block-editor-wrap [data-bg-role='emphasis'] {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--pe-base) 15%, transparent), color-mix(in srgb, var(--pe-deep) 24%, transparent));
+}
+[data-bg-role='emphasisDeep'], .block-editor-wrap [data-bg-role='emphasisDeep'] {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--pe-deep) 18%, transparent), color-mix(in srgb, var(--pe-deep) 30%, transparent));
+}
+[data-bg-role='muted'], .block-editor-wrap [data-bg-role='muted'] {
+  background: color-mix(in srgb, var(--p-muted) 16%, transparent);
+}
+[data-bg-role='text'], .block-editor-wrap [data-bg-role='text'] {
+  background: color-mix(in srgb, var(--p-text) 12%, transparent);
+}
 
 /* 选中文字浮动工具条（EditorApp table-tools-float 式紧凑横条） */
 .bubble-bar {
@@ -1309,13 +1352,30 @@ body.dark .thumb.sel .thumb-no { color: #5b9be6; }
 /* =========================================
    EditorApp 风格：交叉引用芯片 / 引用选择器 / 斜杠菜单
    ========================================= */
-.xref { cursor: pointer; border-radius: 3px; padding: 0 2px; text-decoration: none; line-height: 1; }
-.xref-eq { color: #0b6e4f; background: #e5f4ee; }
-.xref-fig { color: #9a4d00; background: #fdeee0; }
-.xref-tab { color: #0e6b73; background: #e2f4f5; }
-.xref-sec { color: #5b3fa8; background: #efe9fb; }
+.xref {
+  cursor: pointer; border-radius: 3px; padding: 0 2px; text-decoration: none; line-height: 1;
+  /* 芯片配色改为随页面配色走的轻微渐变（原为硬编码绿/橙/青/紫，换主题即跳色）：
+     底色 = 角色色两档淡染，文字 = 同角色 base→deep 渐变（在 .xref-t 子层，
+     background-clip:text 与芯片底色必须分层），color 留实色供 currentColor 消费
+     （悬停描边 / .ref-chip 点式下划线） */
+  color: var(--x-hi, var(--p-base));
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--x-hi, var(--p-base)) 8%, #fff),
+    color-mix(in srgb, var(--x-lo, var(--p-deep)) 15%, #fff));
+}
+.xref-eq { --x-hi: var(--pe-base); --x-lo: var(--pe-deep); }
+.xref-fig { --x-hi: var(--pa-base); --x-lo: var(--pa-deep); }
+.xref-tab { --x-hi: var(--p-base); --x-lo: var(--p-deep); }
+.xref-sec { --x-hi: var(--p-deep); --x-lo: color-mix(in srgb, var(--p-deep) 72%, #000); }
+.xref-t {
+  background: linear-gradient(135deg, var(--x-hi, var(--p-base)), var(--x-lo, var(--p-deep)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
 .xref:hover { outline: 1px solid currentColor; }
 .xref-missing { color: #c22 !important; background: #fde5e5 !important; }
+.xref-missing .xref-t { background: none; -webkit-text-fill-color: currentColor; }
 
 .ref-picker, .slash-menu {
   position: fixed; z-index: 940; min-width: 280px; max-width: 380px; max-height: 300px; overflow-y: auto;
@@ -1330,19 +1390,26 @@ body.dark .thumb.sel .thumb-no { color: #5b9be6; }
 }
 .ref-picker-item.sel, .slash-item:hover, .slash-item.sel { background: #eef4fc; }
 .ref-picker-item.disabled { opacity: .45; cursor: default; }
-.ref-kind {
-  flex: none; width: 18px; height: 18px; border-radius: 4px; font-size: 10.5px;
-  display: flex; align-items: center; justify-content: center;
+.ref-kind-eq, .slash-badge-eq {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--pe-base) 12%, #fff), color-mix(in srgb, var(--pe-deep) 20%, #fff));
+  color: var(--pe-deep);
 }
-.ref-kind-eq { background: #e5f4ee; color: #0b6e4f; }
-.ref-kind-fig { background: #fdeee0; color: #9a4d00; }
-.ref-kind-sec { background: #efe9fb; color: #5b3fa8; }
-.ref-kind-tab { background: #e2f4f5; color: #0e6b73; }
-.slash-badge-eq { background: #e5f4ee; color: #0b6e4f; }
-.slash-badge-fig { background: #fdeee0; color: #9a4d00; }
-.slash-badge-sec { background: #efe9fb; color: #5b3fa8; }
-.slash-badge-tab { background: #e2f4f5; color: #0e6b73; }
-.slash-badge-cite { background: #e8f0fb; color: #2470c8; }
+.ref-kind-fig, .slash-badge-fig {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--pa-base) 14%, #fff), color-mix(in srgb, var(--pa-deep) 22%, #fff));
+  color: var(--pa-deep);
+}
+.ref-kind-sec, .slash-badge-sec {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--p-deep) 10%, #fff), color-mix(in srgb, var(--p-deep) 20%, #fff));
+  color: var(--p-deep);
+}
+.ref-kind-tab, .slash-badge-tab {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--p-base) 10%, #fff), color-mix(in srgb, var(--p-deep) 18%, #fff));
+  color: var(--p-deep);
+}
+.slash-badge-cite {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--p-base) 12%, #fff), color-mix(in srgb, var(--p-deep) 20%, #fff));
+  color: var(--p-deep);
+}
 .ref-label { font-family: Consolas, monospace; color: #333; }
 .ref-desc { color: #98a0a9; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slash-hint { margin-left: auto; color: #9aa3ad; font-size: 11px; font-family: Consolas, monospace; }

@@ -93,18 +93,6 @@ export function paletteVars(p: Palette): CSSProperties {
   return vars as unknown as CSSProperties;
 }
 
-/** 角色名 -> CSS 变量（用于 DOM 着色） */
-export function roleColorVar(role: string): string {
-  switch (role) {
-    case 'primary': return 'var(--p-base)';
-    case 'accent': return 'var(--pa-base)';
-    case 'emphasis': return 'var(--pe-base)';
-    case 'muted': return 'var(--p-muted)';
-    case 'text': return 'var(--p-text)';
-    default: return role; // 未知角色：原样透传
-  }
-}
-
 /** 角色名 -> 具体 hex（用于 KaTeX \textcolor：不吃 CSS 变量时报错，统一解析掉） */
 export function resolveRole(p: Palette, role: string): string {
   switch (role) {

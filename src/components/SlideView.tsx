@@ -71,12 +71,18 @@ export function SlideView({
   const tocSig = layout === 'toc'
     ? '|toc:' + deck.items.filter((it) => it.kind === 'section').map((it) => (it.kind === 'section' ? it.section.title : '')).join('|')
     : '';
-  // 静默探测扫描：编辑画布与胶片缩略图都运行（thumb 与画布同 mm 尺寸排版，
-  // 打开工程即由胶片把全部页后台算完，进页即是终态）；present/print 只读 store
-  useLayoutScan(bodyRef, slide0?.id, scannable && (mode === 'edit' || mode === 'thumb'), config.aspect, blockSig + tocSig);
-
   const editing = useStore((s) => s.editing);
+  // 静默探测扫描：胶片缩略图恒运行（与画布同 mm 尺寸排版，打开工程即把全部页
+  // 后台算完，进页即是终态）；画布扫描在本页无编辑时运行、present/print 只读 store。
+  // 画布扫描在本页编辑期间让位：TipTap 编辑态行盒比静态渲染高 ~1.3px，画布/胶片
+  // 两个扫描器对同一 key 交替提交不同终态（实测 fit 0.657↔0.6641 每 ~400ms 翻转，
+  // 页脚近满页肉眼可见持续抽动）。胶片扫描器测的是静态 DOM——本来就是权威值，
+  // 编辑期间只留它一个，退出编辑后画布扫描恢复并复核（相同值 no-op）。
+  const editingThisSlide = mode === 'edit' && editing != null && editing.slideId === slide0?.id;
+  useLayoutScan(bodyRef, slide0?.id, scannable && (mode === 'thumb' || (mode === 'edit' && !editingThisSlide)), config.aspect, blockSig + tocSig);
+
   const setEditing = useStore((s) => s.setEditing);
+
   const setConfig = useStore((s) => s.setConfig);
 
   const setLightbox = useStore((s) => s.setLightbox);

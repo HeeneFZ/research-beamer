@@ -198,9 +198,11 @@ export interface RendererOpts {
 
 interface AnnPath { color: string; pts: Pt[]; both: boolean }
 
-/** LaTeX 公式 KaTeX HTML（display 模式；错误内联红显，与全局 katexHtml 一致） */
+/** LaTeX 公式 KaTeX HTML（display 模式；错误内联红显，与全局 katexHtml 一致）。
+ *  残留 \label{..} 剥除：KaTeX 不识别该命令会渲染成红色错误文本（解析/提交层
+ *  已提取标签，此处兜底编辑器本地未提交的中间态） */
 export function annoKatexHtml(latex: string): string {
-  return katex.renderToString(boldGreekFix(latex), { displayMode: true, throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
+  return katex.renderToString(boldGreekFix(latex.replace(/\\label\{[^}]*\}/g, '')), { displayMode: true, throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
 }
 
 export function createAnnoRenderer(surface: AnnoSurface, opts: RendererOpts) {

@@ -105,10 +105,11 @@ export function RefChipView({ node }: NodeViewProps) {
           title={`${fullLabel} → 点击跳转`}
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); jumpToRef(fullLabel); }}
         >
-          {display}
+          {/* 与展示态 InlineText 同构：芯片底色在 <a>、文字渐变在 .xref-t 子层 */}
+          <span className="xref-t">{display}</span>
         </a>
       ) : (
-        <span className={cls} title={`未找到标签 ${fullLabel}`}>{display ?? `${kind} (?)`}</span>
+        <span className={cls} title={`未找到标签 ${fullLabel}`}><span className="xref-t">{display ?? `${kind} (?)`}</span></span>
       )}
     </NodeViewWrapper>
   );

@@ -3,7 +3,6 @@
 import { useMemo, ReactNode, Fragment } from 'react';
 import { InlineToken, tokenizeInline } from '../model/inline';
 import { Computed, refDisplay, refPageIndex, refParts } from '../model/numbering';
-import { roleColorVar } from '../model/palette';
 import { InlineMath } from './MathView';
 import { Palette } from '../model/types';
 
@@ -56,23 +55,21 @@ function renderTokens(
               if (onRef) onRef(t.label);
             }}
           >
-            {display ?? t.label}
+            {/* 文字单独包一层 .xref-t：芯片底色在 <a> 上、文字渐变在子层——
+                background-clip:text 会吞掉元素自身背景，两者必须分层 */}
+            <span className="xref-t">{display ?? t.label}</span>
           </a>
         );
       }
       case 'color':
         return (
-          <span key={i} style={{ color: roleColorVar(t.role) }}>
+          <span key={i} data-color-role={t.role}>
             {renderTokens(t.children, computed, lang, palette, onRef)}
           </span>
         );
       case 'bg':
         return (
-          <span
-            key={i}
-            className="bg-span"
-            style={{ background: `color-mix(in srgb, ${roleColorVar(t.role)} 24%, transparent)` }}
-          >
+          <span key={i} className="bg-span" data-bg-role={t.role}>
             {renderTokens(t.children, computed, lang, palette, onRef)}
           </span>
         );

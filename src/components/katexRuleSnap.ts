@@ -28,6 +28,30 @@
 
 const RULE_SEL = '.katex .frac-line, .katex .underline-line, .katex .overline-line';
 
+/** 大定界符（{ } 等）字形堆叠接缝修补：KaTeX 用「字形片段 + SVG 延伸条」拼装高定界符，
+ *  接缝两侧分别由字体光栅化（字形笔画经 hinting 吸附设备像素网格）与 SVG 矢量绘制
+ *  （分数位置）落位——亚像素相位差让接缝行只得到约一半墨迹覆盖（实测亮度 ~160-220，
+ *  正常笔画 ~20-50），呈一条浅色断缝；笔画中心还常有 ~1px 横向错位。延伸条是纯矩形
+ *  路径，scaleY 拉伸只是变长不变形：以中心为原点两端各延长 0.08em，让接缝处两层墨迹
+ *  稳定重叠（伸入字形竖笔区域，同色墨迹不可见），断缝恒被覆盖。单 SVG 定界符
+ *  （括号/竖线，KaTeX 自带整段路径）无缝，跳过。 */
+const DELIM_STRETCH_EM = 0.08;
+
+function stretchDelimBars(mult: HTMLElement): void {
+  if (mult.dataset.delimStretch) return;
+  mult.dataset.delimStretch = '1';
+  if (!mult.querySelector('.delimsizinginner')) return; // 单 SVG 定界符：无缝
+  for (const svg of mult.querySelectorAll('svg')) {
+    const vb = svg.getAttribute('viewBox');
+    if (!vb) continue;
+    const hEm = parseFloat(vb.trim().split(/\s+/)[3] || '') / 1000;
+    if (!(hEm > 0.2)) continue; // 非延伸条（保护性下限：延伸条恒 >0.6em）
+    const k = (hEm + 2 * DELIM_STRETCH_EM) / hEm;
+    svg.style.transform = `scaleY(${k.toFixed(5)})`;
+    svg.style.transformOrigin = 'center';
+  }
+}
+
 function restyleRule(el: HTMLElement): void {
   const dpr = window.devicePixelRatio || 1;
   const rect = el.getBoundingClientRect();
@@ -65,13 +89,14 @@ function restyleRule(el: HTMLElement): void {
 
 let pending: Set<HTMLElement> | null = null;
 let rafId = 0;
-
-/** 收集待处理规则线，rAF 批处理（同帧合并，先于绘制） */
+/** 收集待处理规则线与堆叠定界符，rAF 批处理（同帧合并，先于绘制） */
 function scheduleRestyle(roots: HTMLElement[]): void {
   if (!pending) pending = new Set();
   for (const r of roots) {
     if (r.matches(RULE_SEL)) pending.add(r);
     for (const el of r.querySelectorAll<HTMLElement>(RULE_SEL)) pending.add(el);
+    for (const mult of r.querySelectorAll<HTMLElement>('.delimsizing.mult')) stretchDelimBars(mult);
+    if (r.matches('.delimsizing.mult')) stretchDelimBars(r as HTMLElement);
   }
   if (rafId) return;
   rafId = requestAnimationFrame(() => {

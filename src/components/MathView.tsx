@@ -36,6 +36,9 @@ function readBrace(s: string, pos: number): { content: string; next: number } | 
 
 export function preprocessMath(latex: string, palette: Palette): { tex: string; legend: AnnotateLegend[] } {
   const legend: AnnotateLegend[] = [];
+  // 残留 \label{..} 剥除（防御层：解析/提交两层已提取，这里兜住直改 latex 的旁路，
+  // 避免 KaTeX 把不识别的 \label 渲染成红色错误文本）
+  latex = latex.replace(/\\label\{[^}]*\}/g, '');
   let out = '';
   let i = 0;
   while (i < latex.length) {
