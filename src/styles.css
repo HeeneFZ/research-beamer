@@ -212,6 +212,9 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 .s-header {
   height: 8cqh; flex: 0 0 auto;
   background: var(--p-grad);
+  /* 页眉落影：渐变中间调染色（色随主题、接近页眉渐变本身的色调），负 spread 收紧贴边——
+     白底上呈主题色淡投影，替代无阴影的平贴观感 */
+  box-shadow: 0 0.45cqh 1.6cqh -0.45cqh color-mix(in srgb, color-mix(in srgb, var(--p-base) 55%, var(--p-deep)) 34%, transparent);
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 5cqw; gap: 4cqw;
 }
@@ -298,8 +301,27 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 }
 .cover-card {
   position: relative; z-index: 1; width: 82cqw; padding: 12.4cqh 6cqw;
-  background: var(--p-grad); border-radius: 1.2cqw; color: #fff;
-  box-shadow: 0 0.5cqw 2cqw rgba(20, 40, 70, .18);
+  /* 渐变描边高光：层序 = 主体渐变在上（padding-box 覆盖内部），高光层在下
+     （border-box 含边框环）——高光只从边框环透出。
+     关键：环底下是白色页面，白 alpha 环渲染恒为纯白（白叠白）不可见——实测踩坑；
+     环色必须用 base 提亮的浅主题色（随配色走），左上最亮、沿对角渐隐到透明。
+     若高光层放上会罩住整个渐变面（border-box ⊇ padding-box），整卡被洗白——同样实测踩坑。
+     2px 线宽（1.25dpr 下 2.5 物理像素）；边框占位由 padding 12.4cqh 吸收，
+     不影响排版测量（溢出扫描实测 DOM） */
+  border: 2px solid transparent;
+  background:
+    var(--p-grad) padding-box,
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--p-base) 35%, #fff) 0%,
+      color-mix(in srgb, var(--p-base) 55%, transparent) 45%,
+      transparent 100%) border-box;
+  border-radius: 1.2cqw; color: #fff;
+  /* 双层落影（参考 Uiverse 彩影做法——阴影色取渐变中间调而非最深色，
+     如 .btn 用 rgba(238,103,97,.5)：嵌套 color-mix = base/deep 55:45 中间调 × 50% alpha）：
+     外层大而柔 + 内层紧贴接触影；负 spread 收拢轮廊避免糊边 */
+  box-shadow:
+    0 1.8cqh 5cqh -1.2cqh color-mix(in srgb, color-mix(in srgb, var(--p-base) 55%, var(--p-deep)) 50%, transparent),
+    0 0.5cqh 1.6cqh -0.35cqh rgba(20, 40, 70, .22);
   overflow: hidden;
   display: flex; flex-direction: column; justify-content: center;
   font-size: clamp(15px, 2.9cqw, 16.5px);
