@@ -301,21 +301,25 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 }
 .cover-card {
   position: relative; z-index: 1; width: 82cqw; padding: 12.4cqh 6cqw;
-  /* 渐变描边高光（第卌八轮定向，用户定夺：高光在右下角更好）：
-     与卡体渐变（左上 base 浅 → 右下 deep 深）同向，亮边压在最深端呈
-     「轮廓补光」观感。三层自上而下 =
+  /* 渐变描边高光（第卌八轮定向 + 视觉校准）：方向定在右下角（用户定夺），
+     与卡体渐变（左上 base 浅 → 右下 deep 深）同向，亮边压最深端呈轮廓补光。
+     强度校准（像素实测）：右端若只到「base 提亮浅色」（~170-190），会被外邻
+     彩色阴影（~214）吞掉——读作边缘过渡的一部分而非高光线，等于不可见。
+     右端必须接近白（base 15% + 白 85% ≈ 230+）才能同时压过卡体深色（内侧
+     对比 ~+180）与阴影（外侧 +16），成为清晰可辨的 1px 亮线。三层自上而下：
      ① 主体渐变 padding-box（卡体，与基线逐像素一致）
-     ② 高光环 border-box：右下 base 提亮浅色、沿对角渐隐到透明
-     ③ 同款主体渐变 border-box 垫底——环的远端（左上）露出的是卡片自己的
-       base 浅色，与相邻卡体无缝衔接（不透白页）。
-     线宽 2px→1px（用户要求减半）；边框占位由 padding 吸收，不影响排版测量。 */
-  border: 1px solid transparent;
+     ② 高光环 border-box：左上透明 → 右下近白主题浅色
+     ③ 同款主体渐变 border-box 垫底——环的远端（左上）露出卡片自己的 base
+       浅色，与相邻卡体无缝衔接（不透白页）。
+     线宽定稿 1.5px（1px 实测偏细弱，用户反馈加宽；仍低于原版 2px）；
+     边框占位由 padding 吸收，不影响排版测量。 */
+  border: 1.5px solid transparent;
   background:
     var(--p-grad) padding-box,
     linear-gradient(135deg,
       transparent 0%,
-      color-mix(in srgb, var(--p-base) 55%, transparent) 55%,
-      color-mix(in srgb, var(--p-base) 35%, #fff) 100%) border-box,
+      color-mix(in srgb, var(--p-base) 50%, transparent) 45%,
+      color-mix(in srgb, var(--p-base) 15%, #fff) 100%) border-box,
     var(--p-grad) border-box;
   border-radius: 1.2cqw; color: #fff;
   /* 双层落影（参考 Uiverse 彩影做法——阴影色取渐变中间调而非最深色，
