@@ -12,7 +12,8 @@
 // 各部件已移至 ./slide/*（types / useLayoutScan / FlowBlock /
 // SectionBreadcrumb / StaticPages），纯搬移无行为变化。
 
-import { CSSProperties, useMemo, useRef, useState } from 'react';
+import { CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Block, PAGE_SIZE, Slide } from '../model/types';
 import { defaultAnnoState } from '../model/anno';
 import { paletteVars } from '../model/palette';
@@ -51,8 +52,25 @@ export function SlideView({
   const layout: string = page.kind === 'divider' ? 'section' : page.slide?.layout || 'content';
 
   const bodyRef = useRef<HTMLDivElement>(null);
-  // 空页首块类型菜单（本地态：仅编辑画布的这个组件实例需要；条件分支内禁止 Hook）
-  const [firstMenu, setFirstMenu] = useState(false);
+  const firstBtnRef = useRef<HTMLButtonElement>(null);
+  // 空页首块类型菜单（portal 到 body 的浮层，存屏幕坐标；仅编辑画布需要）
+  const [firstMenu, setFirstMenu] = useState<{ x: number; y: number } | null>(null);
+  // 菜单打开期间：点击菜单外/Esc 关闭（portal 浮层通用关闭通道）
+  useEffect(() => {
+    if (!firstMenu) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.('.add-first-menu, .add-first-btn')) return;
+      setFirstMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFirstMenu(null); };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [firstMenu != null]);
   const slide0 = page.slide;
   const scannable = layout === 'content' || layout === 'twoCol' || layout === 'toc';
   // 排版规格：固定字阶（全 deck 统一）× 本页 fontScale（仅正文区）+ 间距两端 + 图高预算
@@ -264,19 +282,34 @@ export function SlideView({
           {empty && (
             <div className="add-first-wrap">
               <button
+                ref={firstBtnRef}
                 className="add-first-btn"
-                onClick={(e) => { e.stopPropagation(); setFirstMenu((v) => !v); }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // 菜单 portal 到 body 定位：按钮 rect 是画布 transform 缩放后的
+                  // 屏幕坐标，正合 fixed 定位之用（渲染在页面内会被 ~1.9× 画布
+                  // 缩放放大成巨块——用户实测报障；与块工具栏菜单同一逃逸方案）
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setFirstMenu((m) => (m ? null : {
+                    x: Math.max(8, Math.min(r.left + r.width / 2 - 115, window.innerWidth - 246)),
+                    y: Math.min(r.bottom + 6, window.innerHeight - 380),
+                  }));
+                }}
               >
                 ＋ 添加内容
               </button>
-              {firstMenu && (
-                <div className="btools-menu-float add-first-menu" onClick={(e) => e.stopPropagation()}>
+              {firstMenu && createPortal(
+                <div
+                  className="btools-menu-float add-first-menu"
+                  style={{ left: firstMenu.x, top: firstMenu.y }}
+                  onClick={(e) => e.stopPropagation()}
+                >
                   <div className="ref-picker-title">选择首个内容块</div>
                   {FIRST_ITEMS.map((it) => (
                     <div
                       key={it.key}
                       className="ref-picker-item"
-                      onMouseDown={(e) => { e.preventDefault(); if (!slide) return; setFirstMenu(false);
+                      onMouseDown={(e) => { e.preventDefault(); if (!slide) return; setFirstMenu(null);
                         const s = useStore.getState();
                         // 清掉残留栏标记，回到干净单栏
                         for (const b of [...slide.blocks]) {
@@ -302,7 +335,8 @@ export function SlideView({
                       <span className="slash-hint">{it.hint}</span>
                     </div>
                   ))}
-                </div>
+                </div>,
+                document.body,
               )}
             </div>
           )}

@@ -1,4 +1,5 @@
-// 空页首块菜单验证：点按钮弹类型菜单（7 项）→ 选表格 → 建表无残留空段落 → 菜单关闭
+// 空页首块菜单验证：点按钮弹类型菜单（7 项，portal 到 body 原生大小）→ 选表格 →
+// 建表无残留空段落 → 菜单关闭
 (async () => {
   const st = window.__store;
   if (!st) return { error: 'no __store' };
@@ -17,8 +18,10 @@
   out.btnExists = !!btn;
   btn.click();
   await sleep(300);
-  const menu = sv.querySelector('.add-first-menu');
+  const menu = document.querySelector('.add-first-menu');
   out.menuAfterClick = !!menu;
+  // 菜单尺寸与块工具栏菜单同款（原生 px，不被画布 transform 放大）：行高 ≤ 40px
+  out.menuFontSize = menu ? getComputedStyle(menu.querySelector('.ref-picker-item')).fontSize : null;
   out.itemCount = menu ? menu.querySelectorAll('.ref-picker-item').length : 0;
   out.passA = out.btnExists && out.menuAfterClick && out.itemCount === 7;
   const items = [...menu.querySelectorAll('.ref-picker-item')];
@@ -29,7 +32,7 @@
   const blks = (page.slide?.blocks || []);
   out.afterTableBlocks = blks.map((b) => b.type);
   out.noEmptyParagraph = !blks.some((b) => b.type === 'paragraph' && !b.text);
-  out.menuClosedAfterSelect = !document.querySelector('.sv.mode-edit .add-first-menu');
+  out.menuClosedAfterSelect = !document.querySelector('.add-first-menu');
   out.pass = out.passA && blks.some((b) => b.type === 'table') && out.noEmptyParagraph && out.menuClosedAfterSelect;
   return out;
 })()

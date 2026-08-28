@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import {
-  Block, BlockType, Deck, DeckConfig, Layout, Page, Slide, defaultConfig, newId,
+  Block, BlockType, Deck, DeckConfig, DeckItem, Layout, Page, Slide, defaultConfig, newId,
 } from '../model/types';
 import { SpacingState } from '../model/layoutSpec';
 import { computeDeck, Computed, refPageIndex, refParts } from '../model/numbering';
@@ -303,6 +303,9 @@ export const useStore = create<StoreState>((set, get) => {
       if (idx < 0) return;
       mutate((d) => {
         d.items.splice(idx, 1);
+        // 删页可能留下无页面归属的孤儿节标题（含链式），一并清理——
+        // 否则残留小节会抢占其后新建章节的归属（用户实测报障）
+        d.items = stripOrphanSections(d.items);
       }, false);
       // 清理该页的排版缓存孤儿键（防长会话「建页-删页」单调增长；undo 后重新扫描即可）
       set((st) => ({
@@ -607,6 +610,29 @@ export function moveTargetOf(blocks: Block[], blockId: string, beforeId: string 
   }
   if (target === from || target === from + 1) return null; // 位置未变
   return from < target ? target - 1 : target;
+}
+
+/** 删除页后清理孤儿节标题：节标题到下一个 level≤自身 的节标题（或 items 末尾）
+ *  之间没有任何内容页（content/twoCol；title/toc/end 特殊页不算归属）→ 该节已无
+ *  页面引用，移除。含链式孤儿：章仅剩的页删掉后，章与其空小节一并移除
+ *  （用户实测：删页后孤儿小节残留，其后新建章会被它抢占归属）。
+ *  纯函数：无孤儿时原引用返回（避免无谓克隆）。 */
+export function stripOrphanSections(items: DeckItem[]): DeckItem[] {
+  const isContent = (it: DeckItem): boolean =>
+    it.kind === 'slide' && (it.slide.layout === 'content' || it.slide.layout === 'twoCol');
+  const orphan = new Set<number>();
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind !== 'section') continue;
+    let has = false;
+    for (let j = i + 1; j < items.length; j++) {
+      const jt = items[j];
+      if (jt.kind === 'section' && jt.section.level <= it.section.level) break;
+      if (isContent(jt)) { has = true; break; }
+    }
+    if (!has) orphan.add(i);
+  }
+  return orphan.size ? items.filter((_, i) => !orphan.has(i)) : items;
 }
 
 function d_indexOfSection(deck: Deck, sectionId: string): number {

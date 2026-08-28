@@ -10,7 +10,7 @@ import {
   FIT_MIN, PAGE_FONT_MIN, PAGE_FONT_MAX, IMG_H_MIN, IMG_H_MAX, IMG_H_MAX_IMGONLY,
   compressBest, FIT_TOL, OverflowProbe,
 } from '../src/model/layoutSpec';
-import { useStore } from '../src/state/store';
+import { useStore, stripOrphanSections } from '../src/state/store';
 import { parseMarkdown, serializeMarkdown } from '../src/model/markdown';
 import { Block, newId } from '../src/model/types';
 import { colRegionAt, colEndPlan, buildSegments } from '../src/model/segments';
@@ -773,5 +773,58 @@ describe('moveSlide（大纲拖拽换序：层级归属自动重算 + 特殊页�
     const deck2 = parseMarkdown(out);
     const sl2 = deck2.items[0];
     expect(sl2 && sl2.kind === 'slide' ? sl2.slide.footNote : null).toBe('本页专属页脚');
+  });
+});
+
+describe('stripOrphanSections / deleteSlide（删页清理无页面归属的孤儿节标题）', () => {
+  const MD = [
+    '---\nbeamerapp: 1\n---\n',
+    ':::: title\n::::\n\n:::: toc\n::::\n',
+    '# 甲\n\n:::: slide title="甲1"\nA1\n::::\n',
+    '## 甲小节\n\n:::: slide title="甲2"\nA2\n::::\n',
+    '# 乙\n\n:::: slide title="乙1"\nB1\n::::\n',
+    ':::: end\n::::\n',
+  ].join('');
+  const setup = () => {
+    useStore.getState().loadProjectData({ md: MD, folder: '/tmp/z' });
+    const idOf = (title: string) => {
+      const p = useStore.getState().computed.pages.find((x) => x.kind === 'slide' && x.slide.title === title);
+      return p && p.kind === 'slide' ? p.slide.id : null;
+    };
+    const sections = () => useStore.getState().deck.items
+      .filter((x) => x.kind === 'section')
+      .map((x) => (x.kind === 'section' ? `${x.section.level}:${x.section.title}` : ''));
+    return { idOf, sections };
+  };
+
+  it('删除小节唯一页 → 该小节移除，同章其他页与章保留', () => {
+    const { idOf, sections } = setup();
+    useStore.getState().deleteSlide(idOf('甲2')!);
+    expect(sections()).toEqual(['1:甲', '1:乙']);
+  });
+
+  it('删除章唯一页 → 章与其空小节链式移除', () => {
+    const { idOf, sections } = setup();
+    useStore.getState().deleteSlide(idOf('乙1')!);
+    expect(sections()).toEqual(['1:甲', '2:甲小节']);
+  });
+
+  it('用户流程：addSectionBefore 建小节 → 删除锚定页 → 小节消失（不再抢占后续章节归属）', () => {
+    const { idOf, sections } = setup();
+    const a1 = idOf('甲1')!;
+    useStore.getState().deleteSlide(a1);
+    // 临时小节的锚定页被删 → 临时小节消失；甲章/甲小节仍由甲2 锚定保留
+    expect(sections()).toEqual(['1:甲', '2:甲小节', '1:乙']);
+  });
+
+  it('stripOrphanSections 纯函数：特殊页（end）不算归属；无孤儿原引用返回', () => {
+    const deck = parseMarkdown(MD);
+    const same = stripOrphanSections(deck.items);
+    expect(same).toBe(deck.items); // 每节都有内容页 → 原引用
+    // 乙章去掉唯一内容页（只留 end）→ 乙章成孤儿
+    const items = deck.items.filter((x) => !(x.kind === 'slide' && x.slide.title === '乙1'));
+    const cleaned = stripOrphanSections(items);
+    const names = cleaned.filter((x) => x.kind === 'section').map((x) => (x.kind === 'section' ? x.section.title : ''));
+    expect(names).toEqual(['甲', '甲小节']);
   });
 });

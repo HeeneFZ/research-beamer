@@ -1003,8 +1003,9 @@ body.dark .save-pill { background: #262b33; border-color: #384049; color: #9aa3a
 body.dark .save-pill.on { background: #1d2b3a; border-color: #2c4a6c; color: #7db4f0; }
 
 /* 空页添加按钮：顶部对齐（新块出现的位置与按钮一致，无跳变）；
-   点击弹块类型菜单（ref-picker 家族样式）——旧版默认建空段落，
-   用户从段落 /菜单建其他块后空段落残留（用户实测报障） */
+   点击弹块类型菜单（btools-menu-float 家族，portal 到 body 的 fixed 浮层——
+   渲染在页面内会被画布 transform 缩放放大成巨块，与块工具栏菜单同款逃逸方案）。
+   旧版默认建空段落，用户从段落 /菜单建其他块后空段落残留（用户实测报障） */
 .add-first-wrap { position: relative; }
 .add-first-btn {
   display: block; margin: 0 auto;
@@ -1012,10 +1013,6 @@ body.dark .save-pill.on { background: #1d2b3a; border-color: #2c4a6c; color: #7d
   border-radius: 1cqw; padding: 1.2cqw 3cqw; font-size: 2.2cqw;
 }
 .add-first-btn:hover { background: #f0f6fd; border-color: #2470c8; }
-.btools-menu-float.add-first-menu {
-  left: 50%; transform: translateX(-50%);
-  top: calc(100% + 8px); position: absolute; z-index: 30;
-}
 /* =========================================
    居中弹窗（EditorApp ModalShell 式，全 px——portal 在 .sv 容器外，禁用 cqw）
    ========================================= */
