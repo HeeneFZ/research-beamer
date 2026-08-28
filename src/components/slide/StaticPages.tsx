@@ -2,6 +2,7 @@
 
 import { Deck, Section } from '../../model/types';
 import { Computed } from '../../model/numbering';
+import { InlineText } from '../InlineText';
 
 /** 作者上标：张三^1,2; 李四^1 -> 名字 + <sup>；分隔符随语言 */
 export function AuthorsLine({ authors, lang }: { authors: string; lang: 'zh' | 'en' }) {
@@ -64,7 +65,7 @@ export function TocView({ deck, computed, onSlideJump }: { deck: Deck; computed:
             }}
           >
             <span className="toc-num">{num}</span>
-            <span className="toc-title">{s.title}</span>
+            <span className="toc-title"><InlineText text={s.title} computed={computed} lang={deck.config.language} palette={deck.config.palette} noRefs /></span>
           </a>
         );
       })}
@@ -99,15 +100,14 @@ export function DividerView({
       <div className={'cover-card divider-card' + (highlight ? ' flash-hl' : '')}>
         <div className="divider-main">
           <div className="cover-kicker">{deck.config.language === 'zh' ? `第 ${num} 部分` : `Part ${num}`}</div>
-          <h1 className="cover-title divider-title">{section.title}</h1>
-          <div className="cover-bar" />
+          <h1 className="cover-title divider-title"><InlineText text={section.title} computed={computed} lang={deck.config.language} palette={deck.config.palette} /></h1>
         </div>
         {subs.length > 0 && (
           <div className="divider-subs" style={subScale !== 1 ? { fontSize: `${Math.round(subScale * 100)}%` } : undefined}>
             {subs.map((s) => (
               <div key={s.id} className="divider-sub">
                 <span className="divider-sub-num">{computed.sectionNum.get(s.id)}</span>
-                {s.title}
+                <span className="divider-sub-title"><InlineText text={s.title} computed={computed} lang={deck.config.language} palette={deck.config.palette} /></span>
               </div>
             ))}
           </div>

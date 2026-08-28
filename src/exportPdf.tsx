@@ -6,6 +6,13 @@ import { SlideView } from './components/SlideView';
 import { restyleRulesForPrint } from './components/katexRuleSnap';
 import { Deck, PAGE_SIZE } from './model/types';
 
+/** PDF 建议文件名：标题可含 $..$ 行内公式（含 \ 等源码字符，Windows 文件名非法）——
+ *  剥定界符取 LaTeX 源文本，再剔除文件系统非法字符 */
+function pdfName(title: string): string {
+  const t = (title || 'deck').replace(/\$([^$]+)\$/g, '$1');
+  return t.replace(/[\\/:*?"<>|]/g, '').trim() || 'deck';
+}
+
 function countMedia(deck: Deck): number {
   let n = 0;
   for (const it of deck.items) {
@@ -20,7 +27,7 @@ function countMedia(deck: Deck): number {
 
 export async function exportPDF(): Promise<void> {
   const s = useStore.getState();
-  const r = await window.api.exportPDF({ suggestedName: (s.deck.config.title || 'deck') + '.pdf' });
+  const r = await window.api.exportPDF({ suggestedName: pdfName(s.deck.config.title) + '.pdf' });
   if (!r?.path) return;
 
   const host = document.createElement('div');

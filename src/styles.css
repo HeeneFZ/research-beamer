@@ -943,6 +943,13 @@ body.dark .bb-sep { background: #333a44; }
   border: 1.5px dashed rgba(255,255,255,.7); border-radius: .6cqw;
   padding: .2cqh 1cqw; outline: none; min-width: 40cqw;
 }
+
+/* 单行富文本字段编辑（TipTap 版 .title-edit/.sec-edit）：ProseMirror 复位为行内流。
+   页眉/面包屑语境 nowrap（对齐原 input 单行滚动）；封面大标题语境随卡片换行 */
+.title-edit .ProseMirror, .sec-edit .ProseMirror { outline: none; min-height: 1.25em; white-space: nowrap; overflow: hidden; }
+.title-edit .ProseMirror > p, .sec-edit .ProseMirror > p { margin: 0; }
+.title-edit .ProseMirror .katex, .sec-edit .ProseMirror .katex { font-size: 1em; }
+.cover-edit .ProseMirror { white-space: normal; overflow: visible; overflow-wrap: break-word; }
 /* 页脚短题名编辑（浅色底，区别于页眉白字） */
 .foot-edit {
   font: inherit; color: inherit; background: #f8fbff;
@@ -961,7 +968,7 @@ body.dark .bb-sep { background: #333a44; }
    编辑器输入框自带虚线边——打开时父级悬停 outline 必须让位，否则双虚线框 */
 .mode-edit .cv-edit { cursor: text; border-radius: .6cqw; }
 .mode-edit .cv-edit:hover { outline: 1px dashed rgba(255,255,255,.55); outline-offset: 2px; }
-.mode-edit .cv-edit:has(> input), .mode-edit .cv-edit:has(> input):hover { outline: none; }
+.mode-edit .cv-edit:has(> input), .mode-edit .cv-edit:has(> .title-edit), .mode-edit .cv-edit:has(> input):hover, .mode-edit .cv-edit:has(> .title-edit):hover { outline: none; }
 .cover-edit { width: 100%; min-width: 0; }
 
 /* 封面作者单位（作者行下方，上标编号逐行；对应 authors 的 ^1 ^2 标记） */

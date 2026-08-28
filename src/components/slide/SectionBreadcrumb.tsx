@@ -7,6 +7,8 @@ import { createPortal } from 'react-dom';
 import { Section, Slide } from '../../model/types';
 import { Computed } from '../../model/numbering';
 import { useStore } from '../../state/store';
+import { InlineText } from '../InlineText';
+import { RichFieldEditor } from '../RichFieldEditor';
 
 interface SecMenu {
   x: number;
@@ -21,18 +23,20 @@ export function SectionBreadcrumb({ slide, path, computed }: {
   const setEditing = useStore((s) => s.setEditing);
   const addSectionBefore = useStore((s) => s.addSectionBefore);
   const renameSection = useStore((s) => s.renameSection);
+  const config = useStore((s) => s.deck.config);
   const [val, setVal] = useState('');
+  // 编辑会话序号：改名/新建每次开新会话强制重挂编辑器（TipTap 编辑器内容创建时定型）
+  const [session, setSession] = useState(0);
   const [menu, setMenu] = useState<SecMenu | null>(null);
   const active = editing != null && editing.slideId === slide.id && editing.field === 'section';
-  const zh = useStore.getState().deck.config.language !== 'en';
+  const zh = config.language !== 'en';
 
-  const commit = () => {
-    const t = val.trim();
-    if (t && editing) {
-      if (editing.sectionId) renameSection(editing.sectionId, t);
-      else addSectionBefore(slide.id, t, editing.sectionLevel ?? 1);
-    }
-    setEditing(null);
+  // 提交（Enter/失焦/卸载兜底统一走这里；空名跳过——新建空节无意义，改名空名保留原名）
+  const commitTitle = (v: string) => {
+    const t = v.trim();
+    if (!t || !editing) return;
+    if (editing.sectionId) renameSection(editing.sectionId, t);
+    else addSectionBefore(slide.id, t, editing.sectionLevel ?? 1);
   };
 
   // 菜单点击外部/Esc 关闭
@@ -52,6 +56,7 @@ export function SectionBreadcrumb({ slide, path, computed }: {
 
   const startEdit = (sectionId?: string, sectionLevel?: 1 | 2 | 3, init = '') => {
     setVal(init);
+    setSession((n) => n + 1);
     setEditing({ slideId: slide.id, field: 'section', sectionId, sectionLevel });
     setMenu(null);
   };
@@ -59,20 +64,20 @@ export function SectionBreadcrumb({ slide, path, computed }: {
   const lvlName = (l: number) => (zh ? (l === 1 ? '章节' : l === 2 ? '小节' : '子小节') : `level-${l}`);
 
   if (active) {
+    // 结束编辑仅在编辑态仍指向本字段时收起（延迟失焦期间可能已点开其他编辑）
+    const done = () => {
+      const e = useStore.getState().editing;
+      if (e && e.slideId === slide.id && e.field === 'section') setEditing(null);
+    };
     return (
-      <input
-        className="sec-edit"
-        autoFocus
+      <RichFieldEditor
+        key={session}
+        cls="sec-edit"
         value={val}
-        placeholder={editing!.sectionId ? '重命名该节' : '输入新节名称'}
-        onChange={(e) => setVal(e.target.value)}
-        onClick={(e) => e.stopPropagation()}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          e.stopPropagation();
-          if (e.key === 'Enter') commit();
-          else if (e.key === 'Escape') setEditing(null);
-        }}
+        placeholder={editing!.sectionId ? '重命名该节（$$ 插入公式）' : '输入新节名称（$$ 插入公式）'}
+        onCommit={commitTitle}
+        onDone={done}
+        onCancel={done}
       />
     );
   }
@@ -106,7 +111,7 @@ export function SectionBreadcrumb({ slide, path, computed }: {
               }}
             >
               <span className="s-sec-num">{n}</span>
-              <span className={s.level === 1 ? 's-sec-l1' : 's-sec-sub'}>{s.title}</span>
+              <span className={s.level === 1 ? 's-sec-l1' : 's-sec-sub'}><InlineText text={s.title} computed={computed} lang={config.language} palette={config.palette} /></span>
             </span>
             {s.level < 3 && (
               <button

@@ -7,16 +7,19 @@ import { InlineMath } from './MathView';
 import { Palette } from '../model/types';
 
 export function InlineText({
-  text, computed, lang, palette, onRef,
+  text, computed, lang, palette, onRef, noRefs,
 }: {
   text: string;
   computed: Computed;
   lang: 'zh' | 'en';
   palette: Palette;
   onRef?: (label: string) => void;
+  /** 渲染语境本身是 <a>（目录项）时置真：引用芯片降级为纯文本 span——
+   *  嵌套 <a> 会被浏览器拆解 DOM，React 更新时 removeChild 崩溃 */
+  noRefs?: boolean;
 }) {
   const tokens = useMemo(() => tokenizeInline(text || ''), [text]);
-  return <>{renderTokens(tokens, computed, lang, palette, onRef)}</>;
+  return <>{renderTokens(tokens, computed, lang, palette, onRef, noRefs)}</>;
 }
 
 function renderTokens(
@@ -25,6 +28,7 @@ function renderTokens(
   lang: 'zh' | 'en',
   palette: Palette,
   onRef?: (label: string) => void,
+  noRefs?: boolean,
 ): ReactNode[] {
   return toks.map((t, i) => {
     switch (t.t) {
@@ -42,6 +46,8 @@ function renderTokens(
       case 'ref': {
         const parts = refParts(t.label);
         const display = parts ? refDisplay(parts.kind, parts.key, computed, lang) : null;
+        // a > a 嵌套语境（目录项）：降级纯文本，防浏览器拆解 DOM
+        if (noRefs) return <span key={i} className="xref-t">{display ?? t.label}</span>;
         const target = refPageIndex(t.label, computed);
         return (
           <a
@@ -64,19 +70,19 @@ function renderTokens(
       case 'color':
         return (
           <span key={i} data-color-role={t.role}>
-            {renderTokens(t.children, computed, lang, palette, onRef)}
+            {renderTokens(t.children, computed, lang, palette, onRef, noRefs)}
           </span>
         );
       case 'bg':
         return (
           <span key={i} className="bg-span" data-bg-role={t.role}>
-            {renderTokens(t.children, computed, lang, palette, onRef)}
+            {renderTokens(t.children, computed, lang, palette, onRef, noRefs)}
           </span>
         );
       case 'bold':
-        return <strong key={i}>{renderTokens(t.children, computed, lang, palette, onRef)}</strong>;
+        return <strong key={i}>{renderTokens(t.children, computed, lang, palette, onRef, noRefs)}</strong>;
       case 'italic':
-        return <em key={i}>{renderTokens(t.children, computed, lang, palette, onRef)}</em>;
+        return <em key={i}>{renderTokens(t.children, computed, lang, palette, onRef, noRefs)}</em>;
     }
   });
 }

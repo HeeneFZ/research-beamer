@@ -14,6 +14,7 @@ import { absMediaPath } from './paths';
 import { fileUrl } from './pdfRaster';
 import { PdfCanvas, EpsFigure } from './FigureView';
 import { LatexEditor, stripMathDelims } from './LatexEditor';
+import { RichFieldEditor } from './RichFieldEditor';
 import { IcoClose } from './icons';
 const closeEditing = () => useStore.getState().setEditing(null);
 
@@ -230,36 +231,64 @@ export function TableEditor({ slide, block }: { slide: Slide; block: Block }) {
     </Modal>
   );
 }
-
-/** 页标题编辑（页眉处） */
+/** 页标题编辑（页眉处，支持 $$ 行内公式芯片） */
 export function TitleEditor({ slide }: { slide: Slide }) {
   const updateSlide = useStore((s) => s.updateSlide);
-  const [val, setVal] = useState(slide.title || '');
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => { ref.current?.focus(); }, []);
+  // 结束编辑仅在编辑态仍指向本字段时收起——失焦判定是延迟 150ms 的，
+  // 期间用户直接点开另一字段时不得把新编辑态关掉（InlineBlockEditor 同款守卫）
+  const done = () => {
+    const e = useStore.getState().editing;
+    if (e && e.slideId === slide.id && e.field === 'title') closeEditing();
+  };
   return (
-    <input
-      ref={ref}
-      className="title-edit"
-      spellCheck={false}
-      value={val}
+    <RichFieldEditor
+      cls="title-edit"
+      live
+      value={slide.title || ''}
       placeholder="页面标题"
-      onChange={(e) => setVal(e.target.value)}
-      onBlur={() => { updateSlide(slide.id, { title: val || undefined }); closeEditing(); }}
-      onKeyDown={(e) => {
-        // Enter 提交 / Esc 取消（不提交）——与节名编辑器的 Esc 语义一致
-        if (e.key === 'Enter') {
-          updateSlide(slide.id, { title: val || undefined });
-          closeEditing();
-        } else if (e.key === 'Escape') closeEditing();
-        e.stopPropagation();
-      }}
+      onCommit={(v) => updateSlide(slide.id, { title: v || undefined })}
+      onDone={done}
+      onCancel={done}
     />
   );
 }
 
-/** 封面/尾页字段行内编辑（渐变卡白字，与页眉 title-edit 同款视觉；blur/Enter/Esc 提交） */
-export function CoverFieldEditor({ value, onCommit, placeholder }: {
+/** 封面/尾页字段行内编辑（渐变卡白字，与页眉 title-edit 同款视觉；blur/Enter/Esc 提交）。
+ *  math=true（大标题）为 TipTap 富文本字段：$$ / $x$ 键入行内公式芯片，
+ *  与正文行内公式同款交互；其余字段（作者/单位/日期/副标题）保持纯文本 */
+export function CoverFieldEditor({ value, onCommit, placeholder, math }: {
+  value: string; onCommit: (v: string) => void; placeholder?: string; math?: boolean;
+}) {
+  // math 字段与纯文本字段分体（各自持 hooks，math 切换不破坏 hook 序）
+  if (math) return <CoverTitleEditor value={value} onCommit={onCommit} placeholder={placeholder} />;
+  return <CoverPlainFieldEditor value={value} onCommit={onCommit} placeholder={placeholder} />;
+}
+
+/** 封面大标题（math）：TipTap 富文本字段，$$ / $x$ 键入行内公式芯片 */
+function CoverTitleEditor({ value, onCommit, placeholder }: {
+  value: string; onCommit: (v: string) => void; placeholder?: string;
+}) {
+  // 结束编辑仅在编辑态仍指向本字段时收起（失焦判定延迟 150ms，期间用户可能
+  // 直接点开另一字段——InlineBlockEditor 同款守卫）
+  const done = () => {
+    const e = useStore.getState().editing;
+    if (e && e.field === 'coverTitle') closeEditing();
+  };
+  return (
+    <RichFieldEditor
+      cls="title-edit cover-edit"
+      live
+      value={value}
+      placeholder={placeholder}
+      onCommit={onCommit}
+      onDone={done}
+      onCancel={done}
+    />
+  );
+}
+
+/** 封面/尾页其余字段（作者/单位/日期/副标题）：纯文本 input（渐变卡白字） */
+function CoverPlainFieldEditor({ value, onCommit, placeholder }: {
   value: string; onCommit: (v: string) => void; placeholder?: string;
 }) {
   const ref = useRef<HTMLInputElement>(null);

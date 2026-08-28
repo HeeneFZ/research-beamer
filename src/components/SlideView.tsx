@@ -114,8 +114,9 @@ export function SlideView({
     // 封面元素编辑态（点击即改 front-matter 字段；尾页标题复用 field='title'）
     const sl = page.slide;
     const ef = mode === 'edit' && sl && editing != null && editing.slideId === sl.id ? editing.field : undefined;
+    // ef !== field：编辑另一封面字段时允许直接切换（延迟失焦关闭期间点开新字段）
     const startEdit = (field: 'coverTitle' | 'coverAuthors' | 'coverAff' | 'coverDate') =>
-      mode === 'edit' && sl ? () => { if (ef == null) setEditing({ slideId: sl.id, field }); } : undefined;
+      mode === 'edit' && sl ? () => { if (ef !== field) setEditing({ slideId: sl.id, field }); } : undefined;
     const editCls = mode === 'edit' ? ' cv-edit' : '';
     body = (
       <>
@@ -123,8 +124,8 @@ export function SlideView({
           <div className="cover-card title-card">
             <h1 className={'cover-title' + editCls} onClick={startEdit('coverTitle')}>
               {ef === 'coverTitle'
-                ? <CoverFieldEditor value={config.title} onCommit={(v) => setConfig({ title: v || config.title })} />
-                : config.title}
+                ? <CoverFieldEditor math value={config.title} onCommit={(v) => setConfig({ title: v || config.title })} />
+                : <InlineText text={config.title} computed={computed} lang={lang} palette={config.palette} />}
             </h1>
             <div className="cover-bar" />
             <div className={'cover-authors' + editCls} onClick={startEdit('coverAuthors')}>
@@ -195,7 +196,7 @@ export function SlideView({
               className={'cover-title end-title' + (mode === 'edit' && sl ? ' cv-edit' : '')}
               onClick={mode === 'edit' && sl ? () => { if (!endEditing) setEditing({ slideId: sl.id, field: 'title' }); } : undefined}
             >
-              {endEditing && sl ? <TitleEditor slide={sl} /> : t}
+              {endEditing && sl ? <TitleEditor slide={sl} /> : <InlineText text={t} computed={computed} lang={lang} palette={config.palette} />}
             </h1>
             <div className="cover-bar center" />
             {/* 尾页副标题（front-matter shortTitle），点击可改 */}
@@ -238,7 +239,7 @@ export function SlideView({
                 {page.sectionPath.map((s, i) => (
                   <span key={s.id} className="s-sec-crumb">
                     <span className="s-sec-num">{computed.sectionNum.get(s.id)}</span>
-                    <span className={s.level === 1 ? 's-sec-l1' : 's-sec-sub'}>{s.title}</span>
+                    <span className={s.level === 1 ? 's-sec-l1' : 's-sec-sub'}><InlineText text={s.title} computed={computed} lang={lang} palette={config.palette} /></span>
                     {i < page.sectionPath.length - 1 && <span className="s-sec-sep">›</span>}
                   </span>
                 ))}

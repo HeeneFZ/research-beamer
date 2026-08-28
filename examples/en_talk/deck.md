@@ -71,7 +71,7 @@ One line on competitors; stress the middle ground: more academic than Slidev, ea
 
 ## Architecture
 
-:::: slide layout="content" title="System Architecture"
+:::: slide layout="content" title="System Architecture: $\mathcal{C} \oplus \mathcal{R}$"
 
 The system follows a three-layer, content/theme-separated architecture:
 

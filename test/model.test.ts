@@ -133,6 +133,70 @@ describe('markdown contract', () => {
   });
 });
 
+describe('标题行内公式（第卌三轮：大标题/节/小节/页标题支持 $..$）', () => {
+  const MD = `---
+beamerapp: 1
+title: 基于 $\\mathcal{O}(n^2)$ 的自动排版
+---
+
+::::: title
+:::::
+
+# 引言：$\\alpha$ 与 $\\beta$ {#sec:intro}
+
+## 小节 $E=mc^2$
+
+### 子小节 $\\sigma$
+
+::::: slide title="对比 $\\chi^2$ 检验"
+正文。
+:::::
+
+::::: slide layout="end" title="谢谢 $\\pi$"
+:::::
+`;
+
+  it('各层标题的 $..$ 源原样保留（往返幂等）', () => {
+    const deck = parseMarkdown(MD);
+    expect(deck.config.title).toBe('基于 $\\mathcal{O}(n^2)$ 的自动排版');
+    const secs = deck.items.filter((x) => x.kind === 'section').map((x) => (x.kind === 'section' ? x.section : null));
+    expect(secs[0]?.title).toBe('引言：$\\alpha$ 与 $\\beta$');
+    expect(secs[0]?.label).toBe('sec:intro');
+    expect(secs[1]?.title).toBe('小节 $E=mc^2$');
+    expect(secs[2]?.title).toBe('子小节 $\\sigma$');
+    const slides = deck.items.filter((x) => x.kind === 'slide').map((x) => (x.kind === 'slide' ? x.slide : null));
+    expect(slides[1]?.title).toBe('对比 $\\chi^2$ 检验');
+    expect(slides[2]?.title).toBe('谢谢 $\\pi$');
+    const md1 = serializeMarkdown(deck);
+    const md2 = serializeMarkdown(parseMarkdown(md1));
+    expect(md2).toBe(md1);
+  });
+
+  it('标题中的公式经 tokenizer 解析为 math 令牌（渲染层合约）', () => {
+    const deck = parseMarkdown(MD);
+    const toks = tokenizeInline(deck.config.title);
+    expect(toks.some((t) => t.t === 'math' && t.v === '\\mathcal{O}(n^2)')).toBe(true);
+    const sec = deck.items.find((x) => x.kind === 'section');
+    if (sec && sec.kind === 'section') {
+      const st = tokenizeInline(sec.section.title);
+      expect(st.some((t) => t.t === 'math' && t.v === '\\alpha')).toBe(true);
+      expect(st.some((t) => t.t === 'math' && t.v === '\\beta')).toBe(true);
+    }
+  });
+
+  it('标题含引号/反斜杠转义时公式源仍往返（attr 转义与 $ 共存）', () => {
+    const deck = parseMarkdown(MD);
+    const slides = deck.items.filter((x) => x.kind === 'slide').map((x) => (x.kind === 'slide' ? x.slide : null));
+    const s = slides[1]!;
+    s.title = '费马 $a^2+b^2=c^2$ \\"引号\\" 与 \\\\ 反斜杠';
+    const md1 = serializeMarkdown(deck);
+    const back = parseMarkdown(md1);
+    const s2 = back.items.find((x) => x.kind === 'slide' && x.slide.title?.includes('费马'));
+    expect(s2 && s2.kind === 'slide' && s2.slide.title).toBe(s.title);
+    expect(serializeMarkdown(back)).toBe(md1);
+  });
+});
+
 describe('numbering & refs', () => {
   const deck = parseMarkdown(SAMPLE);
   const c = computeDeck(deck);

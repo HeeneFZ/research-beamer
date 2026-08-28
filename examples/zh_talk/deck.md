@@ -71,7 +71,7 @@ palette:
 
 ## 整体架构
 
-:::: slide layout="content" title="系统整体架构"
+::::: slide layout="content" title="系统整体架构：$\mathcal{C} \oplus \mathcal{R}$"
 
 系统采用「内容与版式分离」的三层架构：
 
