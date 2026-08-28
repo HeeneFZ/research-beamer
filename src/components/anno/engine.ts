@@ -22,10 +22,14 @@ export const mixColor = (hex: string, frac: number): string => {
 const escHtml = (s: string): string => String(s).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 
-/** 标注文字 → HTML：$..$ 数学片段（KaTeX）、\\\\ 换行、\ 空格、\#%&_ 转义 */
+/** 标注文字 → HTML：$..$ 数学片段（KaTeX）、\\\\ 换行、\ 空格、\#%&_ 转义。
+ *  注意：\n → <br> 只能在文本段（buf）内转换——KaTeX HTML 的 SVG path d 属性
+ *  含字面换行（\sqrt 根号 / \overbrace / \xrightarrow 等 stretchy 路径的分段
+ *  连接符），全局替换会把换行变成 <br> 腐蚀 path 数据 → 浏览器整条路径解析
+ *  失败 → 根号/装饰整体静默消失（第卌九轮修复） */
 export function annLabelText(text: string): string {
   let out = '', buf = '', i = 0;
-  const flush = () => { out += escHtml(buf); buf = ''; };
+  const flush = () => { out += escHtml(buf).replace(/\n/g, '<br>'); buf = ''; };
   while (i < text.length) {
     const c = text[i];
     if (c === '$') {
@@ -49,7 +53,7 @@ export function annLabelText(text: string): string {
     buf += c; i++;
   }
   flush();
-  return out.replace(/\n/g, '<br>');
+  return out;
 }
 
 /* ---------------- 文本索引（排除 .katex-mathml 无障碍副本） ---------------- */
