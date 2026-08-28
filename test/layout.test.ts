@@ -7,9 +7,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   computeLayoutSpec, spacingFor, defaultSpacing, layoutCssVars,
-  FIT_MIN, PAGE_FONT_MIN, PAGE_FONT_MAX, IMG_H_MIN, IMG_H_MAX,
+  FIT_MIN, PAGE_FONT_MIN, PAGE_FONT_MAX, IMG_H_MIN, IMG_H_MAX, IMG_H_MAX_IMGONLY,
   compressBest, FIT_TOL, OverflowProbe,
 } from '../src/model/layoutSpec';
+import { useStore } from '../src/state/store';
 import { parseMarkdown, serializeMarkdown } from '../src/model/markdown';
 import { Block, newId } from '../src/model/types';
 import { colRegionAt, colEndPlan, buildSegments } from '../src/model/segments';
@@ -101,9 +102,9 @@ describe('间距阶梯 spacingFor（密度只压间距，不压字号）', () =>
 });
 
 describe('图限高起点（第廿九轮：宽度权威，实测适配，不做估算预压）', () => {
-  it('imgHNom 恒为 IMG_H_MAX：有图/无图/文多/文少/双栏皆不预压', () => {
-    const colmark = (): Block => ({ id: newId(), type: 'colmark' });
-    const colend = (): Block => ({ id: newId(), type: 'colend' });
+  const colmark = (): Block => ({ id: newId(), type: 'colmark' });
+  const colend = (): Block => ({ id: newId(), type: 'colend' });
+  it('含任何文本/公式/表格内容的页 imgHNom 恒为 IMG_H_MAX（不预压）', () => {
     expect(computeLayoutSpec({ blocks: [para('纯文本')] }).imgHNom).toBe(IMG_H_MAX);
     expect(computeLayoutSpec({ blocks: [para('短'), fig('甲'), fig('乙')] }).imgHNom).toBe(IMG_H_MAX);
     expect(
@@ -116,6 +117,17 @@ describe('图限高起点（第廿九轮：宽度权威，实测适配，不做�
         blocks: [colmark(), para('左栏'.repeat(60)), colmark(), fig('甲'), colend(), para('下接'.repeat(200))],
       }).imgHNom,
     ).toBe(IMG_H_MAX);
+  });
+  it('纯图页 imgHNom = IMG_H_MAX_IMGONLY（55 天花板钳制 aspect≈1.5 的图为半宽的修复）', () => {
+    expect(computeLayoutSpec({ blocks: [fig('甲')] }).imgHNom).toBe(IMG_H_MAX_IMGONLY);
+    expect(computeLayoutSpec({ blocks: [fig('甲'), fig('乙'), fig('丙')] }).imgHNom).toBe(IMG_H_MAX_IMGONLY);
+    // 栏标记不算内容：colmark/colend 包裹的纯图区仍按纯图页
+    expect(computeLayoutSpec({ blocks: [colmark(), fig('甲'), colmark(), fig('乙'), colend()] }).imgHNom).toBe(IMG_H_MAX_IMGONLY);
+    // 视频块同属媒体：纯视频页也是纯图页
+    expect(computeLayoutSpec({ blocks: [{ id: newId(), type: 'video', src: 'media/v.mp4' }] }).imgHNom).toBe(IMG_H_MAX_IMGONLY);
+    // 空块列表（无内容）不算纯图页
+    expect(computeLayoutSpec({ blocks: [] }).imgHNom).toBe(IMG_H_MAX);
+    expect(computeLayoutSpec({ blocks: [colmark(), colend()] }).imgHNom).toBe(IMG_H_MAX);
   });
 });
 
@@ -694,5 +706,72 @@ describe('compressBest（压缩阶梯粗步 + 连续细化：消除粗步过冲�
     expect(r.st.imgH).toBeGreaterThan(39);
     expect(r.st.imgH).toBeLessThanOrEqual(40.1);
     expect(probe(r.st)).toBeLessThanOrEqual(FIT_TOL);
+  });
+});
+
+
+describe('moveSlide（大纲拖拽换序：层级归属自动重算 + 特殊页禁区）', () => {
+  const MD = [
+    '---\nbeamerapp: 1\n---\n',
+    ':::: title\n::::\n\n:::: toc\n::::\n',
+    '# 甲\n\n:::: slide title="甲1"\nA1\n::::\n\n:::: slide title="甲2"\nA2\n::::\n',
+    '# 乙\n\n:::: slide title="乙1"\nB1\n::::\n',
+    ':::: end\n::::\n',
+  ].join('');
+  const setup = () => {
+    useStore.getState().loadProjectData({ md: MD, folder: '/tmp/z' });
+    const idOf = (title: string) => {
+      const p = useStore.getState().computed.pages.find((x) => x.kind === 'slide' && x.slide.title === title);
+      return p && p.kind === 'slide' ? p.slide.id : null;
+    };
+    // zustand getState() 返回快照——computed 每次 mutate 后是新引用，必须现取
+    const titles = () => useStore.getState().computed.pages
+      .filter((x) => x.kind === 'slide' && !['title', 'toc', 'end'].includes(x.slide.layout))
+      .map((x) => (x.kind === 'slide' ? x.slide.title ?? '' : ''));
+    const act = () => useStore.getState();
+    return { act, idOf, titles };
+  };
+
+  it('跨节移动：甲1 拖到乙1 前 → 页序变化且 sectionPath 归入乙节；md 序持久化', () => {
+    const { act, idOf, titles } = setup();
+    const a1 = idOf('甲1');
+    const b1 = idOf('乙1');
+    expect(a1).toBeTruthy();
+    expect(b1).toBeTruthy();
+    act().moveSlide(a1!, b1!);
+    expect(titles()).toEqual(['甲2', '甲1', '乙1']);
+    const moved = useStore.getState().computed.pages.find((x) => x.kind === 'slide' && x.slide.title === '甲1');
+    expect(moved && moved.kind === 'slide' ? moved.sectionPath.map((s) => s.title) : null).toEqual(['乙']);
+    const md = serializeMarkdown(useStore.getState().deck);
+    expect(md.indexOf('甲2')).toBeLessThan(md.indexOf('甲1'));
+    expect(md.indexOf('甲1')).toBeLessThan(md.indexOf('乙1'));
+  });
+
+  it('beforeId=null → 移到 deck 末尾', () => {
+    const { act, idOf, titles } = setup();
+    act().moveSlide(idOf('甲2')!, null);
+    expect(titles().at(-1)).toBe('甲2');
+  });
+
+  it('目标不存在 → no-op；同页自移 → no-op', () => {
+    const { act, idOf, titles } = setup();
+    const before = titles();
+    act().moveSlide(idOf('乙1')!, 'nonexistent');
+    expect(titles()).toEqual(before);
+    act().moveSlide(idOf('乙1')!, idOf('乙1')!);
+    expect(titles()).toEqual(before);
+  });
+
+  it('页级页脚 foot 属性：解析 → 序列化往返幂等', () => {
+    const md = '---\nbeamerapp: 1\n---\n\n:::: slide title="页" foot="本页专属页脚"\n内容\n::::\n';
+    const deck = parseMarkdown(md);
+    const sl = deck.items[0];
+    expect(sl && sl.kind === 'slide' ? sl.slide.footNote : null).toBe('本页专属页脚');
+    const out = serializeMarkdown(deck);
+    expect(out).toContain('foot="本页专属页脚"');
+    // 再解析往返稳定
+    const deck2 = parseMarkdown(out);
+    const sl2 = deck2.items[0];
+    expect(sl2 && sl2.kind === 'slide' ? sl2.slide.footNote : null).toBe('本页专属页脚');
   });
 });

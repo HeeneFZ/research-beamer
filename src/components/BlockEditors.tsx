@@ -314,26 +314,45 @@ function CoverPlainFieldEditor({ value, onCommit, placeholder }: {
   );
 }
 
-/** 页脚短题名编辑（页脚左槽，全局 front-matter shortTitle） */
-export function FooterEditor() {
-  const setConfig = useStore((s) => s.setConfig);
-  const [val, setVal] = useState(useStore.getState().deck.config.shortTitle);
+/** 页脚附加信息编辑（页级：写入本页 slide.footNote；空值=清除页级覆盖，回退全局 shortTitle）。
+ *  提交三通道：Enter 显式提交 / onBlur 失焦提交 / 卸载兜底提交——画布空白 mousedown
+ *  先把 editing 置空，组件卸载时 blur 不派发（DOM 已摘除），onBlur 永远不跑，
+ *  点击外部退出会丢全部输入（用户实测报障；Enter 不丢因走 keydown）。 */
+export function FooterEditor({ slide }: { slide: Slide }) {
+  const updateSlide = useStore((s) => s.updateSlide);
+  const [val, setVal] = useState(slide.footNote ?? '');
   const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => { ref.current?.focus(); }, []);
+  // 最新值/已终态标记进 ref：cleanup 闭包拿到的是挂载时的 val（闭包陷阱）
+  const valRef = useRef(val);
+  valRef.current = val;
+  const doneRef = useRef(false);
+  const commit = () => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    // 空串=清除页级覆盖（回退全局）；非空=写入本页
+    updateSlide(slide.id, { footNote: valRef.current === '' ? undefined : valRef.current });
+  };
+  useEffect(() => {
+    ref.current?.focus();
+    return () => { commit(); closeEditing(); }; // 外部关闭（含空白点击）兜底提交
+  }, []);
   return (
     <input
       ref={ref}
       className="foot-edit"
       spellCheck={false}
       value={val}
-      placeholder="页脚短题名"
+      placeholder="本页页脚附加信息（空 = 沿用全局页脚）"
       onChange={(e) => setVal(e.target.value)}
-      onBlur={() => { setConfig({ shortTitle: val }); closeEditing(); }}
+      onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === 'Enter') {
-          setConfig({ shortTitle: val });
+          commit();
           closeEditing();
-        } else if (e.key === 'Escape') closeEditing(); // Esc = 取消（不提交）
+        } else if (e.key === 'Escape') {
+          doneRef.current = true; // Esc = 取消（不提交）
+          closeEditing();
+        }
         e.stopPropagation();
       }}
     />

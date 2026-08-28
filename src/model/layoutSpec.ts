@@ -21,9 +21,13 @@ export const FIT_MIN = 0.6;
 /** 每页 fontScale 允许范围 */
 export const PAGE_FONT_MIN = 0.6;
 export const PAGE_FONT_MAX = 1.5;
-/** 图限高边界（cqh）：起点恒为 MAX（天花板）；MIN 为扫描器压实下限 */
-export const IMG_H_MIN = 16;
+/** 图限高边界（cqh）：起点恒为 MAX（天花板）；MIN 为扫描器压实下限。
+ *  纯图页（无文本/公式/表格内容块）MAX 提升到 78：整页只放图时正文区高约 82cqh，
+ *  55 天花板会把 aspect≈1.5 的图钳到半宽（width=1 实绘仅 54%——用户实测报障）；
+ *  扫描器仍从 MAX 实测压回放得下的最大值，不会溢出。混合页维持 55 不变 */
+ export const IMG_H_MIN = 16;
 export const IMG_H_MAX = 55;
+export const IMG_H_MAX_IMGONLY = 78;
 
 /** 页级排版状态（扫描器产出，存 store.pageLayout，内存态不写 md） */
 export interface SpacingState {
@@ -59,13 +63,14 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 const lerp = (t: number, a: number, b: number) => a + (b - a) * t;
 
 /** 计算页面排版规格（内容/双栏/目录页通用）。
- *  Block[] 形参为 API 兼容保留：第廿九轮起图像尺寸完全由宽度权威 + 扫描器实测决定，
- *  规格不再读页面内容（旧 estTextHeight 文本量估算预压已整体删除）。
- *  字阶与 aspect 有意无关（物理锚定）：同一 fontSize 在 4:3/16:9 上为相同物理 pt，
- *  4:3 页宽更窄、相对占比更大——PPT 4:3 画布（10in 宽）上文字相对亦更大，语义一致。 */
+ *  第廿九轮起图像尺寸完全由宽度权威 + 扫描器实测决定，不做文本量估算预压；
+ *  仅剩一个内容判定：纯图页（无 paragraph/itemize/equation/annoeq/table）用更高的
+ *  图高天花板 IMG_H_MAX_IMGONLY——55 对纯图页是人为损失（见常量注释）。 */
 export function computeLayoutSpec(
   input: { blocks?: Block[]; fontScale?: number; fontSize?: number },
 ): LayoutSpec {
+  const contentBlocks = (input.blocks ?? []).filter((b) => b.type !== 'colmark' && b.type !== 'colend');
+  const imgOnly = contentBlocks.length > 0 && contentBlocks.every((b) => b.type === 'figure' || b.type === 'video');
   const standard = input.fontSize ?? 16;
   const scale = clamp(input.fontScale ?? 1, PAGE_FONT_MIN, PAGE_FONT_MAX);
   const bodyPt = standard * PPT2PHYS * scale;
@@ -79,8 +84,9 @@ export function computeLayoutSpec(
     paraGapNom: 1.2, paraGapMin: 0.6,
     itemGapNom: 0.7, itemGapMin: 0.4,
     imgAutoW: 0.75,
-    // 限高起点恒为天花板：放得下多少由扫描器实测（宽度权威，图最后压），不做估算预压
-    imgHNom: IMG_H_MAX,
+    // 限高起点恒为天花板：放得下多少由扫描器实测（宽度权威，图最后压），不做估算预压；
+    // 纯图页用更高天花板（见 IMG_H_MAX_IMGONLY 注释）
+    imgHNom: imgOnly ? IMG_H_MAX_IMGONLY : IMG_H_MAX,
     fitMin: Math.min(1, FIT_MIN / scale),
   };
 }
@@ -108,8 +114,10 @@ export function defaultSpacing(spec: LayoutSpec): SpacingState {
 export const S_LADDER = [0.25, 0.5, 0.75, 1];
 /** 字号兜底步进（fit 每步 −0.05） */
 export const FIT_STEP = 0.05;
-/** 「放得下」判定容差（px）：溢出不超过此值视为放得下（亚像素级裁切不算溢出） */
-export const FIT_TOL = 8;
+/** 「放得下」判定容差（px）：溢出不超过此值视为放得下（亚像素级裁切不算溢出）。
+ *  旧值 8：两图页末图带 3.5 布局 px 溢出「定居」，渗入底部 padding——上下留白
+  *  不对称 6.7 显示 px（用户实测报障）；2px 兼顾亚像素噪声与对称性 */
+export const FIT_TOL = 2;
 
 /** 溢出探测回调：st → 溢出 px（scrollHeight − clientHeight，恒 ≥ 0） */
 export type OverflowProbe = (st: SpacingState) => number;

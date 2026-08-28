@@ -119,6 +119,13 @@ button { cursor: pointer; }
   font-size: 13px; letter-spacing: 4px; border-bottom: 1px solid #e6e9ee; margin-bottom: 10px;
 }
 .thumb { margin-bottom: 10px; cursor: pointer; position: relative; }
+/* 大纲拖拽换序：源页半透明；落点页顶部高亮线（落在该页之前） */
+.thumb.dragging { opacity: .35; }
+.thumb.drop-hint .thumb-page { outline: 2px solid #2470c8; outline-offset: 1px; }
+.thumb.drop-hint::before {
+  content: ''; position: absolute; left: 0; right: 0; top: -4px; height: 3px;
+  background: #2470c8; border-radius: 2px;
+}
 .thumb-page {
   overflow: hidden; border-radius: 3px; background: #fff;
   box-shadow: 0 1px 3px rgba(30,40,60,.14), 0 3px 10px rgba(30,40,60,.08);
@@ -240,7 +247,10 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 
 .s-body {
   flex: 1; min-height: 0; overflow: hidden;
-  padding: 4.3cqh 5cqw 2.85cqh;
+  /* 上下 padding 对称（3.6cqh）：旧版 4.3/2.85 不对称使「首块上缘到页眉」比
+     「末块下缘到页脚」大 17px（用户实测报障：两张同尺寸图上下留白不等）。
+     对称后正文区在页眉/页脚间垂直居中 */
+  padding: 3.6cqh 5cqw 3.6cqh;
   /* --fs-body：固定字阶正文物理字号（标准×fontScale）；--body-fit：溢出兜底系数（下限 0.6×标准） */
   font-size: calc(var(--fs-body, 10.08pt) * var(--body-fit, 1));
   line-height: var(--lh, 1.5);
@@ -275,13 +285,20 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 .cols::before { top: 0; transform: translateY(-0.45em); }
 .cols::after { bottom: 0; transform: translateY(0.3em); }
 
-/* ---- 页脚：分割线 + 短题名 | (参考文献位) | 页码，约占页高 7% ---- */
+/* ---- 页脚：分割线 + 页脚附加信息 | (参考文献位) | 页码，约占页高 7% ---- */
 .s-footer {
   flex: 0 0 auto; height: 7cqh; display: flex; align-items: center;
   justify-content: space-between; gap: 4cqw;
-  padding: 0 5cqw; margin: 0 3cqw;
-  border-top: 0.5pt solid color-mix(in srgb, var(--p-muted) 45%, transparent);
+  position: relative;
+  padding: 0 5cqw;
   font-size: var(--fs-foot, 6.72pt); color: var(--p-muted);
+}
+/* 分割线端点 = 对齐网格（5cqw，与页眉标题/面包屑/正文/页脚文字同一基准）。
+ *  旧版 border-top 全宽（端点在页缘）+ 更早的 margin:0 3cqw（端点比文字还窄）
+ *  都不与文字网格对齐；伪元素 inset 精确落位（用户定义：分割线端点即对齐端点） */
+.s-footer::before {
+  content: ''; position: absolute; top: 0; left: 5cqw; right: 5cqw;
+  border-top: 0.5pt solid color-mix(in srgb, var(--p-muted) 45%, transparent);
 }
 .s-foot-left, .s-foot-mid, .s-foot-right {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
@@ -421,22 +438,16 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 .toc-l2 { padding-left: 6cqw; }
 .toc-l2 .toc-title { font-size: 0.82em; color: var(--p-muted); }
 .toc-l2 .toc-num { font-size: 0.76em; }
-.toc-l3 { padding-left: 12cqw; }
-.toc-l3 .toc-title { font-size: 0.76em; color: var(--p-muted); }
-.toc-l3 .toc-num { font-size: 0.67em; }
-
-/* ---- 块 ---- */
 .fblock { min-width: 0; position: relative; }
 .para { margin: 0 0 var(--gap-para, 1.6em); }
 .para-empty { min-height: 1.55em; margin: 0 0 var(--gap-para, 1.6em); }
 
 /* 图 / 视频：等比缩放（object-fit contain 保证永不拉伸）；限高随页面密度（--img-max-h） */
-.fig img, .fig video {
+.fig img, .fig video, .fig canvas.gif-still {
   width: 100%; height: auto; max-height: var(--img-max-h, 42cqh);
   object-fit: contain;
   border-radius: .6cqw; display: block;
 }
-.fig video { background: #000; }
 /* 视频首帧画布仅打印用（屏幕态隐藏，@media print 中显示） */
 .vid-firstframe { display: none; }
 .pdf-fig { width: 100%; margin: 0 auto; }
@@ -950,7 +961,7 @@ body.dark .bb-sep { background: #333a44; }
 .title-edit .ProseMirror > p, .sec-edit .ProseMirror > p { margin: 0; }
 .title-edit .ProseMirror .katex, .sec-edit .ProseMirror .katex { font-size: 1em; }
 .cover-edit .ProseMirror { white-space: normal; overflow: visible; overflow-wrap: break-word; }
-/* 页脚短题名编辑（浅色底，区别于页眉白字） */
+/* 页脚附加信息编辑（浅色底，区别于页眉白字） */
 .foot-edit {
   font: inherit; color: inherit; background: #f8fbff;
   border: 1.5px dashed #2470c8; border-radius: .6cqw;
@@ -991,14 +1002,20 @@ body.dark .bb-sep { background: #333a44; }
 body.dark .save-pill { background: #262b33; border-color: #384049; color: #9aa3ad; }
 body.dark .save-pill.on { background: #1d2b3a; border-color: #2c4a6c; color: #7db4f0; }
 
-/* 空页添加按钮：顶部对齐（新块出现的位置与按钮一致，无跳变） */
+/* 空页添加按钮：顶部对齐（新块出现的位置与按钮一致，无跳变）；
+   点击弹块类型菜单（ref-picker 家族样式）——旧版默认建空段落，
+   用户从段落 /菜单建其他块后空段落残留（用户实测报障） */
+.add-first-wrap { position: relative; }
 .add-first-btn {
   display: block; margin: 0 auto;
   border: 1.5px dashed #b9c6d8; background: transparent; color: #2470c8;
   border-radius: 1cqw; padding: 1.2cqw 3cqw; font-size: 2.2cqw;
 }
 .add-first-btn:hover { background: #f0f6fd; border-color: #2470c8; }
-
+.btools-menu-float.add-first-menu {
+  left: 50%; transform: translateX(-50%);
+  top: calc(100% + 8px); position: absolute; z-index: 30;
+}
 /* =========================================
    居中弹窗（EditorApp ModalShell 式，全 px——portal 在 .sv 容器外，禁用 cqw）
    ========================================= */
@@ -1236,17 +1253,19 @@ body.dark .lx-ac-item.sel { background: #2c3a4c; }
 .math-float-hint { font-size: 10px; color: #98a0a9; margin-top: 4px; text-align: right; }
 body.dark .math-float { background: #23272e; border-color: #333a44; }
 
-/* 页眉面包屑：层级区分 + 悬停 ＋ 添加子节 */
+/* 页眉面包屑：层级区分 + 悬停 ＋ 添加子节。
+   ＋ 按钮空闲态 display:none 零占位（旧版 opacity:0 仍占 2.4cqw+gap，
+   把面包屑文字从右缘推开 37px——左标题 57.8px 对齐基准被打破，用户实测报障）；
+   悬停才进流：右侧锚定（.s-sec 右对齐、flex:0 0 auto），向左扩张不影响右缘 */
 .s-sec-crumb { display: inline-flex; align-items: center; gap: .8cqw; }
 .s-sec-seg { display: inline-flex; align-items: baseline; gap: 1cqw; }
 .s-sec-add {
-  opacity: 0; border: none; cursor: pointer; padding: 0;
+  border: none; cursor: pointer; padding: 0;
   width: 2.4cqw; height: 2.4cqw; border-radius: 50%;
   background: rgba(255,255,255,.2); color: #fff; font-size: 1.7cqw; line-height: 1;
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: opacity .12s;
+  display: none; align-items: center; justify-content: center;
 }
-.s-sec-crumb:hover .s-sec-add { opacity: 1; }
+.s-sec-crumb:hover .s-sec-add { display: inline-flex; }
 .s-sec-add:hover { background: rgba(255,255,255,.38); }
 .s-sec-sep { color: rgba(255,255,255,.4); margin: 0 .2cqw; }
 .s-sec-dim { color: rgba(255,255,255,.55); }

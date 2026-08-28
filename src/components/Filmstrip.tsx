@@ -2,13 +2,31 @@
 // 页间插入条：悬停缝隙显示引导线与 ＋；菜单仅点击 ＋ 打开；
 // 指针离开菜单区域 200ms、点击他处、或选中页型后关闭
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { promptText } from './prompt';
 import { SlideView } from './SlideView';
-import { PAGE_SIZE } from '../model/types';
+import { PAGE_SIZE, Page } from '../model/types';
 
 const THUMB_W = 152; // px
+
+/** 拖拽落点换算：page → 作为 moveSlide 目标的 slide（divider→其后首个内容 slide；
+ *  title/toc/end 特殊页 → null（不可作落点） */
+function dropTargetSlideOf(p: Page, pages: Page[]): string | null {
+  if (p.kind === 'slide' && p.slide) {
+    const l = p.slide.layout;
+    if (l === 'title' || l === 'toc' || l === 'end') return null;
+    return p.slide.id;
+  }
+  // divider：其后第一个内容 slide；相邻节标题/特殊页 → null（不可作落点）
+  for (let i = p.index + 1; i < pages.length; i++) {
+    const q = pages[i];
+    if (q.kind === 'divider') return null;
+    if (q.kind === 'slide' && q.slide && !['title', 'toc', 'end'].includes(q.slide.layout)) return q.slide.id;
+  }
+  return null;
+}
+
 
 export function Filmstrip() {
   const deck = useStore((s) => s.deck);
@@ -22,7 +40,10 @@ export function Filmstrip() {
   const renameSection = useStore((s) => s.renameSection);
   const [menu, setMenu] = useState<{ x: number; y: number; pageIndex: number } | null>(null);
   const [stripMenu, setStripMenu] = useState<{ x: number; y: number; afterIndex: number } | null>(null);
-
+  // 拖拽换序：dragPage=拖动源页 index；dropHint=当前悬停落点页 index（null=无有效落点）
+  const [dragPage, setDragPage] = useState<number | null>(null);
+  const [dropHint, setDropHint] = useState<number | null>(null);
+  const dragSrcRef = useRef<string | null>(null); // 拖动源 slideId（dataTransfer 在部分场景读不到）
   const size = PAGE_SIZE[deck.config.aspect];
   const pxW = (size.w * 96) / 25.4;
   const pxH = (size.h * 96) / 25.4;
@@ -84,7 +105,31 @@ export function Filmstrip() {
       {computed.pages.map((p, i) => (
         <div key={p.index}>
           <div
-            className={'thumb' + (p.index === current ? ' sel' : '')}
+            className={'thumb' + (p.index === current ? ' sel' : '') + (dragPage === p.index ? ' dragging' : '') + (dropHint === p.index ? ' drop-hint' : '')}
+            draggable={p.kind === 'slide' && p.slide != null && !['title', 'toc', 'end'].includes(p.slide.layout)}
+            onDragStart={(e) => {
+              if (!p.slide) return;
+              dragSrcRef.current = p.slide.id;
+              setDragPage(p.index);
+              e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData('text/plain', p.slide.id);
+            }}
+            onDragEnd={() => { setDragPage(null); setDropHint(null); dragSrcRef.current = null; }}
+            onDragOver={(e) => {
+              if (dragSrcRef.current == null) return;
+              const target = dropTargetSlideOf(p, computed.pages);
+              if (target == null || target === dragSrcRef.current) { setDropHint(null); return; }
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              setDropHint(p.index);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              const src = dragSrcRef.current ?? e.dataTransfer.getData('text/plain');
+              const target = dropTargetSlideOf(p, computed.pages);
+              if (src && target && target !== src) useStore.getState().moveSlide(src, target);
+              setDragPage(null); setDropHint(null); dragSrcRef.current = null;
+            }}
             onClick={() => gotoPage(p.index)}
             onContextMenu={(e) => {
               e.preventDefault();

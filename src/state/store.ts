@@ -14,8 +14,8 @@ export interface FlashState {
   nonce: number;
 }
 
-/** 正在编辑的块/页标题/节名/页脚短题名/封面字段。节名编辑两种形态：
- *  sectionId 有值 = 重命名该节段；无值 = 在本页前新建 sectionLevel 级节 */
+/** 正在编辑的块/页标题/节名/页脚附加信息/封面字段。节名编辑两种形态：
+ *  sectionId 有值 = 重命名该节段；无值 = 从本页前新建 sectionLevel 级节 */
 export interface EditState {
   slideId: string;
   blockId?: string;
@@ -69,6 +69,7 @@ interface StoreState {
   deleteSlide(slideId: string): void;
   duplicateSlide(slideId: string): void;
   addSectionBefore(slideId: string, title: string, level: 1 | 2 | 3): void;
+  moveSlide(slideId: string, beforeId: string | null): void;
   renameSection(sectionId: string, title: string): void;
   jumpToRef(label: string): void;
   startPresent(): Promise<void>;
@@ -338,6 +339,36 @@ export const useStore = create<StoreState>((set, get) => {
       mutate((d) => {
         d.items.splice(idx, 0, { kind: 'section', section: { id: newId(), level, title, label: undefined } });
       }, false);
+    },
+
+    /** 大纲拖拽换页序：把 slide 移到目标 slide 之前（beforeId=null 移到全 deck 末尾）。
+     *  层级语义：slide 项在 items 数组里原位移动，节归属由 computeDeck 按
+     *  前置 section 标题重算——移到某节标题之前即脱离该节，语义自然。
+     *  禁区：不可移到 title/toc 之前（特殊页恒居首部）。 */
+    moveSlide: (slideId: string, beforeId: string | null) => {
+      const s = get();
+      const from = d_indexOf(s.deck, slideId);
+      if (from < 0) return;
+      let to: number;
+      if (beforeId == null) {
+        to = s.deck.items.length;
+      } else {
+        const t = d_indexOf(s.deck, beforeId);
+        if (t < 0 || t === from) return;
+        to = t;
+      }
+      // 落点在 title/toc 特殊页之前 → 拒绝（保持特殊页恒居首部）
+      const items = s.deck.items;
+      const firstContent = items.findIndex((x) => x.kind === 'slide' && !['title', 'toc', 'end'].includes(x.slide.layout));
+      if (firstContent > 0 && to < firstContent && from >= firstContent) return;
+      mutate((d) => {
+        const [it] = d.items.splice(from, 1);
+        const at = from < to ? to - 1 : to;
+        d.items.splice(at, 0, it);
+      }, false);
+      const c = get().computed;
+      const idx = c.pages.findIndex((pg) => pg.kind === 'slide' && pg.slide?.id === slideId);
+      if (idx >= 0) set({ current: idx });
     },
 
     renameSection: (sectionId, title) =>

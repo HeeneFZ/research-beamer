@@ -135,8 +135,32 @@ export function EpsFigure({ abs }: { abs: string }) {
   return <div className="fig-note eps-pending" data-eps-pending>EPS 转换中…</div>;
 }
 
+/** GIF 静帧（缩略图用）：离屏 Image 解码、drawImage 取首帧入 canvas——图片不进 DOM
+ *  即不起 Chromium 动画循环（对动画图 drawImage 恒画默认帧=首帧）。胶片缩略图渲染
+ *  全部页，几十张 GIF 同时持续播放/解码会拖垮编辑帧率（用户实测卡顿报障）；
+ *  画布与放映仍用 <img> 原生播放。canvas 初始 0×0，useLayoutScan 的 cvsPending
+ *  会等首帧就绪再定稿排版。 */
+export function GifStillFrame({ abs, onAspect }: { abs: string; onAspect: (a: number) => void }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    let alive = true;
+    const im = new Image();
+    im.onload = () => {
+      if (!alive || im.naturalWidth <= 0) return;
+      onAspect(im.naturalWidth / im.naturalHeight);
+      const c = ref.current;
+      if (!c) return;
+      c.width = im.naturalWidth;
+      c.height = im.naturalHeight;
+      c.getContext('2d')?.drawImage(im, 0, 0);
+    };
+    im.src = fileUrl(abs);
+    return () => { alive = false; im.onload = null; };
+  }, [abs, onAspect]);
+  return <canvas ref={ref} className="gif-still" />;
+}
 export function FigureView({
-  block, folder, computed, lang, palette, onRef, onZoom, onWidthChange,
+  block, folder, computed, lang, palette, onRef, onZoom, onWidthChange, still,
 }: {
   block: Block;
   folder: string;
@@ -146,6 +170,8 @@ export function FigureView({
   onRef?: (label: string) => void;
   onZoom?: (abs: string, ext: string, caption?: string) => void;
   onWidthChange?: (w: number) => void;
+  /** 静帧渲染（缩略图）：GIF 不播放（首帧 canvas），防胶片全页动画拖垮编辑帧率 */
+  still?: boolean;
 }) {
   const figRef = useRef<HTMLElement | null>(null);
   // 位图固有宽高比（加载后测得）：宽/高双约束取交集的另一半（对齐 PdfCanvas 语义）——
@@ -161,6 +187,9 @@ export function FigureView({
   let inner: JSX.Element;
   if (lower.endsWith('.pdf')) inner = <PdfCanvas abs={abs} />;
   else if (lower.endsWith('.eps')) inner = <EpsFigure abs={abs} />;
+  else if (still && lower.endsWith('.gif')) {
+    inner = <GifStillFrame abs={abs} onAspect={setNatAspect} />;
+  }
   else {
     inner = (
       <img

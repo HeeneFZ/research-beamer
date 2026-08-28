@@ -12,14 +12,15 @@
 // 各部件已移至 ./slide/*（types / useLayoutScan / FlowBlock /
 // SectionBreadcrumb / StaticPages），纯搬移无行为变化。
 
-import { CSSProperties, useMemo, useRef } from 'react';
+import { CSSProperties, useMemo, useRef, useState } from 'react';
 import { Block, PAGE_SIZE, Slide } from '../model/types';
+import { defaultAnnoState } from '../model/anno';
 import { paletteVars } from '../model/palette';
 import { computeLayoutSpec, defaultSpacing, layoutCssVars } from '../model/layoutSpec';
 import { fileUrl } from './pdfRaster';
 import { absMediaPath } from './paths';
 import { InlineText } from './InlineText';
-import { TitleEditor, FooterEditor, CoverFieldEditor } from './BlockEditors';
+import { TitleEditor, FooterEditor, CoverFieldEditor, insertMediaBlock } from './BlockEditors';
 import { useStore } from '../state/store';
 import { SlideViewProps } from './slide/types';
 import { useLayoutScan } from './slide/useLayoutScan';
@@ -30,6 +31,16 @@ import { CoverLogo, LogoAddChip } from './slide/CoverLogo';
 import { AuthorsLine, AffiliationsView, DividerView, TocView } from './slide/StaticPages';
 
 export type { SlideMode, SlideViewProps } from './slide/types';
+/** 空页首块菜单项（不含栏标记：空页直接开栏无意义，先有内容块再谈分栏） */
+const FIRST_ITEMS = [
+  { key: 'paragraph', badge: '¶', cls: 'sec', label: '段落', hint: '文本' },
+  { key: 'itemize', badge: '≡', cls: 'eq', label: '列表', hint: '要点' },
+  { key: 'equation', badge: '∑', cls: 'eq', label: '公式', hint: '编号' },
+  { key: 'annoeq', badge: '⌖', cls: 'eq', label: '注释公式', hint: '引线标注' },
+  { key: 'figure', badge: '▣', cls: 'fig', label: '图片…', hint: '文件' },
+  { key: 'video', badge: '▶', cls: 'fig', label: '视频…', hint: '文件' },
+  { key: 'table', badge: '▦', cls: 'tab', label: '表格', hint: '三线表' },
+] as const;
 
 export function SlideView({
   page, deck, computed, folder, mode = 'edit', revealed, onRef, onSlideJump, onZoom, highlightLabel,
@@ -40,6 +51,8 @@ export function SlideView({
   const layout: string = page.kind === 'divider' ? 'section' : page.slide?.layout || 'content';
 
   const bodyRef = useRef<HTMLDivElement>(null);
+  // 空页首块类型菜单（本地态：仅编辑画布的这个组件实例需要；条件分支内禁止 Hook）
+  const [firstMenu, setFirstMenu] = useState(false);
   const slide0 = page.slide;
   const scannable = layout === 'content' || layout === 'twoCol' || layout === 'toc';
   // 排版规格：固定字阶（全 deck 统一）× 本页 fontScale（仅正文区）+ 间距两端 + 图高预算
@@ -249,33 +262,61 @@ export function SlideView({
         <div className="s-body" ref={bodyRef}>
           {renderSegments(blocks)}
           {empty && (
-            <button
-              className="add-first-btn"
-              onClick={() => {
-                if (!slide) return;
-                const s = useStore.getState();
-                // 清掉残留栏标记，回到干净单栏
-                for (const b of [...slide.blocks]) {
-                  if (b.type === 'colmark' || b.type === 'colend') s.deleteBlock(slide.id, b.id);
-                }
-                const id = s.insertBlock(slide.id, null, 'paragraph', { text: '' });
-                s.setFocus(id, 'start');
-              }}
-            >
-              ＋ 添加内容
-            </button>
+            <div className="add-first-wrap">
+              <button
+                className="add-first-btn"
+                onClick={(e) => { e.stopPropagation(); setFirstMenu((v) => !v); }}
+              >
+                ＋ 添加内容
+              </button>
+              {firstMenu && (
+                <div className="btools-menu-float add-first-menu" onClick={(e) => e.stopPropagation()}>
+                  <div className="ref-picker-title">选择首个内容块</div>
+                  {FIRST_ITEMS.map((it) => (
+                    <div
+                      key={it.key}
+                      className="ref-picker-item"
+                      onMouseDown={(e) => { e.preventDefault(); if (!slide) return; setFirstMenu(false);
+                        const s = useStore.getState();
+                        // 清掉残留栏标记，回到干净单栏
+                        for (const b of [...slide.blocks]) {
+                          if (b.type === 'colmark' || b.type === 'colend') s.deleteBlock(slide.id, b.id);
+                        }
+                        if (it.key === 'figure' || it.key === 'video') {
+                          void insertMediaBlock(slide.id, null, it.key);
+                        } else {
+                          const init =
+                            it.key === 'equation' ? { latex: 'x = 1' } :
+                            it.key === 'annoeq' ? { latex: 'x = 1', anno: defaultAnnoState() } :
+                            it.key === 'itemize' ? { items: ['条目'] } :
+                            it.key === 'table' ? { cells: [['列1', '列2'], ['', '']] } :
+                            { text: '' };
+                          const id = s.insertBlock(slide.id, null, it.key as Block['type'], init);
+                          if (it.key === 'paragraph' || it.key === 'itemize') s.setFocus(id, 'start');
+                          else s.setEditing({ slideId: slide.id, blockId: id });
+                        }
+                      }}
+                    >
+                      <span className={`ref-kind slash-badge-${it.cls}`}>{it.badge}</span>
+                      <span>{it.label}</span>
+                      <span className="slash-hint">{it.hint}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
         <div className="s-footer">
           {mode === 'edit' && slide && editing != null && editing.slideId === slide.id && editing.field === 'footer' ? (
-            <FooterEditor />
+            <FooterEditor slide={slide} />
           ) : (
             <span
-              className={'s-foot-left' + (mode === 'edit' && slide ? ' s-foot-editable' : '') + (!config.shortTitle && mode === 'edit' && slide ? ' s-foot-ph' : '')}
-              title={mode === 'edit' && slide ? '点击编辑页脚短题名' : undefined}
+              className={'s-foot-left' + (mode === 'edit' && slide ? ' s-foot-editable' : '') + (!(slide?.footNote ?? config.shortTitle) && mode === 'edit' && slide ? ' s-foot-ph' : '')}
+              title={mode === 'edit' && slide ? '点击编辑本页页脚附加信息（空则沿用全局页脚）' : undefined}
               onClick={mode === 'edit' && slide ? (e) => { e.stopPropagation(); setEditing({ slideId: slide.id, field: 'footer' }); } : undefined}
             >
-              {config.shortTitle || (mode === 'edit' && slide ? '＋ 页脚短题名' : '')}
+              {(slide?.footNote ?? config.shortTitle) || (mode === 'edit' && slide ? '＋ 页脚信息' : '')}
             </span>
           )}
           <span className="s-foot-mid" />

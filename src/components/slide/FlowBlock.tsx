@@ -176,7 +176,7 @@ export function FlowBlock({
         inner = <AnnoEquationView block={block} computed={computed} highlight={highlight} />;
         break;
       case 'figure':
-        inner = <FigureView block={block} folder={folder} onZoom={onZoom} {...common} onWidthChange={onWidthChange} />;
+        inner = <FigureView block={block} folder={folder} onZoom={onZoom} {...common} onWidthChange={onWidthChange} still={mode === 'thumb'} />;
         break;
       case 'video':
         inner = <VideoView block={block} folder={folder} onWidthChange={onWidthChange} />;

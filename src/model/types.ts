@@ -64,6 +64,8 @@ export interface Slide {
   /** 本页正文区字号比例（相对全局标准 fontSize，0.6–1.5；缺省 1）。
    *  只影响正文区（段落/列表/公式/表格/题注），页眉/页脚永不变化 */
   fontScale?: number;
+  /** 本页页脚附加信息（页级独立，覆盖全局 shortTitle；空串=清空本页回退全局） */
+  footNote?: string;
   /** 演讲稿（纯文本多行） */
   notes?: string;
   blocks: Block[];

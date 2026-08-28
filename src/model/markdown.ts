@@ -279,6 +279,8 @@ export function parseMarkdown(md: string): Deck {
         const f = parseFloat(attrs.fontScale);
         if (Number.isFinite(f) && f > 0) slide.fontScale = Math.min(1.5, Math.max(0.6, f));
       }
+      // 本页页脚附加信息（页级，覆盖全局 shortTitle）
+      if (attrs.foot != null) slide.footNote = attrs.foot;
       i++;
       // 收集页内块直至闭栏 ::::
       let para: string[] = [];
@@ -541,6 +543,7 @@ function serializeSlide(slide: Slide): string {
     if (slide.title != null) head += ` title=${q(slide.title)}`;
     if (slide.ratio != null) head += ` ratio="${slide.ratio}"`;
     if (slide.fontScale != null) head += ` fontScale="${slide.fontScale}"`;
+    if (slide.footNote != null) head += ` foot=${q(slide.footNote)}`;
   }
   out.push(head);
 

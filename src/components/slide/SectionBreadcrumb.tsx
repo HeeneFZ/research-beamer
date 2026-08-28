@@ -141,12 +141,12 @@ export function SectionBreadcrumb({ slide, path, computed }: {
           </div>
           <div className="sec-menu-item"
             onClick={() => startEdit(undefined, menu.seg.level as 1 | 2 | 3)}>
-            {zh ? `在本页前新建同级${lvlName(menu.seg.level)}` : `New sibling ${lvlName(menu.seg.level)} before this page`}
+            {zh ? `从本页新建同级${lvlName(menu.seg.level)}` : `New sibling ${lvlName(menu.seg.level)} from this page`}
           </div>
           {menu.seg.level < 3 && (
             <div className="sec-menu-item"
               onClick={() => startEdit(undefined, (menu.seg.level + 1) as 2 | 3)}>
-              {zh ? `在本页前新建${lvlName(menu.seg.level + 1)}（子级）` : `New child ${lvlName(menu.seg.level + 1)} before this page`}
+            {zh ? `从本页新建${lvlName(menu.seg.level + 1)}（子级）` : `New child ${lvlName(menu.seg.level + 1)} from this page`}
             </div>
           )}
         </div>,
