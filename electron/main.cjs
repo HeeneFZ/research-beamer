@@ -1,6 +1,7 @@
 // Electron main process (plain CJS, no build step needed)
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const fs = require('fs');
+const crypto = require('crypto');
 const path = require('path');
 
 // E2E 模式用独立 userData：不与用户正开着的实例抢单实例锁，也不碰用户示例副本
@@ -190,6 +191,19 @@ function findGhostscript() {
   return candidates[0] || null;
 }
 
+// 两文件是否字节级一致：先比大小（快速路径）再比 SHA-256（大 GIF/PDF 也可承受）
+function sameFileContent(a, b) {
+  try {
+    const sa = fs.statSync(a);
+    const sb = fs.statSync(b);
+    if (!sa.isFile() || !sb.isFile() || sa.size !== sb.size) return false;
+    const hash = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+    return hash(a) === hash(b);
+  } catch (_) {
+    return false;
+  }
+}
+
 function readProjectFromFolder(folder) {
   const mdPath = path.join(folder, 'deck.md');
   const md = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, 'utf8') : null;
@@ -266,21 +280,24 @@ ipcMain.handle('project:save', async (_e, { folder, md }) => {
 });
 
 // 图片/视频导入工程 media/（仅复制文件）
+// 同名已存在：内容一致 → 复用现有文件（同一素材多处引用不再产生 -N 副本；
+// 曾因无条件加序号，media 目录被塞满重复大文件，且 deck.md 引用的是副本名，
+// 副本一旦被清掉，放映窗（独立进程冷加载 file://）即裂图）；同名不同内容 →
+// 加序号另存，不覆盖既有文件
 ipcMain.handle('media:import', async (_e, { srcPath, folder }) => {
   try {
     if (!folder) return { error: 'no folder' };
     const mediaDir = path.join(folder, 'media');
     if (!fs.existsSync(mediaDir)) fs.mkdirSync(mediaDir, { recursive: true });
-    let name = path.basename(srcPath);
-    // 重名自动加序号，不覆盖既有文件
+    const name = path.basename(srcPath);
     let dest = path.join(mediaDir, name);
     for (let i = 1; fs.existsSync(dest); i++) {
+      if (sameFileContent(srcPath, dest)) return { fileName: path.basename(dest) };
       const ext = path.extname(name);
       dest = path.join(mediaDir, path.basename(name, ext) + '-' + i + ext);
     }
-    name = path.basename(dest);
     fs.copyFileSync(srcPath, dest);
-    return { fileName: name };
+    return { fileName: path.basename(dest) };
   } catch (e) {
     return { error: String(e) };
   }
