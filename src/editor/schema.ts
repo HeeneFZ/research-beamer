@@ -6,6 +6,7 @@
 
 import { Node, InputRule, Extension, Mark } from '@tiptap/core';
 import { ReactNodeViewRenderer } from '@tiptap/react';
+import { InlineToken, tokenizeInline } from '../model/inline';
 import { InlineMathView, RefChipView } from '../components/ChipViews';
 
 // ---------- custom nodes ----------
@@ -110,19 +111,13 @@ export const BgSpan = Mark.create({
     return ['span', { 'data-bg-role': HTMLAttributes.role ?? 'accent' }, 0];
   },
 });
-
 // ---------- serialization（与 model/inline.ts 合约一致） ----------
 
-// 组合 spec 语法：[文字]{color=x,bg=y}（单/双标记同构，可往返）
-const ROLE = 'primary|primaryDeep|accent|accentDeep|emphasis|emphasisDeep|muted|text';
-const INLINE_TOKEN_RE = new RegExp(
-  '\\$([^$\\n]+)\\$' +                              // 1  行内公式
-  '|\\[@(eq|fig|sec|tab):([A-Za-z0-9_:-]+)\\]' +    // 2,3 引用芯片
-  '|\\*\\*([^*\\n]+)\\*\\*' +                       // 4  粗体
-  '|\\*([^*\\n]+)\\*' +                             // 5  斜体
-  '|\\[([^\\]\\n]*)\\]\\{((?:color|bg)=(?:' + ROLE + ')(?:,(?:color|bg)=(?:' + ROLE + '))?)\\}', // 6,7 着色/底色
-  'g',
-);
+// 编辑态解析复用展示态 tokenizer（model/inline.ts 递归下降）——单一语法事实源，
+// 编辑所见即展示所得。旧扁平正则的三类漏解析（漏成裸文本、源码直显）：
+//   ① span 内容含 \n（硬换行）：[方法一\n（积分）：]{color=primary}——[^\]\n]* 排除换行
+//   ② 粗体/斜体与着色嵌套：**[重点]{color=accent}**——bold 先匹配吞掉内层 span
+//   ③ 非预设角色名：{color=blue}——旧正则按角色白名单收紧（展示态 [\w-]+ 宽容）
 
 interface PmNode {
   type: string;
@@ -130,43 +125,60 @@ interface PmNode {
   attrs?: Record<string, string>;
   marks?: { type: string; attrs?: Record<string, string> }[];
 }
+type PmMark = NonNullable<PmNode['marks']>[number];
 
-/** 纯文本段入列：\n（块内硬换行）拆为 hardBreak 节点（PM 文本节点不允许 \n） */
-function pushText(out: PmNode[], text: string): void {
+/** 追加 mark：同类型去重后替换（对齐 PM Mark.addToSet 语义；源码语法
+ *  first-]-wins 使同类嵌套不可达，此处为编辑器内重复套用做防御） */
+function withMark(marks: PmMark[], mark: PmMark): PmMark[] {
+  return [...marks.filter((m) => m.type !== mark.type), mark];
+}
+
+/** 纯文本段入列：\n（块内硬换行）拆为 hardBreak 节点（PM 文本节点不允许 \n）；
+ *  祖先嵌套累积的 marks 施加到每个文本片段 */
+function pushText(out: PmNode[], text: string, marks: PmMark[] = []): void {
   const parts = text.split('\n');
   parts.forEach((p, i) => {
     if (i > 0) out.push({ type: 'hardBreak' });
-    if (p) out.push({ type: 'text', text: p });
+    if (p) out.push(marks.length ? { type: 'text', text: p, marks } : { type: 'text', text: p });
   });
 }
 
-/** markdown 源码 -> 行内 PM 节点（含 marks） */
+/** 展示态令牌流 → 行内 PM 节点（递归下降，mark 沿嵌套路径累积） */
+function tokensToNodes(toks: InlineToken[], marks: PmMark[], out: PmNode[]): void {
+  for (const t of toks) {
+    switch (t.t) {
+      case 'text':
+        pushText(out, t.v, marks);
+        break;
+      case 'math':
+        out.push(marks.length ? { type: 'inlineMath', attrs: { latex: t.v }, marks } : { type: 'inlineMath', attrs: { latex: t.v } });
+        break;
+      case 'ref': {
+        // tokenizer 已校验 label 形如 kind:key（含双重前缀自愈剥除）
+        const kind = t.label.slice(0, t.label.indexOf(':'));
+        out.push(marks.length ? { type: 'refChip', attrs: { kind, label: bareRefKey(kind, t.label) }, marks } : { type: 'refChip', attrs: { kind, label: bareRefKey(kind, t.label) } });
+        break;
+      }
+      case 'color':
+        tokensToNodes(t.children, withMark(marks, { type: 'colorSpan', attrs: { role: t.role } }), out);
+        break;
+      case 'bg':
+        tokensToNodes(t.children, withMark(marks, { type: 'bgSpan', attrs: { role: t.role } }), out);
+        break;
+      case 'bold':
+        tokensToNodes(t.children, withMark(marks, { type: 'bold', attrs: {} }), out);
+        break;
+      case 'italic':
+        tokensToNodes(t.children, withMark(marks, { type: 'italic', attrs: {} }), out);
+        break;
+    }
+  }
+}
+
+/** markdown 源码 -> 行内 PM 节点（含 marks）——与展示态 InlineText 同一 tokenizer */
 function textToInlineNodes(text: string): PmNode[] {
   const out: PmNode[] = [];
-  let last = 0;
-  let m: RegExpExecArray | null;
-  INLINE_TOKEN_RE.lastIndex = 0;
-  while ((m = INLINE_TOKEN_RE.exec(text))) {
-    if (m.index > last) pushText(out, text.slice(last, m.index));
-    if (m[1] !== undefined) out.push({ type: 'inlineMath', attrs: { latex: m[1] } });
-    else if (m[2]) out.push({ type: 'refChip', attrs: { kind: m[2], label: bareRefKey(m[2], m[3]) } });
-    else if (m[4] !== undefined) {
-      // 粗体 **..**（进入编辑也所见即所得，不再露 ** 源码）
-      out.push({ type: 'text', text: m[4], marks: [{ type: 'bold', attrs: {} }] });
-    } else if (m[5] !== undefined) {
-      out.push({ type: 'text', text: m[5], marks: [{ type: 'italic', attrs: {} }] });
-    } else if (m[6] !== undefined) {
-      // 组合 spec：color=x,bg=y → 两个 mark（规范序：colorSpan 前、bgSpan 后）
-      const marks: { type: string; attrs: Record<string, string> }[] = [];
-      for (const part of m[7].split(',')) {
-        const [k, v] = part.split('=');
-        marks.push({ type: k === 'bg' ? 'bgSpan' : 'colorSpan', attrs: { role: v } });
-      }
-      out.push({ type: 'text', text: m[6], marks });
-    }
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) pushText(out, text.slice(last));
+  tokensToNodes(tokenizeInline(text), [], out);
   return out;
 }
 
@@ -187,30 +199,44 @@ export function itemsToDoc(items: string[]): object {
   };
 }
 
+/** marks → md 包裹：color/bg 合并单 wrapper（{color=x,bg=y}——嵌套方括号无法被
+ *  tokenizer 解析），bold/italic 依次外包。文本与原子节点（公式/引用芯片）共用——
+ *  原子携带的着色 mark 同样落回 span 语法，往返稳定 */
+function wrapMarks(inner: string, marks: PmMark[] | undefined): string {
+  let t = inner;
+  const ms = marks ?? [];
+  const colorMk = ms.find((mk) => mk.type === 'colorSpan');
+  const bgMk = ms.find((mk) => mk.type === 'bgSpan');
+  if (colorMk || bgMk) {
+    const spec = [
+      colorMk ? `color=${colorMk.attrs?.role ?? 'accent'}` : '',
+      bgMk ? `bg=${bgMk.attrs?.role ?? 'accent'}` : '',
+    ].filter(Boolean).join(',');
+    t = `[${t}]{${spec}}`;
+  }
+  for (const mk of ms) {
+    if (mk.type === 'bold') t = `**${t}**`;
+    else if (mk.type === 'italic') t = `*${t}*`;
+  }
+  return t;
+}
+
 function inlineNodesToText(nodes: PmNode[] | undefined): string {
   if (!nodes) return '';
   return nodes.map((n) => {
-    if (n.type === 'text') {
-      let t = n.text ?? '';
-      const marks = n.marks ?? [];
-      const colorMk = marks.find((mk) => mk.type === 'colorSpan');
-      const bgMk = marks.find((mk) => mk.type === 'bgSpan');
-      // 文字色+底色合并为单 wrapper（{color=x,bg=y}）——嵌套方括号无法被 tokenizer 解析
-      if (colorMk || bgMk) {
-        const spec = [
-          colorMk ? `color=${colorMk.attrs?.role ?? 'accent'}` : '',
-          bgMk ? `bg=${bgMk.attrs?.role ?? 'accent'}` : '',
-        ].filter(Boolean).join(',');
-        t = `[${t}]{${spec}}`;
-      }
-      for (const mk of marks) {
-        if (mk.type === 'bold') t = `**${t}**`;
-        else if (mk.type === 'italic') t = `*${t}*`;
-      }
-      return t;
+    if (n.type === 'text') return wrapMarks(n.text ?? '', n.marks);
+    if (n.type === 'inlineMath') {
+      const tex = n.attrs?.latex ?? '';
+      // span 语法可包裹公式（[$x$]{color=x}），但 latex 含 [ ] 时外层方括号
+      // 会被 tokenizer 的 findUnescaped(']') 截断 → 重解析漏垃圾字面量——
+      // 此类降级为裸输出（丢 mark，与旧扁平正则行为一致）
+      const safe = !/[\[\]\n]/.test(tex);
+      return safe ? wrapMarks(`$${tex}$`, n.marks) : `$${tex}$`;
     }
-    if (n.type === 'inlineMath') return `$${n.attrs?.latex ?? ''}$`;
-    if (n.type === 'refChip') return `[@${n.attrs?.kind}:${n.attrs?.label}]`;
+    if (n.type === 'refChip') {
+      // 引用芯片不可 span 包裹：[[@eq:x]]{color} 的 ref 分支先于 span 截断
+      return `[@${n.attrs?.kind}:${n.attrs?.label}]`;
+    }
     // 硬换行（Shift+Enter）→ 块文本内的 \n（md 落盘为行尾反斜杠，见 markdown.ts）
     if (n.type === 'hardBreak') return '\n';
     return '';
