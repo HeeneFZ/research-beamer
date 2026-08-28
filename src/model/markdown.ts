@@ -279,7 +279,7 @@ export function parseMarkdown(md: string): Deck {
         const f = parseFloat(attrs.fontScale);
         if (Number.isFinite(f) && f > 0) slide.fontScale = Math.min(1.5, Math.max(0.6, f));
       }
-      // 本页页脚附加信息（页级，覆盖全局 shortTitle）
+      // 本页页脚附加信息（纯页级，空=本页留空）
       if (attrs.foot != null) slide.footNote = attrs.foot;
       i++;
       // 收集页内块直至闭栏 ::::

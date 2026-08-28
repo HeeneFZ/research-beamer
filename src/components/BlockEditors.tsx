@@ -314,7 +314,7 @@ function CoverPlainFieldEditor({ value, onCommit, placeholder }: {
   );
 }
 
-/** 页脚附加信息编辑（页级：写入本页 slide.footNote；空值=清除页级覆盖，回退全局 shortTitle）。
+/** 页脚附加信息编辑（纯页级：写入本页 slide.footNote；空值=本页页脚留空，无全局回退）。
  *  提交三通道：Enter 显式提交 / onBlur 失焦提交 / 卸载兜底提交——画布空白 mousedown
  *  先把 editing 置空，组件卸载时 blur 不派发（DOM 已摘除），onBlur 永远不跑，
  *  点击外部退出会丢全部输入（用户实测报障；Enter 不丢因走 keydown）。 */
@@ -329,7 +329,7 @@ export function FooterEditor({ slide }: { slide: Slide }) {
   const commit = () => {
     if (doneRef.current) return;
     doneRef.current = true;
-    // 空串=清除页级覆盖（回退全局）；非空=写入本页
+    // 空串=本页页脚留空；非空=写入本页
     updateSlide(slide.id, { footNote: valRef.current === '' ? undefined : valRef.current });
   };
   useEffect(() => {
@@ -342,7 +342,7 @@ export function FooterEditor({ slide }: { slide: Slide }) {
       className="foot-edit"
       spellCheck={false}
       value={val}
-      placeholder="本页页脚附加信息（空 = 沿用全局页脚）"
+      placeholder="本页页脚附加信息"
       onChange={(e) => setVal(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {

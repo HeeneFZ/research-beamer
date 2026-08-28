@@ -312,11 +312,11 @@ export function SlideView({
             <FooterEditor slide={slide} />
           ) : (
             <span
-              className={'s-foot-left' + (mode === 'edit' && slide ? ' s-foot-editable' : '') + (!(slide?.footNote ?? config.shortTitle) && mode === 'edit' && slide ? ' s-foot-ph' : '')}
-              title={mode === 'edit' && slide ? '点击编辑本页页脚附加信息（空则沿用全局页脚）' : undefined}
+              className={'s-foot-left' + (mode === 'edit' && slide ? ' s-foot-editable' : '') + (!slide?.footNote && mode === 'edit' && slide ? ' s-foot-ph' : '')}
+              title={mode === 'edit' && slide ? '点击编辑本页页脚附加信息' : undefined}
               onClick={mode === 'edit' && slide ? (e) => { e.stopPropagation(); setEditing({ slideId: slide.id, field: 'footer' }); } : undefined}
             >
-              {(slide?.footNote ?? config.shortTitle) || (mode === 'edit' && slide ? '＋ 页脚信息' : '')}
+              {slide?.footNote || (mode === 'edit' && slide ? '＋ 页脚信息' : '')}
             </span>
           )}
           <span className="s-foot-mid" />
