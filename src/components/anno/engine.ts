@@ -6,9 +6,8 @@
 // 关键差异（vs fcn）：本应用画布可能带 transform: scale（缩放/胶片），
 //   getClientRects 为绘制坐标、canvas 度量为布局 px——统一乘 k=holderRect/offsetWidth 校正。
 
-import katex from 'katex';
 import { AnnoMark, AnnoState } from '../../model/anno';
-import { MATH_STYLE_MACROS, boldGreekFix } from '../MathView';
+import { katexHtml, stripLabels } from '../MathView';
 
 export interface Pt { x: number; y: number }
 export interface Rect { x: number; y: number; w: number; h: number }
@@ -37,7 +36,7 @@ export function annLabelText(text: string): string {
       const math = j === -1 ? text.slice(i + 1) : text.slice(i + 1, j);
       flush();
       try {
-        out += katex.renderToString(boldGreekFix(math), { throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
+        out += katexHtml(math, false);
       } catch {
         out += '<span style="color:#c0392b">' + escHtml(math) + '</span>';
       }
@@ -203,10 +202,9 @@ export interface RendererOpts {
 interface AnnPath { color: string; pts: Pt[]; both: boolean }
 
 /** LaTeX 公式 KaTeX HTML（display 模式；错误内联红显，与全局 katexHtml 一致）。
- *  残留 \label{..} 剥除：KaTeX 不识别该命令会渲染成红色错误文本（解析/提交层
- *  已提取标签，此处兜底编辑器本地未提交的中间态） */
+ *  残留 \label{..} 剥除：解析/提交层已提取标签，此处兜底编辑器本地未提交的中间态 */
 export function annoKatexHtml(latex: string): string {
-  return katex.renderToString(boldGreekFix(latex.replace(/\\label\{[^}]*\}/g, '')), { displayMode: true, throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
+  return katexHtml(stripLabels(latex), true);
 }
 
 export function createAnnoRenderer(surface: AnnoSurface, opts: RendererOpts) {
@@ -614,7 +612,7 @@ export function createAnnoRenderer(surface: AnnoSurface, opts: RendererOpts) {
     marksLayer.appendChild(d);
   }
 
-  return { renderAll, refreshCanvas, drawAnnotations, previewMark, captureSelection, mathEm };
+  return { renderAll, refreshCanvas, previewMark, captureSelection };
 }
 
 export type AnnoRenderer = ReturnType<typeof createAnnoRenderer>;

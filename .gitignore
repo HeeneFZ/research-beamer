@@ -11,3 +11,13 @@ NVIDIA Corporation/
 scripts/e2e-badge-dbg.js
 scripts/e2e-sorter-dbg.js
 scripts/e2e-diag-jitter.js
+
+# e2e 调试/迭代变体（保留正式套件，忽略一次性探针）
+scripts/e2e-col-menus2.js
+scripts/e2e-col-menus3.js
+scripts/e2e-col-menus4.js
+scripts/e2e-rule-lines2.js
+scripts/e2e-rule-present-dbg.js
+scripts/e2e-rule-present-open.js
+scripts/e2e-rule-present-probe.js
+scripts/e2e-fonts-probe.js

@@ -3,7 +3,6 @@ import { exportPDF } from '../exportPdf';
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { promptText } from './prompt';
-import { Page } from '../model/types';
 
 interface MenuDef {
   title: string;
@@ -82,7 +81,6 @@ export function MenuBar() {
         { kind: 'item', label: '放大', hint: 'Ctrl+滚轮', on: () => useStore.getState().setZoom(useStore.getState().zoom * 1.15) },
         { kind: 'item', label: '缩小', on: () => useStore.getState().setZoom(useStore.getState().zoom / 1.15) },
         { kind: 'item', label: '重置缩放', on: () => useStore.getState().setZoom(1) },
-        { kind: 'sep' },
       ],
     },
   ];

@@ -3,7 +3,7 @@
 import { createRoot } from 'react-dom/client';
 import { useStore } from './state/store';
 import { SlideView } from './components/SlideView';
-import { restyleRulesForPrint } from './components/katexRuleSnap';
+import { restyleRulesForPrint, VINCULUM_RE } from './components/katexRuleSnap';
 import { Deck, PAGE_SIZE } from './model/types';
 
 /** PDF 建议文件名：标题可含 $..$ 行内公式（含 \ 等源码字符，Windows 文件名非法）——
@@ -63,6 +63,16 @@ export async function exportPDF(): Promise<void> {
     // 规则线（分数线等）按打印矢量口径重算：屏幕态的 1 设备行下限在矢量输出中
     // 会让规则线比字形笔画粗 ~2×，PDF 需要纯 0.04em 设计值
     restyleRulesForPrint();
+    // E2E 断言快照：print 态在卸载后不可见，导出前把规则线终态挂到 window
+    if (window.api.isE2E) {
+      const rule = host.querySelector('.katex .frac-line') as HTMLElement | null;
+      const path = host.querySelector('.hide-tail path');
+      window.__printRuleCheck = {
+        bandPx: rule ? parseFloat((getComputedStyle(rule).backgroundSize.split(' ')[1])) : 0,
+        fontSizePx: rule ? parseFloat(getComputedStyle(rule).fontSize) : 0,
+        sqrtV: (() => { VINCULUM_RE.lastIndex = 0; const m = VINCULUM_RE.exec(path?.getAttribute('d') || ''); return m ? parseFloat(m[2]) : null; })(),
+      };
+    }
 
     const size = PAGE_SIZE[s.deck.config.aspect];
     style.textContent = `@page { size: ${size.w}mm ${size.h}mm !important; margin: 0; }`;

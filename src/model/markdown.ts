@@ -21,6 +21,7 @@ import {
   Block, Deck, DeckConfig, DeckItem, Layout, Palette, Pos, Slide, defaultConfig, newId,
 } from './types';
 import { annoFromJson, annoToJson, defaultAnnoState } from './anno';
+import { reseedColPlaceholders } from './segments';
 import { LEGACY_PRESET_TONES, PRESETS } from './palette';
 const SLIDE_OPEN = /^::::+\s*(.*)$/;   // 4+ colons
 const BLOCK_OPEN = /^:::+\s*(.*)$/;    // 3+ colons（块级；在页内出现 4+ 也按块处理）
@@ -511,6 +512,9 @@ export function parseMarkdown(md: string): Deck {
       flushPara();
       flushList();
       i++; // 越过闭栏 ::::
+      // 栏占位段自愈：空段落不落盘（serialize 为空行/parse 跳过），栏区的
+      // 可点击占位在保存/重开后消失会让右栏无处落块——解析产物上补回
+      slide.blocks = reseedColPlaceholders(slide.blocks, newId);
       items.push({ kind: 'slide', slide });
       continue;
     }

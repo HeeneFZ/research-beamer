@@ -94,7 +94,7 @@ const HEX = /^#[0-9a-fA-F]{6}$/;
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 /** 外部 JSON（md 契约 / 旧数据）→ 合法 AnnoState；任何字段损坏回退默认 */
-export function normalizeAnnoState(raw: unknown): AnnoState {
+function normalizeAnnoState(raw: unknown): AnnoState {
   const s = defaultAnnoState();
   if (!raw || typeof raw !== 'object') return s;
   const o = raw as Record<string, unknown>;

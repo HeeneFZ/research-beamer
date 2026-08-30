@@ -438,6 +438,10 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 .toc-l2 { padding-left: 6cqw; }
 .toc-l2 .toc-title { font-size: 0.82em; color: var(--p-muted); }
 .toc-l2 .toc-num { font-size: 0.76em; }
+/* 三级（子小节）：比二级再深一档缩进——缺这条时 ### 子小节行按一级全尺寸渲染 */
+.toc-l3 { padding-left: 12cqw; }
+.toc-l3 .toc-title { font-size: 0.76em; color: var(--p-muted); }
+.toc-l3 .toc-num { font-size: 0.72em; }
 .fblock { min-width: 0; position: relative; }
 .para { margin: 0 0 var(--gap-para, 1.6em); }
 .para-empty { min-height: 1.55em; margin: 0 0 var(--gap-para, 1.6em); }
@@ -625,13 +629,11 @@ body.dark .present-fab:hover { background: #2b6fbf; }
   box-shadow: 0 8px 24px rgba(30,40,60,.18); padding: 4px;
   font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 12.5px; color: #333;
 }
-.bmenu-sep { height: 1px; background: #e6e9ee; margin: 4px 8px; }
 body.dark .btools-float { background: #23272e; border-color: #333a44; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
 body.dark .btools-float button { background: #262b33; color: #d4d9df; }
 body.dark .btools-float button:hover { background: #2c3a4c; color: #7db4f0; }
 body.dark .btools-float button.on { background: #3584e4; color: #fff; }
 body.dark .btools-menu-float { background: #23272e; border-color: #333a44; color: #d4d9df; }
-body.dark .bmenu-sep { background: #333a44; }
 
 /* 行内编辑（TipTap 块编辑器，EditorApp 同款体验） */
 .mode-edit .fblock.editable { cursor: text; }
@@ -1205,6 +1207,17 @@ body.dark .modal td input:focus { border-color: #3584e4; background: #1b1f25; }
 }
 .presenter-end:hover { border-color: #3584e4; color: #7db4f0; }
 
+/* 放映台控制按钮排（录制/交换屏幕，居演讲稿与结束放映之间） */
+.presenter-ctl { display: flex; gap: 8px; }
+.presenter-ctl button {
+  flex: 1; border: 1px solid #384049; background: #2a3038; color: #d4d9df;
+  border-radius: 6px; padding: 6px 10px; font-size: 12.5px; cursor: pointer;
+}
+.presenter-ctl button:hover { border-color: #3584e4; color: #7db4f0; }
+.presenter-rec.on {
+  border-color: #c0392b; background: #3a2422; color: #ff8a80;
+}
+.presenter-rec.on:hover { border-color: #e74c3c; color: #ffab91; }
 /* ===== LaTeX 编辑器（移植自 EditorApp：透明 textarea 叠高亮层 + \ 联想） ===== */
 .lx-wrap { position: relative; }
 .lx-hl, .lx-input {
@@ -1416,7 +1429,7 @@ body.dark .thumb.sel .thumb-no { color: #5b9be6; }
   border-radius: 5px; cursor: pointer; font-size: 12.5px; color: #333;
 }
 .ref-picker-item.sel, .slash-item:hover, .slash-item.sel { background: #eef4fc; }
-.ref-picker-item.disabled { opacity: .45; cursor: default; }
+.ref-picker-item.disabled, .slash-item.disabled { opacity: .45; cursor: default; }
 .ref-kind-eq, .slash-badge-eq {
   background: linear-gradient(135deg, color-mix(in srgb, var(--pe-base) 12%, #fff), color-mix(in srgb, var(--pe-deep) 20%, #fff));
   color: var(--pe-deep);

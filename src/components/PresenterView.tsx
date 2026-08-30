@@ -39,6 +39,7 @@ export function PresenterView() {
   const presentStart = useStore((s) => s.presentStart);
   const flash = useStore((s) => s.flash);
   const endPresent = useStore((s) => s.endPresent);
+  const presentRecording = useStore((s) => s.presentRecording);
   const presentAdvance = useStore((s) => s.presentAdvance);
   const presentReverse = useStore((s) => s.presentReverse);
   const jumpToRef = useStore((s) => s.jumpToRef);
@@ -135,6 +136,22 @@ export function PresenterView() {
           <div className="presenter-notes" style={{ fontSize: noteSize }}>
             {notes || <span className="dim">（本页无演讲稿）</span>}
           </div>
+        </div>
+        <div className="presenter-ctl">
+          <button
+            className={'presenter-rec' + (presentRecording ? ' on' : '')}
+            title={presentRecording ? '停止录制（自动保存 webm 到工程目录）' : '录制放映（60Hz · 系统声+麦克风 · 保存到工程目录）'}
+            onClick={() => { window.api.sendPresentCtrl({ type: 'rec-toggle' }); }}
+          >
+            {presentRecording ? '■ 停止录制' : '● 录制放映'}
+          </button>
+          <button
+            className="presenter-swap"
+            title="交换放映/监看屏幕（多屏演讲时放映屏与监看屏互换）"
+            onClick={() => { void window.api.swapPresentScreens(); }}
+          >
+            ⇄ 交换屏幕
+          </button>
         </div>
         <button className="presenter-end" onClick={endPresent}>结束放映 (Esc)</button>
       </div>

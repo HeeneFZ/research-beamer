@@ -11,7 +11,7 @@
 //   四原则落点：对齐（5cqw 边距/4cqw 栏距）、对比（固定比例字阶）、
 //   亲密（题注 0.5em < 项距 < 块距 < 段距）、重复（同 deck 同字阶 + 纯函数确定性）。
 
-import { Aspect, Block } from './types';
+import { Block } from './types';
 
 /** PPT 等效 pt → 本页物理 pt：标准幻灯片 10in(254mm) 宽 → 本页 16:9 为 160mm 宽 */
 export const PPT2PHYS = 160 / 254;

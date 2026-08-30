@@ -319,12 +319,14 @@ describe('insertColRegion / insertColEnd（store 动作，段结构不损坏）'
     const pL = slide.blocks.find((b) => b.type === 'paragraph')!;
     st().insertColRegion(slide.id, pL.id);
     const s = segs();
-    // 旧退化栏区（左|空）保持原状，新栏区在其后自成一体
+    // 旧退化栏区（左|空）保持原状，新栏区在其后自成一体。
+    // 右栏空侧现带解析补种的占位段（reseedColPlaceholders）：空段落不落盘，
+    // 补种保证空栏可点击落块（本测试原断言 right=[] 恰是「右栏无处落块」bug 的固化）
     expect(s).toHaveLength(2);
     expect(s[0].kind).toBe('cols');
     if (s[0].kind === 'cols') {
       expect(s[0].left.map((b) => b.text)).toEqual(['左']);
-      expect(s[0].right).toHaveLength(0);
+      expect(s[0].right.map((b) => b.text)).toEqual(['']);
     }
     expect(s[1].kind).toBe('cols');
     if (s[1].kind === 'cols') {

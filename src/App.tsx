@@ -120,21 +120,28 @@ export default function App() {
     });
   }, [presenting, deck, computed, current, revealStep, flash, folder, pageLayout, presentNonce]);
 
+  // 放映事件监听注册一次（handler 全部经 getState 取即时态，无闭包依赖）：
+  // 结束放映后仍需收尾事件——recSaved 的「录像已保存」提示在落盘完成时才到，
+  // 旧实现按 [presenting] 卸载监听会吞掉它（录制中停止→立刻结束放映场景）
   useEffect(() => {
-    if (!presenting) return;
     return window.api.onPresentEvent((evt) => {
       const s = useStore.getState();
-      if (evt.type === 'advance') s.presentAdvance();
-      else if (evt.type === 'skip') s.presentSkip();
-      else if (evt.type === 'reverse') s.presentReverse();
-      else if (evt.type === 'goto') s.gotoPage(Math.min(evt.index ?? 0, s.computed.pages.length - 1), true);
-      else if (evt.type === 'ref' && evt.label) s.jumpToRef(evt.label);
-      else if (evt.type === 'back') s.backJump();
+      // 导航事件仅在放映中生效：present:close 的落盘等待窗（最长 30s）里
+      // 残留的全屏放映窗仍可交互，其点击/翻页不得驱动编辑器页码与跳转栈
+      if (s.presenting) {
+        if (evt.type === 'advance') s.presentAdvance();
+        else if (evt.type === 'skip') s.presentSkip();
+        else if (evt.type === 'reverse') s.presentReverse();
+        else if (evt.type === 'goto') s.gotoPage(Math.min(evt.index ?? 0, s.computed.pages.length - 1), true);
+        else if (evt.type === 'ref' && evt.label) s.jumpToRef(evt.label);
+        else if (evt.type === 'back') s.backJump();
+      }
+      if (evt.type === 'recState') useStore.setState({ presentRecording: evt.label === 'on' });
       else if (evt.type === 'recSaved' && evt.label) s.setFlashMsg('录像已保存 → ' + evt.label);
       else if (evt.type === 'end') s.endPresent();
       else if (evt.type === 'ready') setPresentNonce((n) => n + 1); // 放映窗就绪：重播状态
     });
-  }, [presenting]);
+  }, []);
 
   return (
     <div className="app">

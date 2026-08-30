@@ -386,6 +386,8 @@ let presentWin = null;
 
 ipcMain.handle('present:open', async () => {
   if (presentWin && !presentWin.isDestroyed()) {
+    closeGen++; // 使挂起的延迟关闭作废（结束→立刻重开：复用的窗不能被旧 close 杀掉）
+    presentClosing = false;
     presentWin.focus();
     return { ok: true };
   }
@@ -428,6 +430,14 @@ ipcMain.handle('present:open', async () => {
   presentWin.loadFile(indexPath, { hash: 'present' });
   presentWin.on('closed', () => {
     presentWin = null;
+    presentRecording = false; // 窗毁录制链已断，防下次 close 误等
+    presentFlushing = 0;
+    // 窗口被旁路销毁（Alt+F4）时使挂起的延迟关闭失效：不清则 presentClosing
+    // 卡最长 30s，期间新放映的「结束放映」被吞（窗口关不掉），或滞留的旧
+    // close 计时到点按陈旧 generation 判定通过、关掉【新】放映窗（数据丢失类）
+    closeGen++;
+    presentClosing = false;
+    if (flushWaiter) flushWaiter();
     // 退出应用时 mainWindow 可能已销毁（先于放映窗关闭）——发消息前必须查活
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('present:event', { type: 'end' });
@@ -436,8 +446,36 @@ ipcMain.handle('present:open', async () => {
   return { ok: true, display: target.id };
 });
 
-ipcMain.handle('present:close', () => {
-  presentWin?.close();
+// 结束放映：录制中或落盘链在途则先等 ack 再关窗——直接销毁渲染进程会让
+// onstop 的异步落盘链（Blob→arrayBuffer→IPC）竞态窗口销毁，录像整段丢失。
+// recStopped 由渲染进程 onstop 的 finally 发出（保存成功/失败/空块全路径）；
+// 30s 兜底覆盖长录制的序列化耗时。closeGen 防「结束→立刻重开放映」竞态：
+// 复用存活窗口的 present:open 使挂起的关闭作废，否则延迟关窗会杀掉新放映。
+let presentRecording = false;  // recState UI 镜像（按钮态）
+let presentFlushing = 0;      // 在途落盘会话数（recState on +1 / recStopped -1）
+let presentClosing = false;
+let closeGen = 0;
+let flushWaiter = null;
+
+ipcMain.handle('present:close', async () => {
+  if (!presentWin || presentWin.isDestroyed()) return;
+  if (presentClosing) return;
+  const gen = ++closeGen;
+  presentClosing = true;
+  try {
+    if (presentRecording) {
+      presentWin.webContents.send('present:ctrl', { type: 'rec-stop' });
+    }
+    if (presentFlushing) {
+      await new Promise((resolve) => {
+        const t = setTimeout(() => { flushWaiter = null; resolve(); }, 30000);
+        flushWaiter = () => { clearTimeout(t); flushWaiter = null; resolve(); };
+      });
+    }
+  } catch (_) { /* 窗口已销毁 */ }
+  presentClosing = false;
+  if (gen !== closeGen) return; // 等待期间放映被重新打开：放弃关闭
+  if (presentWin && !presentWin.isDestroyed()) presentWin.close();
 });
 
 // 交换放映窗与主窗（监看）所在屏幕：多屏演讲时放映/监看互换
@@ -485,10 +523,31 @@ ipcMain.on('present:state', (_e, payload) => {
   }
 });
 
-// 放映窗 → 编辑器：事件（advance/reverse/goto/ref/back/ready）
+// 放映窗 → 编辑器：事件（advance/reverse/goto/ref/back/ready/recState/recStopped）。
+// recState/recStopped 同时在主进程留痕：present:close 据此决定是否等落盘再关窗。
+// recState 只反映按钮态（stop 瞬间即 off，而 onstop 落盘仍在途）；落盘完成的
+// 权威信号是 recStopped（渲染进程 onstop 的 finally 全路径发出）。
+// 会话计数：停 A 后立刻重录 B 时，A 的 recStopped 迟到——布尔标记会被它清掉，
+// B 的落盘保护失效（close 直杀落盘链）。计数保证每个在途会话各自抵消
 ipcMain.on('present:event', (_e, evt) => {
+  if (evt && evt.type === 'recState' && evt.label === 'on') {
+    presentRecording = true;
+    presentFlushing++;
+  } else if (evt && evt.type === 'recState') {
+    presentRecording = false;
+  } else if (evt && evt.type === 'recStopped') {
+    if (presentFlushing > 0) presentFlushing--;
+    if (presentFlushing === 0 && flushWaiter) flushWaiter();
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('present:event', evt);
+  }
+});
+
+// 编辑器 → 放映窗：控制命令（放映台的录制/停止按钮等，录制设备在放映窗持有）
+ipcMain.on('present:ctrl', (_e, evt) => {
+  if (presentWin && !presentWin.isDestroyed()) {
+    presentWin.webContents.send('present:ctrl', evt);
   }
 });
 

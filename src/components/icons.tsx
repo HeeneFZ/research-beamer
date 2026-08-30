@@ -42,8 +42,4 @@ export const IcoZoomIn = () => <Ico><path d="M4 8h8M8 4v8" {...S} /></Ico>;
 /** 缩小 */
 export const IcoZoomOut = () => <Ico><path d="M4 8h8" {...S} /></Ico>;
 
-/** 新建页（＋带页） */
-export const IcoNewPage = () => <Ico><rect x="3.2" y="2" width="9.6" height="12" rx="1.4" {...S} /><path d="M8 6v4M6 8h4" {...S} /></Ico>;
 
-/** 编辑（✎，封面字段编辑态） */
-export const IcoEdit = () => <Ico><path d="M10.8 2.6l2.6 2.6L6 12.6l-3.3.7.7-3.3z" {...S} /></Ico>;

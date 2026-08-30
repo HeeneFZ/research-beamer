@@ -83,7 +83,11 @@ export function useLayoutScan(
       const cvsPending = canvases.some((c) => c.width === 0);
       // KaTeX 异步渲染：.eq-disp 未出 .katex 前测高会假溢出（raw latex 文本更长）
       const katexPending = [...el.querySelectorAll('.eq-disp')].some((d) => !d.querySelector('.katex'));
-      if ((imgsPending || cvsPending || katexPending) && waits++ < 60) {
+      // KaTeX woff2 字体异步装载（首次打开）：HTML 同步但字形度量未定，
+      // fallback 度量下定稿会留错版且无重扫（AnnoEquationView 同款判定）
+      const fontsPending = typeof document !== 'undefined' && document.fonts && document.fonts.status !== 'loaded';
+      const waited = waits > 0; // 本轮是否等过异步资源（晚到资源 → 漂移风险）
+      if ((imgsPending || cvsPending || katexPending || fontsPending) && waits++ < 60) {
         timer = window.setTimeout(tick, 250);
         return;
       }
@@ -95,8 +99,10 @@ export function useLayoutScan(
       if (over > FIT_TOL && changed) {
         useStore.getState().setFlashMsg('内容超出页面（字号已到排版下限），建议删减或分页');
       }
-      // 复核轮（晚到资源/字体可能漂移）；结果稳定即收工（相同值提交为 no-op）
-      if (rounds++ < 4) timer = window.setTimeout(tick, 400);
+      // 复核轮（晚到资源/字体可能漂移）；稳定即收工——无等待且结果与已提交值相同
+      // 时不再复扫。旧版无条件 ×4 复核：打开工程时 N 页缩略全部挂载，N×5 轮 ×
+      // 每轮 10-45 次强制 reflow 的扫描风暴即「开工程卡顿」的主源（省 5×）
+      if ((waited || changed) && rounds++ < 4) timer = window.setTimeout(tick, 400);
     };
     timer = window.setTimeout(tick, 300);
     return () => clearTimeout(timer);

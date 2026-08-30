@@ -15,13 +15,10 @@
 import { CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Block, PAGE_SIZE, Slide } from '../model/types';
-import { defaultAnnoState } from '../model/anno';
 import { paletteVars } from '../model/palette';
 import { computeLayoutSpec, defaultSpacing, layoutCssVars } from '../model/layoutSpec';
-import { fileUrl } from './pdfRaster';
-import { absMediaPath } from './paths';
 import { InlineText } from './InlineText';
-import { TitleEditor, FooterEditor, CoverFieldEditor, insertMediaBlock } from './BlockEditors';
+import { TitleEditor, FooterEditor, CoverFieldEditor } from './BlockEditors';
 import { useStore } from '../state/store';
 import { SlideViewProps } from './slide/types';
 import { useLayoutScan } from './slide/useLayoutScan';
@@ -31,17 +28,7 @@ import { SectionBreadcrumb } from './slide/SectionBreadcrumb';
 import { CoverLogo, LogoAddChip } from './slide/CoverLogo';
 import { AuthorsLine, AffiliationsView, DividerView, TocView } from './slide/StaticPages';
 
-export type { SlideMode, SlideViewProps } from './slide/types';
-/** 空页首块菜单项（不含栏标记：空页直接开栏无意义，先有内容块再谈分栏） */
-const FIRST_ITEMS = [
-  { key: 'paragraph', badge: '¶', cls: 'sec', label: '段落', hint: '文本' },
-  { key: 'itemize', badge: '≡', cls: 'eq', label: '列表', hint: '要点' },
-  { key: 'equation', badge: '∑', cls: 'eq', label: '公式', hint: '编号' },
-  { key: 'annoeq', badge: '⌖', cls: 'eq', label: '注释公式', hint: '引线标注' },
-  { key: 'figure', badge: '▣', cls: 'fig', label: '图片…', hint: '文件' },
-  { key: 'video', badge: '▶', cls: 'fig', label: '视频…', hint: '文件' },
-  { key: 'table', badge: '▦', cls: 'tab', label: '表格', hint: '三线表' },
-] as const;
+import { INSERT_ITEMS, insertBlockByKey } from './insertItems';
 
 export function SlideView({
   page, deck, computed, folder, mode = 'edit', revealed, onRef, onSlideJump, onZoom, highlightLabel,
@@ -52,7 +39,7 @@ export function SlideView({
   const layout: string = page.kind === 'divider' ? 'section' : page.slide?.layout || 'content';
 
   const bodyRef = useRef<HTMLDivElement>(null);
-  const firstBtnRef = useRef<HTMLButtonElement>(null);
+
   // 空页首块类型菜单（portal 到 body 的浮层，存屏幕坐标；仅编辑画布需要）
   const [firstMenu, setFirstMenu] = useState<{ x: number; y: number } | null>(null);
   // 菜单打开期间：点击菜单外/Esc 关闭（portal 浮层通用关闭通道）
@@ -282,7 +269,7 @@ export function SlideView({
           {empty && (
             <div className="add-first-wrap">
               <button
-                ref={firstBtnRef}
+
                 className="add-first-btn"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -305,36 +292,29 @@ export function SlideView({
                   onClick={(e) => e.stopPropagation()}
                 >
                   <div className="ref-picker-title">选择首个内容块</div>
-                  {FIRST_ITEMS.map((it) => (
-                    <div
-                      key={it.key}
-                      className="ref-picker-item"
-                      onMouseDown={(e) => { e.preventDefault(); if (!slide) return; setFirstMenu(null);
-                        const s = useStore.getState();
-                        // 清掉残留栏标记，回到干净单栏
-                        for (const b of [...slide.blocks]) {
-                          if (b.type === 'colmark' || b.type === 'colend') s.deleteBlock(slide.id, b.id);
-                        }
-                        if (it.key === 'figure' || it.key === 'video') {
-                          void insertMediaBlock(slide.id, null, it.key);
-                        } else {
-                          const init =
-                            it.key === 'equation' ? { latex: 'x = 1' } :
-                            it.key === 'annoeq' ? { latex: 'x = 1', anno: defaultAnnoState() } :
-                            it.key === 'itemize' ? { items: ['条目'] } :
-                            it.key === 'table' ? { cells: [['列1', '列2'], ['', '']] } :
-                            { text: '' };
-                          const id = s.insertBlock(slide.id, null, it.key as Block['type'], init);
-                          if (it.key === 'paragraph' || it.key === 'itemize') s.setFocus(id, 'start');
-                          else s.setEditing({ slideId: slide.id, blockId: id });
-                        }
-                      }}
-                    >
-                      <span className={`ref-kind slash-badge-${it.cls}`}>{it.badge}</span>
-                      <span>{it.label}</span>
-                      <span className="slash-hint">{it.hint}</span>
-                    </div>
-                  ))}
+                  {INSERT_ITEMS.map((it) => {
+                    // 空页无栏区可收：收栏项 disable（与块工具栏同款口径，入口可见）
+                    const dis = it.key === 'colend';
+                    return (
+                      <div
+                        key={it.key}
+                        className={'ref-picker-item' + (dis ? ' disabled' : '')}
+                        title={dis ? '空页没有双栏区可结束' : undefined}
+                        onMouseDown={(e) => { e.preventDefault(); if (!slide || dis) return; setFirstMenu(null);
+                          // 清掉残留栏标记，回到干净单栏
+                          const s = useStore.getState();
+                          for (const b of [...slide.blocks]) {
+                            if (b.type === 'colmark' || b.type === 'colend') s.deleteBlock(slide.id, b.id);
+                          }
+                          insertBlockByKey(slide.id, null, it.key);
+                        }}
+                      >
+                        <span className={`ref-kind slash-badge-${it.cls}`}>{it.badge}</span>
+                        <span>{it.label}</span>
+                        <span className="slash-hint">{it.hint}</span>
+                      </div>
+                    );
+                  })}
                 </div>,
                 document.body,
               )}

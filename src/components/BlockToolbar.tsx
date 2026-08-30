@@ -6,26 +6,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { moveTargetOf, useStore } from '../state/store';
-import { defaultAnnoState } from '../model/anno';
 import { Block, Slide } from '../model/types';
 import { colRegionAt } from '../model/segments';
-import { insertMediaBlock } from './BlockEditors';
 import { IcoUp, IcoDown, IcoCopy, IcoPaste, IcoPlus, IcoTrash } from './icons';
 import { promptText } from './prompt';
-
-const INSERT_ITEMS = [
-  { key: 'paragraph', badge: '¶', cls: 'sec', label: '段落', hint: '文本' },
-  { key: 'itemize', badge: '≡', cls: 'eq', label: '列表', hint: '要点' },
-  { key: 'equation', badge: '∑', cls: 'eq', label: '公式', hint: '编号' },
-  { key: 'annoeq', badge: '⌖', cls: 'eq', label: '注释公式', hint: '引线标注' },
-  { key: 'figure', badge: '▣', cls: 'fig', label: '图片…', hint: '文件' },
-  { key: 'video', badge: '▶', cls: 'fig', label: '视频…', hint: '文件' },
-  { key: 'table', badge: '▦', cls: 'tab', label: '表格', hint: '三线表' },
-  { key: 'colmark', badge: '◫', cls: 'cite', label: '开始双栏区', hint: '左右两栏' },
-  { key: 'colend', badge: '▪', cls: 'cite', label: '结束双栏区', hint: '回单栏' },
-] as const;
-
-type InsertKey = typeof INSERT_ITEMS[number]['key'];
+import { INSERT_ITEMS, insertBlockByKey, InsertKey } from './insertItems';
 
 export function BlockToolbar({ slide, block }: {
   slide: Slide; block: Block;
@@ -110,28 +95,7 @@ export function BlockToolbar({ slide, block }: {
   }, [visible]);
 
   const insert = (key: InsertKey) => {
-    const s = useStore.getState();
-    if (key === 'figure' || key === 'video') {
-      void insertMediaBlock(slide.id, block.id, key);
-    } else if (key === 'colmark') {
-      // 原子插入双栏区（单次 mutate）：colmark+左段+colmark+右段，无中间渲染态
-      const leftId = s.insertColRegion(slide.id, block.id);
-      s.setFocus(leftId, 'start');
-    } else if (key === 'colend') {
-      // 结束双栏区：点击块逃出栏区（colend 落其前）。栏标记不渲染——
-      // 绝不能 setEditing 指向它（幽灵编辑态：无 UI 可退出、无面板可交互）
-      s.insertColEnd(slide.id, block.id);
-    } else {
-      const init =
-        key === 'equation' ? { latex: 'x = 1' } :
-        key === 'annoeq' ? { latex: 'x = 1', anno: defaultAnnoState() } :
-        key === 'itemize' ? { items: ['条目'] } :
-        key === 'table' ? { cells: [['列1', '列2'], ['', '']] } :
-        key === 'paragraph' ? { text: '' } : {};
-      const id = s.insertBlock(slide.id, block.id, key as Block['type'], init);
-      if (key === 'paragraph' || key === 'itemize') s.setFocus(id, 'start');
-      else s.setEditing({ slideId: slide.id, blockId: id });
-    }
+    insertBlockByKey(slide.id, block.id, key);
     setMenu(false);
   };
 

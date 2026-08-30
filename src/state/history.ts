@@ -17,7 +17,10 @@ let snapshotTimer: number | undefined;
 // 防抖挂起的快照（500ms 窗口内未落栈）。undo/redo/clear 必须先同步冲刷：
 // 否则窗口期内的撤销会弹出更早的快照（一次回跳两步），且挂起快照随后
 // 落栈时清空 redoStack，把刚压入的重做状态销毁（竞态已实测复现）。
+// 序列化惰性：窗口内只存 deck 引用（deck 不可变，克隆前从不原地改），
+// 落栈/冲刷时才 stringify——连续击键每键一次全量序列化是打字卡顿主源之一
 let pendingJson: string | null = null;
+let pendingDeck: Deck | null = null;
 // 历史持久化目录（当前工程文件夹）；null = 未绑定（新工程未保存），只在内存
 let histFolder: string | null = null;
 let persistTimer: number | undefined;
@@ -32,11 +35,20 @@ function pushStack(json: string): void {
   }
 }
 
+/** 挂起快照的惰性序列化（deck 引用 → json 串），冲刷/落栈共用 */
+function materializePending(): string | null {
+  if (pendingJson == null && pendingDeck != null) {
+    pendingJson = JSON.stringify(pendingDeck);
+    pendingDeck = null;
+  }
+  return pendingJson;
+}
+
 /** 挂起的防抖快照立即落栈 */
 function flushPending(): void {
-  if (pendingJson == null) return;
+  const json = materializePending();
+  if (json == null) return;
   clearTimeout(snapshotTimer);
-  const json = pendingJson;
   pendingJson = null;
   pushStack(json);
 }
@@ -57,19 +69,30 @@ function schedulePersist(): void {
 
 export function recordHistory(deck: Deck, debounce = false): void {
   clearTimeout(snapshotTimer);
-  const json = JSON.stringify(deck);
   // 任何真实编辑都立即使重做失效（不能等防抖落栈——窗口期内的 redo 会恢复
   // 已被编辑作废的状态；且快照去重（与栈顶相同不入栈）不能跳过该清理）
   redoStack = [];
   if (debounce) {
-    pendingJson = json;
+    // 惰性：防抖窗口内只挂 deck 引用（每键一次全量 stringify 是打字卡顿源），
+    // 落栈（500ms 后）或冲刷（undo/redo 抢占）时才序列化。
+    // 语义（第廿一轮测试钉死）：挂【最新】pre-state——窗口内撤销精确回退到
+    // 最后一次变更前一刻（一字一格）；曾试改挂首态（burst 整段合并撤销）与
+    // 既有合约冲突，弃用（详见 DECISIONS 第五十四轮）
+    pendingDeck = deck;
+    pendingJson = null;
     snapshotTimer = window.setTimeout(() => {
+      const json = materializePending();
       pendingJson = null;
-      pushStack(json);
-      schedulePersist();
+      pendingDeck = null;
+      if (json != null) {
+        pushStack(json);
+        schedulePersist();
+      }
     }, 500);
   } else {
+    const json = JSON.stringify(deck);
     pendingJson = null;
+    pendingDeck = null;
     pushStack(json);
   }
   schedulePersist();
@@ -78,6 +101,7 @@ export function recordHistory(deck: Deck, debounce = false): void {
 export function clearHistory(): void {
   clearTimeout(snapshotTimer);
   pendingJson = null;
+  pendingDeck = null;
   undoStack = [];
   redoStack = [];
 }

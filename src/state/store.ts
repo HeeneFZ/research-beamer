@@ -4,7 +4,7 @@ import {
 } from '../model/types';
 import { SpacingState } from '../model/layoutSpec';
 import { computeDeck, Computed, refPageIndex, refParts } from '../model/numbering';
-import { colEndPlan, colRegionAt, stripEmptyColRegions } from '../model/segments';
+import { colEndPlan, colRegionAt, reseedColPlaceholders, stripEmptyColRegions } from '../model/segments';
 import { serializeMarkdown, parseMarkdown, normLabel, LABEL_PREFIX, dedupeRefLabel } from '../model/markdown';
 import { attachHistoryFolder, clearHistory, recordHistory, takeRedo, takeUndo } from './history';
 
@@ -51,6 +51,8 @@ interface StoreState {
   revealStep: number;
   presentStart: number;
   presenting: boolean;
+  /** 放映窗录制态（放映窗 recState 事件回传；驱动放映台按钮） */
+  presentRecording: boolean;
   /** 页级排版状态（key = slideId|aspect；内存态，不入 md/历史；全模式共享，
    *  由 useLayoutScan 静默探测写入，SlideView 各模式统一读取——编辑/胶片/放映/PDF 一致） */
   pageLayout: Record<string, SpacingState>;
@@ -78,7 +80,7 @@ interface StoreState {
   presentSkip(): void;
   presentReverse(): void;
   insertColEnd(slideId: string, blockId: string): void;
-  insertColRegion(slideId: string, afterId: string): string;
+  insertColRegion(slideId: string, afterId: string | null): string;
   setPageLayout(key: string, st: SpacingState): void;
   setEditing(e: EditState | null): void;
   setFocus(id: string | null, pos?: 'start' | 'end'): void;
@@ -111,6 +113,13 @@ function freshDeck(): Deck {
   };
 }
 
+/** deck 中按 id 取 slide（store 各 action 与编辑器键盘手柄共用，
+ *  替代 9 处重复的 items.find + kind 收窄样板） */
+export function slideOf(deck: Deck, slideId: string): Slide | null {
+  const it = deck.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
+  return it && it.kind === 'slide' ? it.slide : null;
+}
+
 export const useStore = create<StoreState>((set, get) => {
   /** 变更 deck 的统一入口：克隆 → 变更 → 重算编号/页 */
   const mutate = (fn: (d: Deck) => void, debounce = true) => {
@@ -141,14 +150,15 @@ export const useStore = create<StoreState>((set, get) => {
     revealStep: 0,
     presentStart: 0,
     presenting: false,
+    presentRecording: false,
     pageLayout: {},
     clipBlock: null,
 
     /** 复制块到剪贴板（内存态；粘贴时重新生成 id/剥除全局唯一字段） */
     copyBlock: (slideId, blockId) => {
       const s = get();
-      const it = s.deck.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
-      const b = it && it.kind === 'slide' ? it.slide.blocks.find((x) => x.id === blockId) : undefined;
+      const sl = slideOf(s.deck, slideId);
+      const b = sl ? sl.blocks.find((x) => x.id === blockId) : undefined;
       if (b) set({ clipBlock: JSON.parse(JSON.stringify(b)) });
     },
 
@@ -162,11 +172,11 @@ export const useStore = create<StoreState>((set, get) => {
       const { label: _l, pos: _p, ...rest } = s.clipBlock;
       const copy: Block = { ...JSON.parse(JSON.stringify(rest)), id };
       mutate((d) => {
-        const it = d.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
-        if (!it || it.kind !== 'slide') return;
-        const at = afterId ? it.slide.blocks.findIndex((x) => x.id === afterId) : -1;
-        if (at >= 0) it.slide.blocks.splice(at + 1, 0, copy);
-        else it.slide.blocks.push(copy);
+        const sl = slideOf(d, slideId);
+        if (!sl) return;
+        const at = afterId ? sl.blocks.findIndex((x) => x.id === afterId) : -1;
+        if (at >= 0) sl.blocks.splice(at + 1, 0, copy);
+        else sl.blocks.push(copy);
       }, false);
       return id;
     },
@@ -175,17 +185,18 @@ export const useStore = create<StoreState>((set, get) => {
 
     updateSlide: (slideId, patch) =>
       mutate((d) => {
-        const it = d.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
+        const i = d_indexOf(d, slideId);
+        const it = i >= 0 ? d.items[i] : null;
         if (it && it.kind === 'slide') it.slide = { ...it.slide, ...patch };
       }),
 
     updateBlock: (slideId, blockId, patch) =>
       mutate((d) => {
-        const it = d.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
-        if (!it || it.kind !== 'slide') return;
-        const i = it.slide.blocks.findIndex((b) => b.id === blockId);
+        const sl = slideOf(d, slideId);
+        if (!sl) return;
+        const i = sl.blocks.findIndex((b) => b.id === blockId);
         if (i < 0) return;
-        const prev = it.slide.blocks[i];
+        const prev = sl.blocks[i];
         // LaTeX 源内 \label{..} 自愈（弹窗粘贴整段 LaTeX 的自然写法）：提取为块标签
         // 并从 latex 剥除——否则 KaTeX 不识别 \label 渲染成红色错误文本、标签也永不注册
         //（引用芯片红显裸标签）。Label 字段显式提供时字段优先。
@@ -227,38 +238,43 @@ export const useStore = create<StoreState>((set, get) => {
           ));
           patch = { ...patch, itemOrders: norm.some((o) => o != null) ? norm : undefined };
         }
-        it.slide.blocks[i] = { ...prev, ...patch };
+        sl.blocks[i] = { ...prev, ...patch };
       }),
 
     insertBlock: (slideId, afterId, type, init) => {
       const id = newId();
       mutate((d) => {
-        const it = d.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
-        if (!it || it.kind !== 'slide') return;
+        const sl = slideOf(d, slideId);
+        if (!sl) return;
         const b: Block = { id, type, ...init };
-        const at = afterId ? it.slide.blocks.findIndex((x) => x.id === afterId) : -1;
-        if (at >= 0) it.slide.blocks.splice(at + 1, 0, b);
-        else it.slide.blocks.push(b);
+        const at = afterId ? sl.blocks.findIndex((x) => x.id === afterId) : -1;
+        if (at >= 0) sl.blocks.splice(at + 1, 0, b);
+        else sl.blocks.push(b);
       }, false);
       return id;
     },
 
     deleteBlock: (slideId, blockId) =>
       mutate((d) => {
-        const it = d.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
-        if (!it || it.kind !== 'slide') return;
+        const sl = slideOf(d, slideId);
+        if (!sl) return;
         // 删块后顺手收回空栏区：删光栏内最后一块时自动移除残留的 colmark/colend
-        //（否则双栏分割线与栏容器永远渲染——「删光元素意图退出双栏」的用户路径）
-        it.slide.blocks = stripEmptyColRegions(it.slide.blocks.filter((b) => b.id !== blockId));
+        //（否则双栏分割线与栏容器永远渲染——「删光元素意图退出双栏」的用户路径）。
+        // 单侧删空的栏区保留并补种占位段：空侧没有可点击目标则无处落新内容
+        //（parse 路径由 reseedColPlaceholders 兜底，live 路径在此对齐）
+        sl.blocks = reseedColPlaceholders(
+          stripEmptyColRegions(sl.blocks.filter((b) => b.id !== blockId)),
+          newId,
+        );
       }, false),
 
     /** 拖拽调序：把 blockId 移动到 beforeId 之前（beforeId=null 移到所在栏末尾）。
      *  栏安全：beforeId 必须与 blockId 同栏（colmark/colend 之间），否则忽略。 */
     moveBlockBefore: (slideId, blockId, beforeId) =>
       mutate((d) => {
-        const it = d.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
-        if (!it || it.kind !== 'slide') return;
-        const blocks = it.slide.blocks;
+        const sl = slideOf(d, slideId);
+        if (!sl) return;
+        const blocks = sl.blocks;
         const at = moveTargetOf(blocks, blockId, beforeId);
         if (at == null) return;
         const from = blocks.findIndex((b) => b.id === blockId);
@@ -384,13 +400,13 @@ export const useStore = create<StoreState>((set, get) => {
      *  旧 colend / 切栏标记按需删除，栏区清空则连开栏标记一起移除。 */
     insertColEnd: (slideId, blockId) => {
       mutate((d) => {
-        const it = d.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
-        if (!it || it.kind !== 'slide') return;
-        const plan = colEndPlan(it.slide.blocks, blockId);
+        const sl = slideOf(d, slideId);
+        if (!sl) return;
+        const plan = colEndPlan(sl.blocks, blockId);
         if (!plan) return;
         // 删除下标全部大于插入点（开栏标记只在「栏区清空不插入」分支删除），先删后插无需换算
-        for (const i of [...plan.deleteIdx].sort((a, b) => b - a)) it.slide.blocks.splice(i, 1);
-        if (plan.insertAt >= 0) it.slide.blocks.splice(plan.insertAt, 0, { id: newId(), type: 'colend' });
+        for (const i of [...plan.deleteIdx].sort((a, b) => b - a)) sl.blocks.splice(i, 1);
+        if (plan.insertAt >= 0) sl.blocks.splice(plan.insertAt, 0, { id: newId(), type: 'colend' });
       }, false);
     },
 
@@ -403,11 +419,11 @@ export const useStore = create<StoreState>((set, get) => {
     insertColRegion: (slideId, afterId) => {
       const leftId = newId();
       mutate((d) => {
-        const it = d.items.find((x) => x.kind === 'slide' && x.slide.id === slideId);
-        if (!it || it.kind !== 'slide') return;
-        const blocks = it.slide.blocks;
+        const sl = slideOf(d, slideId);
+        if (!sl) return;
+        const blocks = sl.blocks;
         const at = afterId ? blocks.findIndex((b) => b.id === afterId) : -1;
-        const reg = at >= 0 ? colRegionAt(blocks, afterId) : null;
+        const reg = at >= 0 && afterId ? colRegionAt(blocks, afterId) : null;
         let idx: number;
         if (!reg) {
           idx = at >= 0 ? at + 1 : blocks.length;
@@ -458,7 +474,7 @@ export const useStore = create<StoreState>((set, get) => {
     },
 
     endPresent: () => {
-      set({ presenting: false });
+      set({ presenting: false, presentRecording: false });
       void window.api.closePresent();
     },
 
@@ -490,7 +506,22 @@ export const useStore = create<StoreState>((set, get) => {
     },
 
     setEditing: (e) => set({ editing: e }),
-    setFocus: (id, pos = 'end') => set({ focusId: id, focusPos: pos }),
+    setFocus: (id, pos = 'end') => {
+      // setFocus 的合约语义是「进入该文本块编辑并落焦点到 pos」：编辑器挂载依赖
+      // editing 态（FlowBlock 按 editing.blockId 渲染 InlineBlockEditor），
+      // 只设 focusId 不进编辑态则焦点无处安放（＋菜单插段落曾静默无编辑器）
+      if (id) {
+        for (const it of get().deck.items) {
+          if (it.kind !== 'slide') continue;
+          const b = it.slide.blocks.find((x) => x.id === id);
+          if (b && (b.type === 'paragraph' || b.type === 'itemize')) {
+            set({ editing: { slideId: it.slide.id, blockId: id } });
+            break;
+          }
+        }
+      }
+      set({ focusId: id, focusPos: pos });
+    },
     setLightbox: (l) => set({ lightbox: l }),
     toggleDarkMode: () => set((s) => ({ darkMode: !s.darkMode })),
     setZoom: (z) => set({ zoom: Math.max(0.3, Math.min(3, z)) }),

@@ -95,13 +95,48 @@ export function stripEmptyColRegions(blocks: Block[]): Block[] {
       settle();
       continue;
     }
-    if (regionStart >= 0) hasContent = true;
+    // 空白占位段不算内容：两侧只剩占位（用户删光了实际内容）时栏区整体收回
+    //（README 合约「删光双栏区内全部内容自动收回」）；占位段本身照常保留——
+    // 另一侧有内容时它正是空侧的可点击落块目标（deleteBlock 后接 reseed 补种）
+    if (regionStart >= 0 && !(b.type === 'paragraph' && !(b.text || '').trim())) hasContent = true;
     out.push(b);
   }
   settle();
   return out;
 }
 
+/** 解析后补栏占位段：md 空段落在序列化时落为空行、解析时被跳过——栏区的
+ *  空占位段（开栏时由 insertColRegion 种下的可点击目标）在保存/重开一轮后
+ *  消失，右栏从此无处落块（＋/斜杠插入都落在左栏）。本函数在解析产物上
+ *  把「开栏标记与切栏标记之间无内容块」的左侧、「切栏标记与收栏/页尾之间
+ *  无内容块」的右侧各补一个空段落，恢复占位（serialize 再丢、parse 再补，
+ *  md 层幂等）。与 stripEmptyColRegions 同款状态机口径。 */
+export function reseedColPlaceholders(blocks: Block[], mkId: () => string): Block[] {
+  const out: Block[] = [];
+  let i = 0;
+  while (i < blocks.length) {
+    const b = blocks[i];
+    if (b.type !== 'colmark') { out.push(b); i++; continue; }
+    // 开栏标记：吞到切栏/收栏/页尾，左栏无内容则补占位（无后续切栏的悬空
+    // colmark 由 stripEmptyColRegions 语义兜底，此处不处理）
+    out.push(b); i++;
+    let leftContent = false;
+    while (i < blocks.length && blocks[i].type !== 'colmark' && blocks[i].type !== 'colend') {
+      leftContent = true; out.push(blocks[i]); i++;
+    }
+    if (!leftContent && i < blocks.length && blocks[i].type === 'colmark') {
+      out.push({ id: mkId(), type: 'paragraph', text: '' });
+    }
+    if (i >= blocks.length || blocks[i].type !== 'colmark') continue; // colend/页尾：收
+    out.push(blocks[i]); i++; // 切栏标记
+    let rightContent = false;
+    while (i < blocks.length && blocks[i].type !== 'colmark' && blocks[i].type !== 'colend') {
+      rightContent = true; out.push(blocks[i]); i++;
+    }
+    if (!rightContent) out.push({ id: mkId(), type: 'paragraph', text: '' });
+  }
+  return out;
+}
 /** 块所属栏区（null = 单栏段）。与 buildSegments 同一状态机，判定口径永远一致。 */
 export interface ColRegionAt {
   /** 点击块所在栏（切栏 colmark 之前 = 左栏） */
@@ -163,23 +198,47 @@ export function colEndPlan(blocks: Block[], blockId: string): { insertAt: number
   if (!r) return null;
   const xi = blocks.findIndex((b) => b.id === blockId);
   if (xi < 0) return null;
-  const isContent = (i: number) => blocks[i].type !== 'colmark' && blocks[i].type !== 'colend';
-  const anyContent = (from: number, to: number) => {
-    for (let i = Math.max(from, 0); i < to; i++) if (isContent(i)) return true;
+  // 结构配对用「块存在」（含空白占位——占位也是栏内实体，[M,L,M,b,R] 点 R
+  // 应保留 [L|b]）；内容判定单独做：保留区间内无任何实际内容（两侧皆占位）
+  // 才拆——与 stripEmptyColRegions「空白占位段不算内容」同口径（R8 修正：
+  // 直接把空白排除塞进 rightHas 会误拆有真实左内容的栏区，且与镜像不对称）
+  const isBlock = (i: number) => blocks[i].type !== 'colmark' && blocks[i].type !== 'colend';
+  const isReal = (i: number) =>
+    blocks[i].type !== 'colmark' && blocks[i].type !== 'colend'
+    && !(blocks[i].type === 'paragraph' && !(blocks[i].text || '').trim());
+  const anyBlock = (from: number, to: number) => {
+    for (let i = Math.max(from, 0); i < to; i++) if (isBlock(i)) return true;
+    return false;
+  };
+  const anyReal = (from: number, to: number) => {
+    for (let i = Math.max(from, 0); i < to; i++) if (isReal(i)) return true;
     return false;
   };
   // 切栏点（新 colend 落点）：点击左栏块 → 切栏标记作废，栏区止于开栏标记；
   // 点击右栏块 → 切栏标记保留，栏区止于点击块
   const cutAt = r.col === 'l' ? r.openIdx : xi;
-  // 保留栏区的左/右栏内容（配对检查）：左栏 = 开栏后…cutAt；右栏 = 切栏后…xi（仅点右栏时存在）
-  const leftHas = anyContent(r.openIdx + 1, cutAt);
-  const rightHas = r.col === 'r' && anyContent(r.switchIdx + 1, xi);
+  // 保留栏区的左/右栏配对（结构）：左栏 = 开栏后…cutAt；右栏 = 切栏后…xi（仅点右栏时存在）
+  const leftHas = anyBlock(r.openIdx + 1, cutAt);
+  const rightHas = r.col === 'r' && anyBlock(r.switchIdx + 1, xi);
+  // 保留区间（开栏后…点击块）无实际内容 → 整体拆除（两侧皆空占位不留空栏框线）
+  const regionHasContent = anyReal(r.openIdx + 1, xi);
   const deleteIdx: number[] = [];
   if (r.endIdx >= 0) deleteIdx.push(r.endIdx);
-  if (!leftHas || !rightHas) {
-    // 拆除整个栏区：左右标记全清，所有块回单栏
+  if (!leftHas || !rightHas || !regionHasContent) {
+    // 拆除整个栏区：左右标记全清，被拆内容回单栏。开栏标记若还隐式收着
+    // 【前一个】开放栏区（连续开栏无显式 colend 的自然形态），删掉它会让
+    // 前栏区右栏吞掉本栏区全部内容——原位改插 colend 补上边界（拆除后
+    // store 先降序删再按 insertAt 插，colend 恰落原开栏标记位置）
+    let prevOpen = false;
+    for (let i = 0; i < r.openIdx; i++) {
+      const t = blocks[i].type;
+      if (t === 'colmark') prevOpen = true;
+      else if (t === 'colend') prevOpen = false;
+    }
     deleteIdx.push(r.openIdx);
     if (r.switchIdx >= 0) deleteIdx.push(r.switchIdx);
+    // 前栏区开放：原位插 colend 补边界（store 先降序删再插，colend 落原开栏位置）
+    if (prevOpen) return { insertAt: r.openIdx, deleteIdx };
     return { insertAt: -1, deleteIdx };
   }
   // 配对保留：栏区止于点击块（点左栏时无配对可能，恒走拆除分支——此行仅点右栏可达）

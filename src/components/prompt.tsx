@@ -1,6 +1,5 @@
 // 轻量文本输入弹窗（节标题改名/出现顺序等）：Enter 确认、Esc 取消
 import { useState, useRef, useEffect } from 'react';
-import { createPortal } from 'react-dom';
 import { IcoClose } from './icons';
 // 复用 modal-mask/modal/txt/modal-actions 样式族；独立 createRoot 挂载——
 // 调用方多为菜单/工具栏条目，弹窗状态无须侵入各自组件树。

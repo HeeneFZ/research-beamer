@@ -24,12 +24,17 @@ declare global {
       sendPresentState(p: unknown): void;
       sendPresentEvent(e: { type: string; index?: number; label?: string }): void;
       onPresentState(cb: (p: unknown) => void): () => void;
-      onPresentEvent(cb: (e: { type: string; index?: number; label?: string }) => void): () => void;
+    onPresentEvent(cb: (e: { type: string; index?: number; label?: string }) => void): () => void;
+    /** 编辑器窗 → 放映窗控制命令（录制开关等） */
+    sendPresentCtrl(e: { type: string }): void;
+    onPresentCtrl(cb: (e: { type: string }) => void): () => void;
       readHistory(folder: string): Promise<{ json?: string; error?: string } | null>;
       writeHistory(p: { folder: string; json: string }): Promise<{ ok?: boolean; error?: string }>;
       saveRecording(p: { folder: string | null; name: string; data: ArrayBuffer }): Promise<{ path: string; error?: string }>;
       printPDF(p: { savePath: string }): Promise<{ path: string; bytes: number } | { error?: string }>;
     };
+    /** E2E 断言快照（exportPdf 在 print 态卸载前写入；仅 E2E 模式） */
+    __printRuleCheck?: { bandPx: number; fontSizePx: number; sqrtV: number | null };
   }
 }
 

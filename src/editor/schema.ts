@@ -5,7 +5,9 @@
 // - 与 model/inline.ts 的 markdown 源码往返
 
 import { Node, InputRule, Extension, Mark } from '@tiptap/core';
+import type { EditorView } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
+import { Fragment, Slice, Node as PMNode } from '@tiptap/pm/model';
 import { InlineToken, tokenizeInline } from '../model/inline';
 import { InlineMathView, RefChipView } from '../components/ChipViews';
 
@@ -325,3 +327,68 @@ export const BlockKeys = Extension.create<{ handlers: BlockKeyHandlers }>({
     };
   },
 });
+
+// ---------- 粘贴三态（InlineBlockEditor / RichFieldEditor 共用） ----------
+
+/** TipTap handlePaste 工厂：
+ *  ① 本应用内部复制（HTML 含 data-inline-math / data-ref-chip 标记）→ 放行 PM 原生解析
+ *    （芯片属性与 marks 全保留）；
+ *  ② 外部 KaTeX HTML（展示态页面/渲染网页复制）→ 提取 annotation 的 x-tex 源重建
+ *    inlineMath 芯片，杜绝 MathML 文本+源码+渲染文本三截垃圾；
+ *  ③ 纯文本（外部编辑器/聊天窗的 LaTeX 源）→ $...$ 片段转芯片（InputRule 只在键入时
+ *    触发，粘贴不经过，曾致 $x^2$ 落成乱码文本）；多行处理按 flattenNewlines 二选一：
+ *    块编辑器拆 hardBreak（块模型 text 支持换行）/ 单行字段拍平空格（字段存不下换行）。 */
+export function makePasteHandler(opts: { flattenNewlines: boolean }) {
+  return (view: EditorView, event: ClipboardEvent): boolean => {
+    const dt = event.clipboardData;
+    const html = dt?.getData('text/html') ?? '';
+    const text = dt?.getData('text/plain') ?? '';
+    const schema = view.state.schema;
+    if (html.includes('data-inline-math') || html.includes('data-ref-chip')) return false;
+    const katexSrc: string[] = [];
+    if (html.includes('katex') || html.includes('x-tex')) {
+      const dom = new DOMParser().parseFromString(html, 'text/html');
+      for (const an of dom.querySelectorAll('annotation[encoding="application/x-tex"]')) {
+        const src = (an.textContent ?? '').trim();
+        if (src) katexSrc.push(src);
+      }
+    }
+    if (katexSrc.length) {
+      event.preventDefault();
+      const nodes: PMNode[] = [];
+      katexSrc.forEach((src) => {
+        if (nodes.length) nodes.push(schema.text(' '));
+        nodes.push(schema.nodes.inlineMath.create({ latex: src }));
+      });
+      view.dispatch(view.state.tr.replaceSelection(new Slice(Fragment.fromArray(nodes), 0, 0)));
+      return true;
+    }
+    if (!text) return false;
+    const hasMath = /\$[^$\n]+\$/.test(text);
+    if (!hasMath && !text.includes('\n')) return false;
+    event.preventDefault();
+    const parts = text.split(/\r?\n/);
+    while (parts.length && parts[parts.length - 1] === '') parts.pop();
+    const nodes: PMNode[] = [];
+    const pushTextWithMath = (s: string) => {
+      const re = /\$([^$\n]+)\$/g;
+      let last = 0, m: RegExpExecArray | null;
+      while ((m = re.exec(s))) {
+        if (m.index > last) nodes.push(schema.text(s.slice(last, m.index)));
+        nodes.push(schema.nodes.inlineMath.create({ latex: m[1] }));
+        last = m.index + m[0].length;
+      }
+      if (last < s.length) nodes.push(schema.text(s.slice(last)));
+    };
+    if (opts.flattenNewlines) {
+      pushTextWithMath(parts.join(' '));
+    } else {
+      parts.forEach((p, i) => {
+        if (i > 0) nodes.push(schema.nodes.hardBreak.create());
+        if (p) pushTextWithMath(p);
+      });
+    }
+    if (nodes.length) view.dispatch(view.state.tr.replaceSelection(new Slice(Fragment.fromArray(nodes), 0, 0)));
+    return true;
+  };
+}

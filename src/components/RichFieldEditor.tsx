@@ -12,8 +12,7 @@ import { useEffect, useRef } from 'react';
 import { useEditor, EditorContent, Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Placeholder } from '@tiptap/extensions';
-import { Fragment, Slice, Node as PMNode } from '@tiptap/pm/model';
-import { InlineMath, RefChip, ColorSpan, BgSpan, textToDoc, docToText } from '../editor/schema';
+import { InlineMath, RefChip, ColorSpan, BgSpan, textToDoc, docToText, makePasteHandler } from '../editor/schema';
 import { onOverlay } from './overlays';
 
 /** 单行字段文本：\n 拍平为空格（含防御——hardBreak 已从 schema 移除，
@@ -98,48 +97,8 @@ export function RichFieldEditor({ value, onCommit, onDone, onCancel, placeholder
           return false;
         },
       },
-      // 粘贴三态（与 InlineBlockEditor 同族；单行差异：多行拍平空格而非 hardBreak）
-      handlePaste: (view, event) => {
-        const dt = event.clipboardData;
-        const html = dt?.getData('text/html') ?? '';
-        const text = dt?.getData('text/plain') ?? '';
-        const schema = view.state.schema;
-        if (html.includes('data-inline-math') || html.includes('data-ref-chip')) return false;
-        const katexSrc: string[] = [];
-        if (html.includes('katex') || html.includes('x-tex')) {
-          const dom = new DOMParser().parseFromString(html, 'text/html');
-          for (const an of dom.querySelectorAll('annotation[encoding="application/x-tex"]')) {
-            const src = (an.textContent ?? '').trim();
-            if (src) katexSrc.push(src);
-          }
-        }
-        if (katexSrc.length) {
-          event.preventDefault();
-          const nodes: PMNode[] = [];
-          katexSrc.forEach((src) => {
-            if (nodes.length) nodes.push(schema.text(' '));
-            nodes.push(schema.nodes.inlineMath.create({ latex: src }));
-          });
-          view.dispatch(view.state.tr.replaceSelection(new Slice(Fragment.fromArray(nodes), 0, 0)));
-          return true;
-        }
-        if (!text) return false;
-        const hasMath = /\$[^$\n]+\$/.test(text);
-        if (!hasMath && !text.includes('\n')) return false;
-        event.preventDefault();
-        const flat = oneLine(text);
-        const nodes: PMNode[] = [];
-        const re = /\$([^$\n]+)\$/g;
-        let last = 0, m: RegExpExecArray | null;
-        while ((m = re.exec(flat))) {
-          if (m.index > last) nodes.push(schema.text(flat.slice(last, m.index)));
-          nodes.push(schema.nodes.inlineMath.create({ latex: m[1] }));
-          last = m.index + m[0].length;
-        }
-        if (last < flat.length) nodes.push(schema.text(flat.slice(last)));
-        if (nodes.length) view.dispatch(view.state.tr.replaceSelection(new Slice(Fragment.fromArray(nodes), 0, 0)));
-        return true;
-      },
+      // 粘贴三态（与 InlineBlockEditor 同族 makePasteHandler；单行差异：多行拍平空格）
+      handlePaste: makePasteHandler({ flattenNewlines: true }),
     },
     content: textToDoc(initialRef.current),
     autofocus: 'end',

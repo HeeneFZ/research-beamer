@@ -30,6 +30,12 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('present:event', h);
     return () => ipcRenderer.removeListener('present:event', h);
   },
+  sendPresentCtrl: (evt) => ipcRenderer.send('present:ctrl', evt),
+  onPresentCtrl: (cb) => {
+    const h = (_e, evt) => cb(evt);
+    ipcRenderer.on('present:ctrl', h);
+    return () => ipcRenderer.removeListener('present:ctrl', h);
+  },
   saveMediaAs: (p) => ipcRenderer.invoke('media:saveAs', p),
   printPDF: (p) => ipcRenderer.invoke('pdf:print', p),
   readHistory: (folder) => ipcRenderer.invoke('history:read', folder),

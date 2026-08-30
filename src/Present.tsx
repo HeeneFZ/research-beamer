@@ -13,6 +13,7 @@ import { SlideView } from './components/SlideView';
 import { LightboxInner } from './components/Lightbox';
 import { ensurePdfAspect } from './components/pdfRaster';
 import { absMediaPath } from './components/paths';
+import { realignKatexRules } from './components/katexRuleSnap';
 import { useBackNav } from './hooks/useBackNav';
 import { useStore } from './state/store';
 import 'katex/dist/katex.min.css';
@@ -101,8 +102,12 @@ export default function Present() {
   zsRef.current = zoomState;
   const sorterRef = useRef(sorter);
   sorterRef.current = sorter;
-  const dragRef = useRef<{ x: number; y: number; panX: number; panY: number; moved: boolean } | null>(null);
+  const dragRef = useRef<{ x: number; y: number; panX: number; panY: number; panX2: number; panY2: number; moved: boolean } | null>(null);
   const [dragging, setDragging] = useState(false);
+  // 拖拽直写上下文（渲染期刷新，与 zsRef 同款）：拖平移不 setState，transform 直写
+  // .present-page，mouseup 一次提交终值——每帧重渲染放映页树（annoeq 序列化）不可接受
+  const dragCtx = useRef({ z: 1, ox: 0.5, oy: 0.5, shownW: 0, shownH: 0 });
+  const presentPageRef = useRef<HTMLDivElement>(null);
   // 拖拽平移后的 click 事件在 mouseup 之后才到——dragRef 已清空，用独立标记抑制误翻页
   const suppressClick = useRef(false);
   // 放映窗的 lightbox 用本地状态；本窗 store 仅承载 pageLayout（编辑器窗扫描产物，见下方 onPresentState）
@@ -112,9 +117,21 @@ export default function Present() {
   const [recording, setRecording] = useState(false);
   const [recErr, setRecErr] = useState<string | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
-  const recChunksRef = useRef<Blob[]>([]);
+  // 启动互斥：getDisplayMedia/getUserMedia 是异步的，recorderRef 要到构造完成才非空——
+  // 双击/连点两次 rec-toggle 会看到空 ref 走两条采集流，第二条覆盖 ref 后第一条
+  // 永不停（屏幕采集指示灯常亮）且两路分片写进同一数组（webm 损坏）
+  const recStartingRef = useRef(false);
+
+  const stopRecording = () => {
+    const rec = recorderRef.current;
+    if (rec && rec.state !== 'inactive') rec.stop();
+    recorderRef.current = null;
+    setRecording(false);
+  };
 
   const startRecording = async () => {
+    if (recStartingRef.current || (recorderRef.current && recorderRef.current.state !== 'inactive')) return;
+    recStartingRef.current = true;
     setRecErr(null);
     try {
       // 屏幕视频 + 系统声音：main.cjs 的 setDisplayMediaRequestHandler 自动选放映屏 + loopback
@@ -145,11 +162,13 @@ export default function Present() {
         : new MediaStream(tracks);
       const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8_000_000 } : undefined);
-      recChunksRef.current = [];
-      rec.ondataavailable = (e) => { if (e.data.size > 0) recChunksRef.current.push(e.data); };
+      // 分片数组闭包在本 recorder 生命周期内（共享 ref 会让快速重启时上一录的
+      // 晚到分片混进新录，交错损坏 webm）
+      const chunks: Blob[] = [];
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
       rec.onstop = async () => {
         try {
-          const blob = new Blob(recChunksRef.current, { type: mime || 'video/webm' });
+          const blob = new Blob(chunks, { type: mime || 'video/webm' });
           // 释放采集设备
           stream.getTracks().forEach((t) => t.stop());
           mic?.getTracks().forEach((t) => t.stop());
@@ -164,6 +183,10 @@ export default function Present() {
           else if (r && r.error) setRecErr('录像保存失败：' + r.error);
         } catch (e) {
           setRecErr('录像保存失败：' + String(e));
+        } finally {
+          // 落盘完成 ack（成功/失败/空块全路径）：present:close 等此信号再关窗，
+          // 否则停止录制后立刻结束放映会在序列化途中销毁本窗 → 录像静默丢失
+          window.api.sendPresentEvent({ type: 'recStopped' });
         }
       };
       // 用户从浏览器级「停止共享」栏结束录制（不经控件按钮）
@@ -175,14 +198,17 @@ export default function Present() {
       setRecording(true);
     } catch (e) {
       setRecErr('录制启动失败：' + String(e));
+    } finally {
+      recStartingRef.current = false;
     }
   };
 
-  const stopRecording = () => {
-    const rec = recorderRef.current;
-    if (rec && rec.state !== 'inactive') rec.stop();
-    recorderRef.current = null;
-    setRecording(false);
+  // 最新「录制开关」函数（mount 时 effect 闭包经此取到当前渲染的 start/stop：
+  // mount 时 st=null，直捕首帧闭包会把录像存到 folder=null 的错误位置）
+  const recCtlRef = useRef<() => void>(() => {});
+  recCtlRef.current = () => {
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') stopRecording();
+    else void startRecording();
   };
 
   useEffect(() => {
@@ -193,8 +219,21 @@ export default function Present() {
       useStore.setState({ pageLayout: ps.pageLayout ?? {} });
       setSt(ps);
     });
-    return off;
+    // 放映台（主窗 PresenterView）与主进程（结束放映先停录）的控制命令：
+    // 录制设备在本窗持有，跨窗经 present:ctrl 转发。经 ref 取最新闭包——
+    // mount 时 st=null，直捕首帧 startRecording 会把录像存到 folder=null 的错误位置
+    const offCtrl = window.api.onPresentCtrl((c) => {
+      if (c.type === 'rec-toggle') recCtlRef.current();
+      // 主进程结束放映前的停录命令（present:close 检测到录制中先停录再关窗）
+      else if (c.type === 'rec-stop') stopRecording();
+    });
+    return () => { off(); offCtrl(); };
   }, []);
+
+  // 录制态 → 放映台按钮（含浏览器「停止共享」栏结束的旁路路径）
+  useEffect(() => {
+    window.api.sendPresentEvent({ type: 'recState', label: recording ? 'on' : 'off' });
+  }, [recording]);
 
   // 卸载守卫：放映窗直接关闭时停掉录制（closed 前 stop，onstop 落盘链路仍可用）
   useEffect(() => () => {
@@ -212,6 +251,16 @@ export default function Present() {
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  // 放映缩放态变化（free zoom / 透镜开关）→ KaTeX 规则线全量重算：
+  // 线的设备像素下限随累计 scale 变化，transform 不触发布局事件，须显式触发。
+  // .present-page 的 transform 有 .18s 过渡：rAF 时测到的是过渡起点（旧 scale），
+  // 220ms 过渡收敛后补一次重算才是终态口径（拖拽平移改直写后不再逐帧触发本 effect）
+  useEffect(() => {
+    realignKatexRules();
+    const t = window.setTimeout(realignKatexRules, 220);
+    return () => clearTimeout(t);
+  }, [zoomState]);
 
   const send = useCallback((evt: PresentEvent) => {
     window.api.sendPresentEvent(evt);
@@ -310,29 +359,56 @@ export default function Present() {
       if (zsRef.current.mode === 'lens') {
         setMouse({ x: e.clientX / Math.max(1, vp.w), y: e.clientY / Math.max(1, vp.h) });
       }
-      if (laserDot.current) {
-        laserDot.current.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
-      }
+      // 激光点跟随：ref 直写 transform（零重渲染）
+      const dot = laserDot.current;
+      if (dot) dot.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
       const d = dragRef.current;
-      if (d) {
-        const dx = e.clientX - d.x;
-        const dy = e.clientY - d.y;
-        if (Math.abs(dx) + Math.abs(dy) > 4) d.moved = true;
-        setZoomState((s) => (s.mode === 'free' ? { ...s, panX: d.panX + dx, panY: d.panY + dy } : s));
+      if (!d) return;
+      // 越窗丢 mouseup 自愈：按钮已松（buttons===0）时按 onUp 同款收尾
+      if (e.buttons === 0) { finishDrag(); return; }
+      const dx = e.clientX - d.x;
+      const dy = e.clientY - d.y;
+      if (Math.abs(dx) + Math.abs(dy) > 4) d.moved = true;
+      d.panX2 = d.panX + dx;
+      d.panY2 = d.panY + dy;
+      // 平移直写 transform（不 setState，零重渲染）；mouseup 一次提交终值。
+      // z≤1 不写：中途 Esc/0 复位缩放后 React 已写回 scale(1) 的复位 transform，
+      // 此处再写 pan 会把复位覆盖掉且无人恢复（React props 比较见同值跳过写回）
+      const c = dragCtx.current;
+      const el = presentPageRef.current;
+      if (el && c.shownW > 0 && c.z > 1) {
+        const tX = (0.5 - c.ox) * (c.z - 1) * c.shownW + d.panX2;
+        const tY = (0.5 - c.oy) * (c.z - 1) * c.shownH + d.panY2;
+        el.style.transform = `translate(${tX}px, ${tY}px) scale(${c.z})`;
+      }
+    };
+    /** 拖拽收尾（onUp 与越窗自愈共用）：suppressClick 闩带 350ms 超时兜底
+     *  （mouseup 落在窗外时无 click 跟随，闩不清理会吞掉下一次真点击）；
+     *  仅 z>1 时提交 pan——中途 Esc/0 复位到 z=1 后 pan 无意义且会留下偏移页 */
+    const finishDrag = () => {
+      const d = dragRef.current;
+      dragRef.current = null;
+      setDragging(false);
+      if (!d) return;
+      if (d.moved) {
+        suppressClick.current = true;
+        window.setTimeout(() => { suppressClick.current = false; }, 350);
+      }
+      if (d.moved && zsRef.current.mode === 'free' && zsRef.current.z > 1
+        && (d.panX2 !== d.panX || d.panY2 !== d.panY)) {
+        setZoomState((s) => (s.mode === 'free' && s.z > 1 ? { ...s, panX: d.panX2, panY: d.panY2 } : s));
       }
     };
     const onDown = (e: MouseEvent) => {
       // 放大态（自由缩放 z>1）：左键拖拽 = 平移
       const z = zsRef.current;
       if (e.button === 0 && z.mode === 'free' && z.z > 1) {
-        dragRef.current = { x: e.clientX, y: e.clientY, panX: z.panX, panY: z.panY, moved: false };
+        dragRef.current = { x: e.clientX, y: e.clientY, panX: z.panX, panY: z.panY, panX2: z.panX, panY2: z.panY, moved: false };
         setDragging(true);
       }
     };
     const onUp = (e: MouseEvent) => {
-      if (dragRef.current?.moved) suppressClick.current = true;
-      dragRef.current = null;
-      setDragging(false);
+      finishDrag();
       // button 3（后退）由 useBackNav 统一处理；button 4（前进）= 下一步
       // 放大镜内的事件不穿透（与键盘/滚轮同族守卫）
       if (e.button === 4) {
@@ -351,7 +427,6 @@ export default function Present() {
     };
   }, [vp, send]);
 
-  const pageHostRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   // 滚轮：React 18 的 onWheel 是 passive 监听（preventDefault 静默无效且控制台报错），
@@ -409,6 +484,8 @@ export default function Present() {
   const lensH = shownH / 2;
   const lensLeft = Math.max(pageLeft, Math.min(mouse.x * vp.w - lensW / 2, pageLeft + shownW - lensW));
   const lensTop = Math.max(pageTop, Math.min(mouse.y * vp.h - lensH / 2, pageTop + shownH - lensH));
+  // 拖拽直写上下文（渲染期刷新）：mouseup 提交终值后与本帧 transform 一致
+  dragCtx.current = { z, ox: zoomState.mode === 'free' ? zoomState.ox : 0.5, oy: zoomState.mode === 'free' ? zoomState.oy : 0.5, shownW, shownH };
 
   // 全页浏览布局：缩略图尽量大、填满视窗（行列随页数与视窗自适应）
   let sorterCols = 1;
@@ -463,8 +540,9 @@ export default function Present() {
       ref={rootRef}
       onClick={stageClick}
     >
-      <div className="present-page-host" ref={pageHostRef}>
+      <div className="present-page-host">
         <div
+          ref={presentPageRef}
           className={'present-page' + (dragging ? ' dragging' : '')}
           style={{ width: shownW, height: shownH, transform: `translate(${tx}px, ${ty}px) scale(${z})` }}
         >

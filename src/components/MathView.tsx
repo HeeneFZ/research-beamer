@@ -34,12 +34,14 @@ function readBrace(s: string, pos: number): { content: string; next: number } | 
   return null;
 }
 
+/** 剥除 \label{..}（KaTeX 不识别该命令会渲染成红色错误文本；
+ *  解析/提交层已提取标签，此处兜底编辑器本地未提交的中间态） */
+export const stripLabels = (latex: string): string => latex.replace(/\\label\{[^}]*\}/g, '');
+
 export function preprocessMath(latex: string, palette: Palette): { tex: string; legend: AnnotateLegend[] } {
-  const legend: AnnotateLegend[] = [];
-  // 残留 \label{..} 剥除（防御层：解析/提交两层已提取，这里兜住直改 latex 的旁路，
-  // 避免 KaTeX 把不识别的 \label 渲染成红色错误文本）
-  latex = latex.replace(/\\label\{[^}]*\}/g, '');
+  latex = stripLabels(latex);
   let out = '';
+  const legend: AnnotateLegend[] = [];
   let i = 0;
   while (i < latex.length) {
     const idx = latex.indexOf('\\annotate', i);
@@ -180,8 +182,12 @@ export function katexHtml(tex: string, displayMode: boolean): string {
   return katex.renderToString(boldGreekFix(tex), { displayMode, throwOnError: false, strict: false, macros: { ...MATH_STYLE_MACROS } });
 }
 
-/** 行内公式（text 模式，不弹块级 margin） */
+/** 行内公式（text 模式，不弹块级 margin）。
+ *  两段式 memo：preprocess 依赖 palette 对象（deck 深克隆后身份每次都变），
+ *  渲染只依赖 tex 字符串（值相等即跳过）——否则每次 deck 变更全 deck 行内公式
+ *  重跑 KaTeX renderToString（EquationView 同款模式） */
 export function InlineMath({ latex, palette }: { latex: string; palette: Palette }) {
-  const html = useMemo(() => katexHtml(preprocessMath(latex, palette).tex, false), [latex, palette]);
+  const { tex } = useMemo(() => preprocessMath(latex, palette), [latex, palette]);
+  const html = useMemo(() => katexHtml(tex, false), [tex]);
   return <span className="imath" dangerouslySetInnerHTML={{ __html: html }} />;
 }

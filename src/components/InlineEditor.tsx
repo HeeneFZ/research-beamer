@@ -8,16 +8,16 @@ import { createPortal } from 'react-dom';
 import { useEditor, EditorContent, Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Placeholder } from '@tiptap/extensions';
-import { Fragment, Slice, Node as PMNode } from '@tiptap/pm/model';
 import { Block, Slide } from '../model/types';
-import { useStore } from '../state/store';
+import { useStore, slideOf } from '../state/store';
 import {
-  InlineMath, RefChip, ColorSpan, BgSpan, BlockKeys, bareRefKey,
+  InlineMath, RefChip, ColorSpan, BgSpan, BlockKeys, bareRefKey, makePasteHandler,
   textToDoc, itemsToDoc, docToText, docToItems,
 } from '../editor/schema';
-import { insertMediaBlock } from './BlockEditors';
 import { resolveRole } from '../model/palette';
 import { onOverlay } from './overlays';
+import { colRegionAt } from '../model/segments';
+import { insertBlockByKey, InsertKey } from './insertItems';
 
 const SLASH_ITEMS = [
   { key: 'inline-eq', label: '行内公式', hint: '$ 或 ￥', badge: '∑', cls: 'eq' },
@@ -28,6 +28,8 @@ const SLASH_ITEMS = [
   { key: 'block-fig', label: '图片块', hint: '弹窗选择图片', badge: '▣', cls: 'fig' },
   { key: 'block-video', label: '视频块', hint: '弹窗选择视频', badge: '▶', cls: 'fig' },
   { key: 'block-table', label: '表格块', hint: '三线表', badge: '▦', cls: 'tab' },
+  { key: 'col-mark', label: '开始双栏区', hint: '本块之后左右两栏', badge: '◫', cls: 'cite' },
+  { key: 'col-end', label: '结束双栏区', hint: '本块逃出栏区回单栏', badge: '▪', cls: 'cite' },
 ] as const;
 
 type SlashKey = typeof SLASH_ITEMS[number]['key'];
@@ -124,11 +126,9 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
             return true;
           },
           onBackspaceAtStart: () => {
-            const s = useStore.getState();
             // 闭包里的 slide 是编辑器创建时的快照（deck 变更后即陈旧）：邻居/合并目标
             // 一律取即时态，防「先删前块再 Backspace」合并进已删块而丢字
-            const me = s.deck.items.find((x) => x.kind === 'slide' && x.slide.id === slide.id);
-            const curSlide = me && me.kind === 'slide' ? me.slide : null;
+            const curSlide = slideOf(useStore.getState().deck, slide.id);
             if (!curSlide) return false;
             const neighbors = textBlockNeighbors(curSlide);
             const idx = neighbors.findIndex((b) => b.id === block.id);
@@ -153,21 +153,18 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
             return true; // 前一个是公式/图片等：阻止合并
           },
           onArrowUpAtStart: () => {
-            const s = useStore.getState();
-            const me = s.deck.items.find((x) => x.kind === 'slide' && x.slide.id === slide.id);
-            if (!me || me.kind !== 'slide') return false;
-            const idx = textBlockNeighbors(me.slide).findIndex((b) => b.id === block.id);
-            const prev = textBlockNeighbors(me.slide)[idx - 1];
+            const cur = slideOf(useStore.getState().deck, slide.id);
+            if (!cur) return false;
+            const neighbors = textBlockNeighbors(cur);
+            const prev = neighbors[neighbors.findIndex((b) => b.id === block.id) - 1];
             if (prev) { setFocus(prev.id, 'end'); return true; }
             return false;
           },
           onArrowDownAtEnd: () => {
-            const s = useStore.getState();
-            const me = s.deck.items.find((x) => x.kind === 'slide' && x.slide.id === slide.id);
-            if (!me || me.kind !== 'slide') return false;
-            const neighbors = textBlockNeighbors(me.slide);
-            const idx = neighbors.findIndex((b) => b.id === block.id);
-            const next = neighbors[idx + 1];
+            const cur = slideOf(useStore.getState().deck, slide.id);
+            if (!cur) return false;
+            const neighbors = textBlockNeighbors(cur);
+            const next = neighbors[neighbors.findIndex((b) => b.id === block.id) + 1];
             if (next) { setFocus(next.id, 'start'); return true; }
             return false;
           },
@@ -189,62 +186,9 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
           return false;
         },
       },
-      // 粘贴三态处理（行内公式保真是主目标）：
-      // ① 本应用内部复制（HTML 含 data-inline-math / data-ref-chip 标记）→ 放行
-      //    PM 原生解析（芯片属性与 marks 全保留）；
-      // ② 外部 KaTeX HTML（展示态页面/渲染网页复制）→ 提取 annotation 的 x-tex 源
-      //    重建 inlineMath 芯片，杜绝 MathML 文本+源码+渲染文本三截垃圾；
-      // ③ 纯文本（外部编辑器/聊天窗的 LaTeX 源）→ $...$ 片段转芯片（InputRule 只
-      //    在键入时触发，粘贴不经过，曾致 $x^2$ 落成乱码文本）+ 多行拍平 hardBreak
-      //    （块模型 text 单行，默认按行拆 <p> 会丢后续行）。
-      handlePaste: (view, event) => {
-        const dt = event.clipboardData;
-        const html = dt?.getData('text/html') ?? '';
-        const text = dt?.getData('text/plain') ?? '';
-        const schema = view.state.schema;
-        if (html.includes('data-inline-math') || html.includes('data-ref-chip')) return false;
-        const katexSrc: string[] = [];
-        if (html.includes('katex') || html.includes('x-tex')) {
-          const dom = new DOMParser().parseFromString(html, 'text/html');
-          for (const an of dom.querySelectorAll('annotation[encoding="application/x-tex"]')) {
-            const src = (an.textContent ?? '').trim();
-            if (src) katexSrc.push(src);
-          }
-        }
-        if (katexSrc.length) {
-          event.preventDefault();
-          const nodes: PMNode[] = [];
-          katexSrc.forEach((src) => {
-            if (nodes.length) nodes.push(schema.text(' '));
-            nodes.push(schema.nodes.inlineMath.create({ latex: src }));
-          });
-          view.dispatch(view.state.tr.replaceSelection(new Slice(Fragment.fromArray(nodes), 0, 0)));
-          return true;
-        }
-        if (!text) return false;
-        const hasMath = /\$[^$\n]+\$/.test(text);
-        if (!hasMath && !text.includes('\n')) return false;
-        event.preventDefault();
-        const parts = text.split(/\r?\n/);
-        while (parts.length && parts[parts.length - 1] === '') parts.pop();
-        const nodes: PMNode[] = [];
-        const pushTextWithMath = (s: string) => {
-          const re = /\$([^$\n]+)\$/g;
-          let last = 0, m: RegExpExecArray | null;
-          while ((m = re.exec(s))) {
-            if (m.index > last) nodes.push(schema.text(s.slice(last, m.index)));
-            nodes.push(schema.nodes.inlineMath.create({ latex: m[1] }));
-            last = m.index + m[0].length;
-          }
-          if (last < s.length) nodes.push(schema.text(s.slice(last)));
-        };
-        parts.forEach((p, i) => {
-          if (i > 0) nodes.push(schema.nodes.hardBreak.create());
-          if (p) pushTextWithMath(p);
-        });
-        if (nodes.length) view.dispatch(view.state.tr.replaceSelection(new Slice(Fragment.fromArray(nodes), 0, 0)));
-        return true;
-      },
+      // 粘贴三态（行内公式保真是主目标；多行拆 hardBreak——块模型 text 支持换行）：
+      // 详见 editor/schema.ts makePasteHandler
+      handlePaste: makePasteHandler({ flattenNewlines: false }),
     },
     content: initialContent,
     autofocus: true,
@@ -358,7 +302,7 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key === 'ArrowDown') { ev.preventDefault(); ev.stopPropagation(); setSlashIdx((i) => Math.min(i + 1, SLASH_ITEMS.length - 1)); }
       else if (ev.key === 'ArrowUp') { ev.preventDefault(); ev.stopPropagation(); setSlashIdx((i) => Math.max(i - 1, 0)); }
-      else if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); ev.stopPropagation(); applySlash(SLASH_ITEMS[slashIdx].key); }
+      else if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); ev.stopPropagation(); if (!slashDisabled(SLASH_ITEMS[slashIdx].key)) applySlash(SLASH_ITEMS[slashIdx].key); }
       else if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); setSlash(null); }
     };
     dom.addEventListener('keydown', onKey, true);
@@ -377,6 +321,12 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
       .run();
     setPicker(null);
   };
+
+  // 结束双栏区只对栏内块有意义（与块工具栏共用 colRegionAt 判定）；
+  // 键盘与鼠标两路入口都必须吃同一禁用判定（键盘漏判会走 no-op mutate：
+// 幽灵撤销项 + redo 清空 + dirty 置位）
+  const canColEnd = colRegionAt(slide.blocks, block.id) != null;
+  const slashDisabled = (key: SlashKey): boolean => key === 'col-end' && !canColEnd;
 
   const applySlash = (key: SlashKey) => {
     if (!editor) return;
@@ -397,24 +347,26 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
       case 'color-primary':
         del().toggleMark('colorSpan', { role: 'primary' }).run();
         break;
+      // 块级插入统一走 insertBlockByKey（与块工具栏/首块菜单同一分发与载荷）
       case 'block-eq':
-        del().run();
-        insertBlock(slide.id, block.id, 'equation', { latex: 'x = 1' });
-        break;
       case 'block-fig':
-        del().run();
-        void insertMediaBlock(slide.id, block.id, 'figure');
-        break;
       case 'block-video':
-        del().run();
-        void insertMediaBlock(slide.id, block.id, 'video');
-        break;
       case 'block-table':
+      case 'col-mark':
+      case 'col-end': {
+        if (slashDisabled(key)) return;
         del().run();
-        insertBlock(slide.id, block.id, 'table', { cells: [['列1', '列2'], ['', '']] });
+        const k: InsertKey = key === 'block-eq' ? 'equation'
+          : key === 'block-fig' ? 'figure'
+          : key === 'block-video' ? 'video'
+          : key === 'block-table' ? 'table'
+          : key === 'col-mark' ? 'colmark' : 'colend';
+        insertBlockByKey(slide.id, block.id, k);
         break;
+      }
     }
   };
+
 
   return (
     <div className="block-editor-wrap">
@@ -422,14 +374,18 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
       {slash && createPortal(
         <div className="slash-menu" style={{ position: 'fixed', left: slash.left, top: slash.top }}>
           <div className="ref-picker-title">插入（↑↓ 选择，Enter 确认）</div>
-          {SLASH_ITEMS.map((it, i) => (
-            <div key={it.key} className={`slash-item${i === slashIdx ? ' sel' : ''}`}
-              onMouseDown={(e) => { e.preventDefault(); applySlash(it.key); }}
-              onMouseEnter={() => setSlashIdx(i)}>
-              <span className={`ref-kind slash-badge-${it.cls}`}>{it.badge}</span>
-              <span>{it.label}</span><span className="slash-hint">{it.hint}</span>
-            </div>
-          ))}
+          {SLASH_ITEMS.map((it, i) => {
+            const dis = slashDisabled(it.key);
+            return (
+              <div key={it.key} className={`slash-item${i === slashIdx ? ' sel' : ''}${dis ? ' disabled' : ''}`}
+                title={dis ? '当前块不在双栏区内' : undefined}
+                onMouseDown={(e) => { e.preventDefault(); if (!dis) applySlash(it.key); }}
+                onMouseEnter={() => setSlashIdx(i)}>
+                <span className={`ref-kind slash-badge-${it.cls}`}>{it.badge}</span>
+                <span>{it.label}</span><span className="slash-hint">{dis ? '不在双栏区域内' : it.hint}</span>
+              </div>
+            );
+          })}
         </div>,
         document.body
       )}
