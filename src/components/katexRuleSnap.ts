@@ -67,17 +67,23 @@ function stretchDelimBars(mult: HTMLElement): void {
   }
 }
 
-/** 设备像素下限（分数线与根号线共用）：
- *  返回加下限后的屏幕空间线高。dpr>1 时额外保证 local 带高 ≥0.55/dpr
- *  （最坏纹理栅格化下至少 1 纹素行，防整数量化归零）。 */
+/** 设备像素下限（分数线与根号线共用）：保证带在【最坏栅格化】下至少 ~0.55 纹素
+ *  （AA 可见阈值 ~0.5 纹素；实测 0.36 纹素消失 / 0.38 可见）。
+ *
+ *  最坏情形 = 合成器按 dpr（不含祖先 transform scale）栅格化被缩放图层——
+ *  「dpr=1 恒按最终分辨率 AA」只在部分机器/屏成立（第卌一轮实测口径）；
+ *  用户双屏实测（放映窗落 100% 缩放副屏，累计 scale 4.27×）证明 dpr=1 的
+ *  合成器也会走 dpr 栅格化：0.29px 局部带 → 0.29 纹素 → 整条线量化归零
+ *  （(1.1) 式分式线消失实锤，0.47px 线恰在阈值附近时隐时现）。
+ *  故 0.55/dpr 下限【无条件】生效（原先仅 dpr>1），任何栅格化策略下线恒可见。
+ *  大字号/高缩放下设计值本就超下限，视觉不受影响；小字号局部带上浮到
+ *  0.55/dpr（视觉 0.55×scale/dpr）——与同字号字形笔画重量同量级，不会过粗。 */
 function flooredHeights(designLocal: number, scale: number): { hLocal: number; hVisual: number } {
   const dpr = window.devicePixelRatio || 1;
-  let hVisual = Math.max(1 / dpr, designLocal * scale);
-  let hLocal = hVisual / scale;
-  if (dpr > 1) {
-    hLocal = Math.max(hLocal, 0.55 / dpr);
-    hVisual = hLocal * scale;
-  }
+  // 三重下限：① TeX 设计值 ② 纹素可见（dpr 栅格化）③ 视觉 1 设备行（最终分辨率
+  // 栅格化 + 缩略图/缩小场景）。①②③ 任一栅格化策略下线恒可见。
+  const hLocal = Math.max(designLocal, 0.55 / dpr, 1 / (dpr * scale));
+  const hVisual = hLocal * scale;
   return { hLocal, hVisual };
 }
 
