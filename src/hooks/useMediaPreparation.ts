@@ -4,7 +4,8 @@ import { MediaPreparation, mediaAssetSignature } from '../model/mediaResources';
 import { epsTarget, mediaFailure, rememberMediaAspect, rememberMediaFailure } from '../model/mediaGeometry';
 import { absMediaPath } from '../components/paths';
 import { fileUrl, preparePdfRaster, releaseUnusedPdfDocuments } from '../components/pdfRaster';
-import { clearDecodedRasters, warmPreparedRaster } from '../components/resourceRaster';
+import { clearDecodedRasters } from '../components/resourceRaster';
+import { clearGifAnimations } from '../components/GifAnimation';
 
 function preloadImage(abs: string, revision: number): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -30,7 +31,7 @@ export function useMediaPreparation(): void {
   const deck = useStore((state) => state.deck);
   const folder = useStore((state) => state.folder);
   const assetSignature = mediaAssetSignature(deck);
-  useEffect(() => { clearDecodedRasters(); releaseUnusedPdfDocuments(); }, [revision]);
+  useEffect(() => { clearDecodedRasters(); clearGifAnimations(revision); releaseUnusedPdfDocuments(); }, [revision]);
   useEffect(() => {
     let cancelled = false;
     const session = String(revision);
@@ -67,7 +68,12 @@ export function useMediaPreparation(): void {
       await Promise.all([0, 1].map(async () => {
         while (!cancelled && cursor < native.length) {
           const [abs] = native[cursor++];
-          try { if (mediaFailure(abs)) throw new Error(mediaFailure(abs)); await preloadImage(abs, revision); }
+          try {
+            if (mediaFailure(abs)) throw new Error(mediaFailure(abs));
+            // GIF geometry/first frame already came from the static tree; its
+            // complete animation is prepared by the display Worker, once.
+            if (!/\.gif$/i.test(abs)) await preloadImage(abs, revision);
+          }
           catch (error) { errors[abs] = String(error); }
           completed++; publish('preparing');
         }
@@ -94,25 +100,4 @@ export function useMediaPreparation(): void {
     });
     return () => { cancelled = true; };
   }, [revision, folder, assetSignature]);
-}
-
-export function useWarmAdjacentPages(): void {
-  const current = useStore((state) => state.current);
-  const computed = useStore((state) => state.computed);
-  const folder = useStore((state) => state.folder);
-  const preparation = useStore((state) => state.mediaPreparation);
-  const adjacent = JSON.stringify([current - 1, current + 1].flatMap((index) => computed.pages[index]?.slide?.blocks.filter((block) => block.src).map((block) => block.src) ?? []));
-  useEffect(() => {
-    if (preparation.phase !== 'ready') return;
-    let alive = true;
-    void (async () => {
-      for (const index of [current - 1, current + 1]) for (const block of computed.pages[index]?.slide?.blocks ?? []) {
-        if (!alive || !block.src) continue;
-        const abs = absMediaPath(folder ?? '', block.src), target = block.src.toLowerCase().endsWith('.eps') ? epsTarget(abs) : abs;
-        const resource = target ? preparation.resources[target] : undefined;
-        if (resource) await warmPreparedRaster(resource).catch(() => undefined);
-      }
-    })();
-    return () => { alive = false; };
-  }, [adjacent, folder, preparation]);
 }

@@ -10,12 +10,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Deck, Page, PAGE_SIZE } from './model/types';
 import { Computed, computeDeck } from './model/numbering';
 import { SlideView } from './components/SlideView';
+import { ReadySlideStage } from './components/ReadySlideStage';
+import { useScreenPreparation } from './hooks/useScreenPreparation';
 import { LightboxInner } from './components/Lightbox';
 import { MediaPreparation } from './model/mediaResources';
-import { clearDecodedRasters, warmPreparedRaster } from './components/resourceRaster';
+import { clearDecodedRasters } from './components/resourceRaster';
+import { clearGifAnimations } from './components/GifAnimation';
 import { releaseUnusedPdfDocuments } from './components/pdfRaster';
-import { epsTarget, rememberMediaAspect } from './model/mediaGeometry';
-import { absMediaPath } from './components/paths';
+import { rememberMediaAspect } from './model/mediaGeometry';
 import { realignKatexRules } from './components/katexRuleSnap';
 import { useBackNav } from './hooks/useBackNav';
 import { useStore } from './state/store';
@@ -106,6 +108,8 @@ export default function Present() {
   const [sorter, setSorter] = useState(false);
   const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight });
   const [ctrlHover, setCtrlHover] = useState(false);
+  const screenReady = useRef(false);
+  const [pagesPrepared, setPagesPrepared] = useState(false);
   const laserDot = useRef<HTMLDivElement>(null);
   const zsRef = useRef(zoomState);
   zsRef.current = zoomState;
@@ -226,7 +230,7 @@ export default function Present() {
       const ps = p as PresentStateUpdate;
       const changedProject = useStore.getState().mediaRevision !== ps.mediaRevision;
       setMediaRevision(ps.mediaRevision);
-      if (changedProject) { clearDecodedRasters(); releaseUnusedPdfDocuments(); }
+      if (changedProject) { clearDecodedRasters(); clearGifAnimations(ps.mediaRevision); releaseUnusedPdfDocuments(); }
       const pageLayout = ps.pageLayout ?? (ps.deck ? {} : undefined);
       if (pageLayout) useStore.setState({ pageLayout, mediaRevision: ps.mediaRevision });
       if (ps.mediaPreparation) {
@@ -280,11 +284,12 @@ export default function Present() {
   // 220ms 过渡收敛后补一次重算才是终态口径（拖拽平移改直写后不再逐帧触发本 effect）
   useEffect(() => {
     realignKatexRules();
-    const t = window.setTimeout(realignKatexRules, 220);
+    const t = window.setTimeout(() => { realignKatexRules(); window.dispatchEvent(new Event('raster-scale')); }, 220);
     return () => clearTimeout(t);
   }, [zoomState]);
 
   const send = useCallback((evt: PresentEvent) => {
+    if (!screenReady.current && ['advance', 'reverse', 'skip', 'goto', 'ref', 'back'].includes(evt.type)) return;
     window.api.sendPresentEvent(evt);
   }, []);
 
@@ -295,21 +300,11 @@ export default function Present() {
 
   const computed: Computed | null = useMemo(() => (st ? computeDeck(st.deck) : null), [st?.deck]);
 
-  // Main prepared the complete project. Projection only decodes the same final PNGs.
-  useEffect(() => {
-    if (!computed || st?.mediaPreparation?.phase !== 'ready') return;
-    let alive = true;
-    void (async () => {
-      for (const block of computed.pages[st.current + 1]?.slide?.blocks ?? []) {
-        if (!alive || !block.src) continue;
-        const abs = absMediaPath(st.folder, block.src);
-        const target = block.src.toLowerCase().endsWith('.eps') ? epsTarget(abs) : abs;
-        const resource = target ? st.mediaPreparation?.resources[target] : undefined;
-        if (resource) await warmPreparedRaster(resource).catch(() => undefined);
-      }
-    })();
-    return () => { alive = false; };
-  }, [computed, st?.current, st?.folder, st?.mediaPreparation]);
+  const displayAspect = st?.deck.config.aspect === '4:3' ? 4 / 3 : 16 / 9;
+  const displayWidth = Math.min(vp.w, vp.h * displayAspect);
+  const rasterZoom = zoomState.mode === 'free' ? zoomState.z : 1;
+  const screen = useScreenPreparation(computed?.pages ?? [], st?.current ?? 0, st?.folder ?? '', st?.mediaPreparation, displayWidth * rasterZoom, displayWidth / displayAspect * rasterZoom);
+  screenReady.current = screen.ready && pagesPrepared;
   // 返回引用跳转原处（Alt+← / Backspace / 鼠标后退侧键，与编辑器共用输入层）
   useBackNav(useCallback(() => send({ type: 'back' }), [send]));
 
@@ -570,7 +565,9 @@ export default function Present() {
           style={{ width: shownW, height: shownH, transform: `translate(${tx}px, ${ty}px) scale(${z})` }}
         >
           <div style={{ width: pxW, height: pxH, transform: `scale(${base})`, transformOrigin: 'top left' }}>
-            <SlideView
+            <ReadySlideStage
+              preloadPages={computed.pages}
+              onPrepared={setPagesPrepared}
               page={page}
               deck={st.deck}
               computed={computed}
@@ -590,6 +587,11 @@ export default function Present() {
           </div>
         )}
       </div>
+
+      {!screen.ready && <div className="screen-preparing projection-preparing" role="status">
+        <span>正在准备放映画面 {screen.completed}/{screen.total}</span>
+        <progress value={screen.completed} max={Math.max(1, screen.total)} />
+      </div>}
 
       {laser && (
         <div ref={laserDot} className="laser-dot" style={{ background: LASER_COLORS[laserColorIdx], color: LASER_COLORS[laserColorIdx] }} />

@@ -4,7 +4,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { pageOrders, useStore } from '../state/store';
-import { SlideView } from './SlideView';
+import { ReadySlideStage } from './ReadySlideStage';
+import { useScreenPreparation } from '../hooks/useScreenPreparation';
 import { PAGE_SIZE } from '../model/types';
 
 /** 容器适页缩放（ResizeObserver 跟踪） */
@@ -43,6 +44,7 @@ export function PresenterView() {
   const presentAdvance = useStore((s) => s.presentAdvance);
   const presentReverse = useStore((s) => s.presentReverse);
   const jumpToRef = useStore((s) => s.jumpToRef);
+  const preparation = useStore((s) => s.mediaPreparation);
 
   const page = computed.pages[current];
   const nextPage = computed.pages[current + 1];
@@ -52,9 +54,13 @@ export function PresenterView() {
 
   const orders = useMemo(() => pageOrders(page), [page]);
   const revealed = useMemo(() => new Set(orders.slice(0, revealStep)), [orders, revealStep]);
+  const hasNextAnimation = revealStep < orders.length;
+  const previewPage = hasNextAnimation ? page : nextPage;
+  const previewRevealed = useMemo(() => new Set(hasNextAnimation ? orders.slice(0, revealStep + 1) : []), [hasNextAnimation, orders, revealStep]);
 
   const main = useFitScale(size.w, size.h);
   const next = useFitScale(size.w, size.h, 16);
+  const screen = useScreenPreparation(computed.pages, current, folder ?? '', preparation, pxW * main.scale, pxH * main.scale);
 
   // 计时器 + 钟点
   const [now, setNow] = useState(Date.now());
@@ -85,7 +91,8 @@ export function PresenterView() {
               className="page-wrap"
               style={{ width: pxW, height: pxH, transform: `scale(${main.scale})`, transformOrigin: 'top left' }}
             >
-              <SlideView
+              <ReadySlideStage
+                preloadPages={computed.pages}
                 page={page}
                 deck={deck}
                 computed={computed}
@@ -114,14 +121,14 @@ export function PresenterView() {
           <button className="presenter-end" onClick={endPresent}>结束放映</button>
         </div>
         <div className="presenter-block">
-          <div className="presenter-label">下一页 <span className="pt-page">{(page?.no ?? 0)} / {computed.pages.length}</span></div>
+          <div className="presenter-label">{hasNextAnimation ? '下一步动画' : '下一页'} <span className="pt-page">{(page?.no ?? 0)} / {computed.pages.length}</span></div>
           <div className="presenter-next" ref={next.ref}>
-            {nextPage && next.scale > 0 ? (
+            {previewPage && next.scale > 0 ? (
               <div className="page-sizer" style={{ width: pxW * next.scale, height: pxH * next.scale }}>
                 <div
                   style={{ width: pxW, height: pxH, transform: `scale(${next.scale})`, transformOrigin: 'top left', opacity: 0.9 }}
                 >
-                  <SlideView page={nextPage} deck={deck} computed={computed} folder={folder ?? ''} mode="preview" />
+                  <ReadySlideStage preloadPages={computed.pages} page={previewPage} deck={deck} computed={computed} folder={folder ?? ''} mode="preview" revealed={previewRevealed} />
                 </div>
               </div>
             ) : (
@@ -155,6 +162,10 @@ export function PresenterView() {
           </button>
         </div>
       </div>
+      {!screen.ready && preparation.phase === 'ready' && <div className="screen-preparing" role="status">
+        <span>正在准备监看画面 {screen.completed}/{screen.total}</span>
+        <progress value={screen.completed} max={Math.max(1, screen.total)} />
+      </div>}
     </div>
   );
 }

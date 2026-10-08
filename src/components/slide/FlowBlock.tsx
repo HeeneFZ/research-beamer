@@ -21,7 +21,7 @@ import { defaultAnnoState } from '../../model/anno';
 import { MediaPreparation } from '../../model/mediaResources';
 
 export function FlowBlock({
-  block, slide, deck, folder, computed, mode, revealed, onRef, highlight, onZoom, resourceSnapshot,
+  block, slide, deck, folder, computed, mode, revealed, onRef, highlight, onZoom, resourceSnapshot, mediaActive,
 }: {
   block: Block;
   slide: Slide | undefined;
@@ -34,6 +34,7 @@ export function FlowBlock({
   highlight?: boolean;
   onZoom?: (abs: string, ext: string, caption?: string) => void;
   resourceSnapshot?: MediaPreparation;
+  mediaActive?: boolean;
 }) {
   const { config } = deck;
   const lang = config.language;
@@ -67,6 +68,7 @@ export function FlowBlock({
         ? { animation: 'rb-fade .4s ease' }
         : { visibility: 'hidden' }
       : undefined;
+  const mediaPlaying = mediaActive !== false && (block.order == null || !revealed || revealed.has(block.order));
 
   const common = { computed, lang, palette: config.palette, onRef };
   const onScaleChange = mode === 'edit' && slide ? (scale: number) => updateBlock(slide.id, block.id, { anno: { ...(block.anno ?? defaultAnnoState()), scale } }) : undefined;
@@ -91,11 +93,11 @@ export function FlowBlock({
         panel = <AnnoEqEditor slide={slide} block={block} />;
         break;
       case 'figure':
-        inner = <FigureView block={block} folder={folder} onZoom={onZoom} {...common} onWidthChange={onWidthChange} preparation={resourceSnapshot} />;
+        inner = <FigureView block={block} folder={folder} onZoom={onZoom} {...common} onWidthChange={onWidthChange} preparation={resourceSnapshot} active={mediaPlaying} />;
         panel = <MediaPanel slide={slide} block={block} kind="figure" />;
         break;
       case 'video':
-        inner = <VideoView block={block} folder={folder} onWidthChange={onWidthChange} mode={mode} />;
+        inner = <VideoView block={block} folder={folder} onWidthChange={onWidthChange} mode={mode} active={mediaPlaying} />;
         panel = <MediaPanel slide={slide} block={block} kind="video" />;
         break;
       case 'table':
@@ -155,10 +157,10 @@ export function FlowBlock({
         inner = <AnnoEquationView block={block} computed={computed} highlight={highlight} onScaleChange={onScaleChange} />;
         break;
       case 'figure':
-        inner = <FigureView block={block} folder={folder} onZoom={onZoom} {...common} onWidthChange={onWidthChange} still={mode === 'thumb'} preparation={resourceSnapshot} />;
+        inner = <FigureView block={block} folder={folder} onZoom={onZoom} {...common} onWidthChange={onWidthChange} still={mode === 'thumb'} print={mode === 'print'} preparation={resourceSnapshot} active={mediaPlaying} />;
         break;
       case 'video':
-        inner = <VideoView block={block} folder={folder} onWidthChange={onWidthChange} mode={mode} />;
+        inner = <VideoView block={block} folder={folder} onWidthChange={onWidthChange} mode={mode} active={mediaPlaying} />;
         break;
       case 'table':
         inner = <TableView block={block} {...common} onWidthChange={onWidthChange} />;

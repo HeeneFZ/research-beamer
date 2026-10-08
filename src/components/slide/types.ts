@@ -24,4 +24,8 @@ export interface SlideViewProps {
   onSlideJump?: (pageIndex: number) => void;
   highlightLabel?: string;
   onZoom?: (abs: string, ext: string, caption?: string) => void;
+  /** A stage owns the handoff/progress UI when provided. */
+  onReady?: (ready: boolean) => void;
+  /** Only the displayed page may play video; warmed pages retain their first frame. */
+  mediaActive?: boolean;
 }

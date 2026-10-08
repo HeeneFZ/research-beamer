@@ -8,13 +8,12 @@ import { NotesPane } from './components/NotesPane';
 import { PresenterView } from './components/PresenterView';
 import { useBackNav } from './hooks/useBackNav';
 import { useAutoSave } from './hooks/useAutoSave';
-import { useMediaPreparation, useWarmAdjacentPages } from './hooks/useMediaPreparation';
+import { useMediaPreparation } from './hooks/useMediaPreparation';
 import { exportPDF } from './exportPdf';
 import { useStore, pageOrders } from './state/store';
 
 export default function App() {
   useMediaPreparation();
-  useWarmAdjacentPages();
   const darkMode = useStore((s) => s.darkMode);
   const flashMsg = useStore((s) => s.flashMsg);
   const setFlashMsg = useStore((s) => s.setFlashMsg);
@@ -152,7 +151,7 @@ export default function App() {
       <MenuBar />
       <Toolbar />
       <div className="main">
-        {mediaPreparation.phase !== 'ready' && <div className="project-loading" role="status">正在准备汇报资源 {mediaPreparation.completed}/{mediaPreparation.total}</div>}
+        {mediaPreparation.phase !== 'ready' && <div className="project-loading" role="status"><span>正在准备汇报资源 {mediaPreparation.completed}/{mediaPreparation.total}</span><progress value={mediaPreparation.completed} max={Math.max(1, mediaPreparation.total)} /></div>}
         <Filmstrip />
         {presenting ? (
           <PresenterView />

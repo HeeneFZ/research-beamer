@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('api', {
   importMedia: (payload) => ipcRenderer.invoke('media:import', payload),
   ensureEpsPdf: (payload) => ipcRenderer.invoke('media:ensureEpsPdf', payload),
   readFile: (absPath) => ipcRenderer.invoke('file:read', absPath),
+  displayMemoryBudget: () => ipcRenderer.invoke('display:memory-budget'),
   beginRasterSession: (session) => ipcRenderer.invoke('raster:begin', session),
   putRasterResource: (payload) => ipcRenderer.invoke('raster:put', payload),
   readRasterResource: (payload) => ipcRenderer.invoke('raster:read', payload),

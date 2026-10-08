@@ -8,7 +8,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
-import { SlideView } from './SlideView';
+import { ReadySlideStage } from './ReadySlideStage';
+import { useScreenPreparation } from '../hooks/useScreenPreparation';
 import { IcoZoomIn, IcoZoomOut, IcoReset } from './icons';
 import { PAGE_SIZE } from '../model/types';
 import { onOverlay } from './overlays';
@@ -26,6 +27,7 @@ export function EditorCanvas() {
   const gotoPage = useStore((s) => s.gotoPage);
   const setFlash = useStore((s) => s.setFlash);
   const flash = useStore((s) => s.flash);
+  const preparation = useStore((s) => s.mediaPreparation);
 
   const boxRef = useRef<HTMLDivElement>(null);
   const [fit, setFit] = useState(0);
@@ -60,10 +62,12 @@ export function EditorCanvas() {
 
   const page = computed.pages[current];
   const scale = fit * zoom;
+  const screen = useScreenPreparation(computed.pages, current, folder ?? '', preparation, pxW * scale, pxH * scale);
 
   const onRef = useCallback((label: string) => {
     useStore.getState().jumpToRef(label);
   }, []);
+  const onSlideJump = useCallback((index: number) => gotoPage(index, true), [gotoPage]);
 
   // Ctrl+滚轮缩放：React 18 的 onWheel 是 passive 监听（preventDefault 静默无效且控制台报错），
   // 改原生非 passive 绑定；普通滚轮只滚动画布，不翻页
@@ -114,19 +118,24 @@ export function EditorCanvas() {
             className="page-wrap"
             style={{ width: pxW, height: pxH, transform: `scale(${scale})`, transformOrigin: 'top left' }}
           >
-            <SlideView
+            <ReadySlideStage
+              preloadPages={computed.pages}
               page={page}
               deck={deck}
               computed={computed}
               folder={folder ?? ''}
               mode="edit"
               onRef={onRef}
-              onSlideJump={(i) => gotoPage(i, true)}
+              onSlideJump={onSlideJump}
               highlightLabel={flash?.page === current ? flash.label : undefined}
             />
           </div>
         </div>
       )}
+      {!screen.ready && preparation.phase === 'ready' && <div className="screen-preparing" role="status">
+        <span>正在准备编辑画面 {screen.completed}/{screen.total}</span>
+        <progress value={screen.completed} max={Math.max(1, screen.total)} />
+      </div>}
     </div>
   );
 }

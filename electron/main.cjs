@@ -5,6 +5,8 @@ const path = require('path');
 const { writeFileAtomic, readFileAfterWrites, readProjectFromFolder, importMedia } = require('./files.cjs');
 const { createRasterCache } = require('./raster-cache.cjs');
 const rasterCache = createRasterCache();
+// Two renderers may cache display frames. Together they use at most a quarter of RAM.
+ipcMain.handle('display:memory-budget', () => Math.min(8 * 1024 ** 3, Math.max(256 * 1024 ** 2, Math.floor(require('os').totalmem() / 8))));
 
 // E2E 模式用独立 userData：不与用户正开着的实例抢单实例锁，也不碰用户示例副本
 if (process.env.E2E_SCREENSHOT || process.env.E2E_PDF || process.env.E2E_EVAL) {
@@ -26,6 +28,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false, // Editor and projector must keep their frame clocks across monitors.
     },
   });
   const indexPath = path.join(__dirname, '..', 'dist', 'index.html');
@@ -410,6 +413,7 @@ ipcMain.handle('present:open', async () => {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   });
   // Windows 下 constructor 传 fullscreen + 坐标会失效（窗口悬浮不全屏）：

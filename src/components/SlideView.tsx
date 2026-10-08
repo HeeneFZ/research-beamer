@@ -12,7 +12,7 @@
 // 各部件已移至 ./slide/*（types / useLayoutScan / FlowBlock /
 // SectionBreadcrumb / StaticPages），纯搬移无行为变化。
 
-import { CSSProperties, memo, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Block, PAGE_SIZE, Slide } from '../model/types';
 import { paletteVars } from '../model/palette';
@@ -23,7 +23,8 @@ import { TitleEditor, FooterEditor, CoverFieldEditor } from './BlockEditors';
 import { useStore } from '../state/store';
 import { SlideViewProps } from './slide/types';
 import { useLayoutScan } from './slide/useLayoutScan';
-import { useMediaReady } from './slide/useMediaReady';
+import { pageMediaReady, useMediaReady } from './slide/useMediaReady';
+import { useTitleAlignment } from './slide/useTitleAlignment';
 import { buildSegments } from '../model/segments';
 import { FlowBlock } from './slide/FlowBlock';
 import { SectionBreadcrumb } from './slide/SectionBreadcrumb';
@@ -47,7 +48,7 @@ export function referenceSignature(computed: SlideViewProps['computed']): string
 }
 
 export const SlideView = memo(function SlideView({
-  page, deck, computed, folder, mode = 'edit', layoutAuthority = false, layoutSnapshot, mediaSnapshot, resourceSnapshot, revealed, onRef, onSlideJump, onZoom, highlightLabel,
+  page, deck, computed, folder, mode = 'edit', layoutAuthority = false, layoutSnapshot, mediaSnapshot, resourceSnapshot, revealed, onRef, onSlideJump, onZoom, highlightLabel, onReady, mediaActive,
 }: SlideViewProps) {
   const { config } = deck;
   const size = PAGE_SIZE[config.aspect];
@@ -113,6 +114,8 @@ export const SlideView = memo(function SlideView({
   const layoutReady = !scannable || layoutState?.signature === layoutSignature;
   const mediaReady = useMediaReady(rootRef, mode !== 'thumb', layoutSignature);
   useLayoutScan(bodyRef, fitKey, scannable && layoutAuthority, layoutSignature, spec);
+  useTitleAlignment(rootRef, `${config.fontEn}|${config.fontZh}|${config.fontSize}|${config.aspect}|${slide0?.title}|${page.sectionPath.map((section) => section.title).join('|')}|${lang}|${mode}|${editing?.field ?? ''}`);
+  useLayoutEffect(() => { onReady?.(layoutReady && mediaReady && !!rootRef.current && pageMediaReady(rootRef.current)); }, [layoutReady, mediaReady, layoutSignature, page, config, computed, onReady]);
 
   const setEditing = useStore((s) => s.setEditing);
 
@@ -125,7 +128,7 @@ export const SlideView = memo(function SlideView({
     // label 已归一化带前缀（eq:x），flash.label 是裸键（x）——按后缀匹配
     return b.label === highlightLabel || b.label.endsWith(':' + highlightLabel);
   };
-  const flowProps = { deck, folder, computed, mode, revealed, onRef, resourceSnapshot, onZoom: onZoom ?? onZoomFig };
+  const flowProps = { deck, folder, computed, mode, revealed, onRef, resourceSnapshot, mediaActive, onZoom: onZoom ?? onZoomFig };
   const renderFlow = (blocks: Block[]) => blocks.map((b) => (
     <FlowBlock key={b.id} block={b} slide={page.slide} {...flowProps} highlight={hl(b)} />
   ));
@@ -377,7 +380,8 @@ export const SlideView = memo(function SlideView({
       data-fen={config.fontEn}
       data-fzh={config.fontZh}
       data-layout-ready={layoutReady}
-      data-media-wait={!mediaReady ? '' : undefined}
+      data-slide-ready={layoutReady && mediaReady}
+      data-media-wait={!mediaReady && !onReady ? '' : undefined}
       data-layout-wait={!layoutReady && !(editingThisSlide && layoutState) ? '' : undefined}
       style={style}
     >

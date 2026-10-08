@@ -274,6 +274,7 @@ export function CoverFieldEditor({ slideId, value, rawValue, onCommit, placehold
   placeholder?: string; math?: boolean; preview: ReactNode; label?: string;
 }) {
   const session = useRef(useStore.getState().editing).current;
+  const previewRef = useRef<HTMLSpanElement>(null);
   const initial = useRef({ display: value, raw: rawValue ?? value }).current;
   const [anchor, setAnchor] = useState<AnchorRect | null>(null);
   const [text, setText] = useState(value);
@@ -281,7 +282,7 @@ export function CoverFieldEditor({ slideId, value, rawValue, onCommit, placehold
   const closed = useRef(false);
   textRef.current = text;
   useLayoutEffect(() => {
-    const target = document.querySelector<HTMLElement>(`.mode-edit [data-cover-field="${session?.field}"]`);
+    const target = previewRef.current?.closest<HTMLElement>('[data-cover-field]');
     if (target) setAnchor(elementAnchor(target));
   }, []);
   const commit = (text: string) => {
@@ -296,7 +297,7 @@ export function CoverFieldEditor({ slideId, value, rawValue, onCommit, placehold
   };
   const cancel = () => { closed.current = true; commit(initial.raw); if (useStore.getState().editing === session) closeEditing(); };
   useEffect(() => () => { if (!math && !closed.current) commit(textRef.current); }, []);
-  return <>{preview}{anchor && <Popover anchor={anchor} className="field-popover" onClose={done}>
+  return <><span ref={previewRef} style={{ display: 'contents' }}>{preview}</span>{anchor && <Popover anchor={anchor} className="field-popover" onClose={done}>
     <div className="field-popover-label">{label ?? '编辑字段'}</div>
     {math ? <RichFieldEditor cls="field-input" live multiline={session?.field === 'coverTitle'} value={value}
       onCommit={commit} onDone={done} onCancel={cancel} placeholder={placeholder} /> :
