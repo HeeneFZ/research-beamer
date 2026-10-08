@@ -33,9 +33,9 @@
 
 ## Visual language
 - Color: 保留白底和现有 primary/base/deep 章节卡片，白色文字保证学术投影可读。
-- Typography: 沿用中文/西文字体设置，标题、编号、小节建立清晰字阶。
+- Typography: 沿用中文/西文字体设置，阿拉伯数字继承 PPT 西文字体；无衬线项目的章节数字同为无衬线。预览保持中文、西文字体配置一致。
 - Spacing/layout rhythm: 保留原版两栏与字号；顶部为章节数字预留独立空间，卡片保持居中。
-- Shape/radius/elevation: 保留原版小圆角；细边框和单层浅阴影。
+- Shape/radius/elevation: 保留原版小圆角；1px 渐变描边、轻微内侧高光和浅阴影。
 - Motion: 无常驻动画。
 - Imagery/iconography: 只保留完整可见的章节数字，不增加图案或位图背景。
 
