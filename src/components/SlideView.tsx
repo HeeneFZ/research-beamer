@@ -208,7 +208,7 @@ export function SlideView({
     const dividerHl = highlightLabel != null && secLabel != null &&
       (secLabel === highlightLabel || secLabel.endsWith(':' + highlightLabel));
     body = (
-      <div className="cover-stage">
+      <div className="cover-stage section-stage">
         <DividerView section={page.section!} deck={deck} computed={computed} highlight={dividerHl} />
       </div>
     );

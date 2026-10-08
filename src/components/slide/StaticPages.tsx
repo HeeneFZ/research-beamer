@@ -1,5 +1,6 @@
 // 静态版面部件：封面作者行 / 目录 / 节分隔页
 
+import type { CSSProperties } from 'react';
 import { Deck, Section } from '../../model/types';
 import { Computed } from '../../model/numbering';
 import { InlineText } from '../InlineText';
@@ -93,7 +94,7 @@ export function DividerView({
     if (it.section.level === 2) subs.push(it.section);
   }
   // 子节字号随数量收缩（容器缩放，子项用 em）
-  const subScale = subs.length <= 3 ? 1 : subs.length <= 5 ? 0.85 : subs.length <= 7 ? 0.74 : 0.66;
+  const subScale = subs.length <= 3 ? 1 : subs.length <= 5 ? 0.85 : subs.length <= 7 ? 0.74 : Math.min(0.66, 5 / subs.length);
   return (
     <>
       <div className="divider-ghost">{num}</div>
@@ -103,7 +104,7 @@ export function DividerView({
           <h1 className="cover-title divider-title"><InlineText text={section.title} computed={computed} lang={deck.config.language} palette={deck.config.palette} /></h1>
         </div>
         {subs.length > 0 && (
-          <div className="divider-subs" style={subScale !== 1 ? { fontSize: `${Math.round(subScale * 100)}%` } : undefined}>
+          <div className="divider-subs" style={{ '--divider-sub-scale': subScale } as CSSProperties}>
             {subs.map((s) => (
               <div key={s.id} className="divider-sub">
                 <span className="divider-sub-num">{computed.sectionNum.get(s.id)}</span>
