@@ -66,7 +66,8 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
   slashRef.current = slash;
 
   const isList = block.type === 'itemize';
-  const initialContent = isList ? itemsToDoc(block.items ?? []) : textToDoc(block.text ?? '');
+  // 与 useEditor 的初始化边界一致；后续变更由下方外部内容同步处理。
+  const initialContent = useMemo(() => isList ? itemsToDoc(block.items ?? []) : textToDoc(block.text ?? ''), [block.id]);
 
   const serialize = (ed: Editor): string | string[] =>
     isList ? docToItems(ed.getJSON()) : docToText(ed.getJSON());
@@ -75,6 +76,7 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
 
   // ---------- 交叉引用候选（全 deck 扫描） ----------
   const allCandidates: RefCandidate[] = useMemo(() => {
+    if (!picker) return [];
     const out: RefCandidate[] = [];
     for (const it of deck.items) {
       if (it.kind === 'section') {
@@ -94,7 +96,7 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
       }
     }
     return out;
-  }, [deck, computed]);
+  }, [deck, computed, picker != null]);
 
   const filtered = useMemo(() => {
     if (!picker) return allCandidates;

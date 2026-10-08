@@ -2,13 +2,39 @@
 // 页间插入条：悬停缝隙显示引导线与 ＋；菜单仅点击 ＋ 打开；
 // 指针离开菜单区域 200ms、点击他处、或选中页型后关闭
 
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { promptText } from './prompt';
-import { SlideView } from './SlideView';
-import { PAGE_SIZE, Page } from '../model/types';
+import { SlideView, referenceSignature } from './SlideView';
+import { Deck, PAGE_SIZE, Page } from '../model/types';
 
 const THUMB_W = 152; // px
+
+const sectionSignatures = new WeakMap<Deck, string>();
+function sectionSignature(deck: Deck): string {
+  let signature = sectionSignatures.get(deck);
+  if (signature == null) {
+    signature = JSON.stringify(deck.items.filter((item) => item.kind === 'section'));
+    sectionSignatures.set(deck, signature);
+  }
+  return signature;
+}
+
+/** 全部缩略页继续挂载与扫描；只跳过内容、编号和章节上下文未变化的页树。 */
+const ThumbnailSlide = memo(SlideView, (a, b) => {
+  if (a.deck.config !== b.deck.config || a.folder !== b.folder
+    || a.page.kind !== b.page.kind || a.page.index !== b.page.index || a.page.no !== b.page.no
+    || a.page.slide !== b.page.slide || a.page.section !== b.page.section
+    || a.computed.pages.length !== b.computed.pages.length
+    || a.page.sectionPath.length !== b.page.sectionPath.length
+    || a.page.sectionPath.some((section, i) => section !== b.page.sectionPath[i])
+    || referenceSignature(a.computed) !== referenceSignature(b.computed)) return false;
+  // 目录与章节卡片还读取其它章节/小节；普通内容页只读其 sectionPath。
+  if (a.page.kind === 'divider' || a.page.slide?.layout === 'toc') {
+    return sectionSignature(a.deck) === sectionSignature(b.deck);
+  }
+  return true;
+});
 
 /** 拖拽落点换算：page → 作为 moveSlide 目标的 slide（divider→其后首个内容 slide；
  *  title/toc/end 特殊页 → null（不可作落点） */
@@ -28,7 +54,7 @@ function dropTargetSlideOf(p: Page, pages: Page[]): string | null {
 }
 
 
-export function Filmstrip() {
+export const Filmstrip = memo(function Filmstrip() {
   const deck = useStore((s) => s.deck);
   const computed = useStore((s) => s.computed);
   const current = useStore((s) => s.current);
@@ -139,7 +165,7 @@ export function Filmstrip() {
           >
             <div className="thumb-page" style={{ width: THUMB_W, height: thumbH }}>
               <div style={{ transform: `scale(${scale})`, transformOrigin: 'top left' }}>
-                <SlideView page={p} deck={deck} computed={computed} folder={folder ?? ''} mode="thumb" />
+                <ThumbnailSlide page={p} deck={deck} computed={computed} folder={folder ?? ''} mode="thumb" />
               </div>
             </div>
             <div className="thumb-no">
@@ -217,4 +243,4 @@ export function Filmstrip() {
       )}
     </div>
   );
-}
+});

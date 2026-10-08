@@ -12,7 +12,7 @@
 // 各部件已移至 ./slide/*（types / useLayoutScan / FlowBlock /
 // SectionBreadcrumb / StaticPages），纯搬移无行为变化。
 
-import { CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, memo, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Block, PAGE_SIZE, Slide } from '../model/types';
 import { paletteVars } from '../model/palette';
@@ -30,20 +30,21 @@ import { AuthorsLine, AffiliationsView, DividerView, TocView } from './slide/Sta
 
 import { INSERT_ITEMS, insertBlockByKey } from './insertItems';
 
-const referenceSignatures = new WeakMap<SlideViewProps['computed'], string>();
-function referenceSignature(computed: SlideViewProps['computed']): string {
-  let signature = referenceSignatures.get(computed);
+const referenceSignatures = new WeakMap<SlideViewProps['computed']['labelPageIndex'], string>();
+export function referenceSignature(computed: SlideViewProps['computed']): string {
+  let signature = referenceSignatures.get(computed.labelPageIndex);
   if (signature == null) {
     signature = JSON.stringify([
       [...computed.sectionNumByLabel], [...computed.equationNum], [...computed.equationNumByLabel],
       [...computed.figureNum], [...computed.figureNumByLabel], [...computed.tableNum], [...computed.tableNumByLabel],
+      [...computed.labelPageIndex], [...computed.sectionPageIndex],
     ]);
-    referenceSignatures.set(computed, signature);
+    referenceSignatures.set(computed.labelPageIndex, signature);
   }
   return signature;
 }
 
-export function SlideView({
+export const SlideView = memo(function SlideView({
   page, deck, computed, folder, mode = 'edit', revealed, onRef, onSlideJump, onZoom, highlightLabel,
 }: SlideViewProps) {
   const { config } = deck;
@@ -208,7 +209,7 @@ export function SlideView({
     const dividerHl = highlightLabel != null && secLabel != null &&
       (secLabel === highlightLabel || secLabel.endsWith(':' + highlightLabel));
     body = (
-      <div className="cover-stage section-stage">
+      <div className="cover-stage">
         <DividerView section={page.section!} deck={deck} computed={computed} highlight={dividerHl} />
       </div>
     );
@@ -362,4 +363,4 @@ export function SlideView({
       {body}
     </div>
   );
-}
+});

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MenuBar } from './components/MenuBar';
 import { Toolbar } from './components/Toolbar';
 import { Filmstrip } from './components/Filmstrip';
@@ -97,19 +97,24 @@ export default function App() {
   const folder = useStore((s) => s.folder);
   const pageLayout = useStore((s) => s.pageLayout);
   const [presentNonce, setPresentNonce] = useState(0);
+  const lastPresentState = useRef<{ deck: typeof deck; pageLayout: typeof pageLayout; ready: number } | null>(null);
 
   useEffect(() => {
-    if (!presenting) return;
+    if (!presenting) { lastPresentState.current = null; return; }
+    const previous = lastPresentState.current;
+    // 首帧、内容变化及 ready 重播发送完整快照；导航不重复传输整份工程。
+    const full = !previous || previous.deck !== deck || previous.ready !== presentNonce;
     const orders = pageOrders(computed.pages[current]);
     window.api.sendPresentState({
-      deck,
+      ...(full ? { deck } : {}),
       folder: folder ?? '',
       current,
       revealed: orders.slice(0, revealStep),
       flashLabel: flash?.page === current ? flash.label : undefined,
-      pageLayout,
+      ...(full || previous?.pageLayout !== pageLayout ? { pageLayout } : {}),
       nonce: Date.now(),
     });
+    lastPresentState.current = { deck, pageLayout, ready: presentNonce };
   }, [presenting, deck, computed, current, revealStep, flash, folder, pageLayout, presentNonce]);
 
   // 放映事件监听注册一次（handler 全部经 getState 取即时态，无闭包依赖）：

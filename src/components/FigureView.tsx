@@ -9,6 +9,7 @@ import { InlineText } from './InlineText';
 import { cancelCanvasRender, ensurePdfAspect, fileUrl, pdfAspectSync, renderPdfToCanvas } from './pdfRaster';
 import { absMediaPath } from './paths';
 import { IcoLens } from './icons';
+import type { SlideMode } from './slide/types';
 /** PDF 首页渲染精度：600 DPI */
 const PDF_DPI_SCALE = 600 / 96;
 
@@ -252,7 +253,7 @@ export function FigureView({
 
 /** 视频：编辑/放映用 <video>；导出 PDF 用首帧画布占位（loadeddata 时截取）。
  *  宽度与图片同款：显式 width 优先，未设置走排版规格自动宽（修复曾硬编码 100% 致压缩失效） */
-export function VideoView({ block, folder, onWidthChange, mode = 'edit' }: { block: Block; folder: string; onWidthChange?: (w: number) => void; mode?: 'edit' | 'thumb' | 'present' | 'print' }) {
+export function VideoView({ block, folder, onWidthChange, mode = 'edit' }: { block: Block; folder: string; onWidthChange?: (w: number) => void; mode?: SlideMode }) {
   const vidRef = useRef<HTMLVideoElement>(null);
   const frameRef = useRef<HTMLCanvasElement>(null);
   const figRef = useRef<HTMLElement | null>(null);

@@ -158,6 +158,14 @@ export function renderPdfToCanvas(abs: string, canvas: HTMLCanvasElement, cssWid
   const task: CanvasTask = {
     canvas, key, cancelled: false,
     run: async () => {
+      if (task.cancelled) return;
+      // 排队期间同源同宽的先行任务可能已绘成，直接复用而不重复 page.render。
+      const completed = bitmapCache.get(key);
+      if (completed) {
+        cachePut(key, completed);
+        pasteBitmap(canvas, completed, key);
+        return;
+      }
       await withPdfDoc(abs, async (doc) => {
         if (task.cancelled) return;
         const page = await doc.getPage(1);

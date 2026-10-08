@@ -2,7 +2,7 @@
 // + 标注点/标注卡片面板 + 标注样式。移植自 Web 版 annotate-equations 复刻，视觉对齐 Research Beamer 弹窗体系。
 // 数据在本地 ref 中编辑（画布即时重绘），「完成」时一次性落库（同 EquationEditor 契约）。
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { newId } from '../model/types';
 import { AnnoMark, AnnoState, ANNO_PALETTE, defaultAnnoState } from '../model/anno';
 import { normLabel } from '../model/markdown';
@@ -34,7 +34,8 @@ export function AnnoEqEditor({ slide, block }: { slide: Slide; block: Block }) {
   const [latex, setLatex] = useState(block.latex || '');
   const [label, setLabel] = useState(block.label || '');
   const [order, setOrder] = useState(block.order != null ? String(block.order) : '');
-  const annoRef = useRef<AnnoState>(structuredClone(block.anno ?? defaultAnnoState()));
+  const initialAnno = useMemo(() => structuredClone(block.anno ?? defaultAnnoState()), [block.id]);
+  const annoRef = useRef<AnnoState>(initialAnno);
   const [ver, setVer] = useState(0);
   const bump = () => setVer((v) => v + 1);
   const [sel, setSel] = useState<{ markId: string | null; annId: string | null }>({ markId: null, annId: null });

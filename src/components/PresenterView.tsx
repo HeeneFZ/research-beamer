@@ -90,7 +90,7 @@ export function PresenterView() {
                 deck={deck}
                 computed={computed}
                 folder={folder ?? ''}
-                mode="present"
+                mode="preview"
                 revealed={revealed}
                 onRef={jumpToRef}
                 highlightLabel={flash?.page === current ? flash.label : undefined}
@@ -113,7 +113,7 @@ export function PresenterView() {
                 <div
                   style={{ width: pxW, height: pxH, transform: `scale(${next.scale})`, transformOrigin: 'top left', opacity: 0.9 }}
                 >
-                  <SlideView page={nextPage} deck={deck} computed={computed} folder={folder ?? ''} mode="present" />
+                  <SlideView page={nextPage} deck={deck} computed={computed} folder={folder ?? ''} mode="preview" />
                 </div>
               </div>
             ) : (

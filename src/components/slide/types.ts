@@ -3,7 +3,7 @@
 import { Deck, Page } from '../../model/types';
 import { Computed } from '../../model/numbering';
 
-export type SlideMode = 'edit' | 'thumb' | 'present' | 'print';
+export type SlideMode = 'edit' | 'thumb' | 'preview' | 'present' | 'print';
 
 export interface SlideViewProps {
   page: Page;

@@ -3,7 +3,7 @@ import {
   Block, BlockType, Deck, DeckConfig, DeckItem, Layout, Page, Slide, createDefaultConfig, newId,
 } from '../model/types';
 import { SpacingState } from '../model/layoutSpec';
-import { computeDeck, Computed, refPageIndex, refParts } from '../model/numbering';
+import { computeDeck, Computed, patchComputedSlide, refPageIndex, refParts } from '../model/numbering';
 import { colEndPlan, colRegionAt, reseedColPlaceholders, stripEmptyColRegions } from '../model/segments';
 import { serializeMarkdown, parseMarkdown, normLabel, LABEL_PREFIX, dedupeRefLabel } from '../model/markdown';
 import { attachHistoryFolder, clearHistory, recordHistory, takeRedo, takeUndo } from './history';
@@ -135,25 +135,29 @@ export const useStore = create<StoreState>((set, get) => {
   let saveTask: Promise<void> | null = null;
 
   /** 结构变更只复制根与 items；各内容操作负责复制被修改的分支。 */
-  const mutate = (fn: (d: Deck) => void | false, debounce = true) => {
+  const mutate = (fn: (d: Deck) => void | false, debounce = true, compute?: (deck: Deck, previous: Computed) => Computed) => {
     const s = get();
     const d: Deck = { ...s.deck, items: s.deck.items.slice() };
     if (fn(d) === false) return;
     recordHistory(s.deck, debounce, d);
-    const computed = computeDeck(d);
+    const computed = compute ? compute(d, s.computed) : computeDeck(d);
     set({ deck: d, computed, dirty: true, current: Math.max(0, Math.min(s.current, computed.pages.length - 1)) });
   };
 
   const mutateSlide = (slideId: string, fn: (slide: Slide) => void | false, debounce = true) => {
     const at = d_indexOf(get().deck, slideId);
     if (at < 0) return;
+    const before = slideOf(get().deck, slideId)!;
     mutate((d) => {
       const item = d.items[at];
       if (item.kind !== 'slide') return false;
       const slide = { ...item.slide, blocks: item.slide.blocks.slice() };
       if (fn(slide) === false) return false;
       d.items[at] = { kind: 'slide', slide };
-    }, debounce);
+    }, debounce, (d, previous) => {
+      const after = d.items[at];
+      return after.kind === 'slide' ? patchComputedSlide(previous, before, after.slide) ?? computeDeck(d) : computeDeck(d);
+    });
   };
 
   const initial = freshDeck();
@@ -205,10 +209,14 @@ export const useStore = create<StoreState>((set, get) => {
       return id;
     },
 
-    setConfig: (patch) => mutate((d) => {
-      if (!patchChanges(d.config, patch)) return false;
-      d.config = { ...d.config, ...patch };
-    }),
+    setConfig: (patch) => {
+      const before = get().deck.config;
+      mutate((d) => {
+        if (!patchChanges(d.config, patch)) return false;
+        d.config = { ...d.config, ...patch };
+      }, true, (d, previous) => before.numbering === d.config.numbering && before.sectionPages === d.config.sectionPages
+        ? previous : computeDeck(d));
+    },
 
     updateSlide: (slideId, patch) =>
       mutateSlide(slideId, (slide) => {

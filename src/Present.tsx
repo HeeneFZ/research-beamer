@@ -30,6 +30,8 @@ interface PresentState {
   nonce: number;
 }
 
+type PresentStateUpdate = Omit<PresentState, 'deck'> & { deck?: Deck };
+
 interface PresentEvent {
   type: string;
   index?: number;
@@ -212,13 +214,19 @@ export default function Present() {
   };
 
   useEffect(() => {
-    window.api.sendPresentEvent({ type: 'ready' });
     // 同步编辑器窗的页级排版状态到本窗 store（SlideView 从本窗 store 读取排版变量）
     const off = window.api.onPresentState((p: unknown) => {
-      const ps = p as PresentState;
-      useStore.setState({ pageLayout: ps.pageLayout ?? {} });
-      setSt(ps);
+      const ps = p as PresentStateUpdate;
+      const pageLayout = ps.pageLayout ?? (ps.deck ? {} : undefined);
+      if (pageLayout) useStore.setState({ pageLayout });
+      setSt((previous) => {
+        if (!previous && !ps.deck) return null;
+        const revealed = previous && previous.revealed.length === ps.revealed.length
+          && previous.revealed.every((order, i) => order === ps.revealed[i]) ? previous.revealed : ps.revealed;
+        return { ...ps, deck: ps.deck ?? previous!.deck, pageLayout: pageLayout ?? previous?.pageLayout, revealed };
+      });
     });
+    window.api.sendPresentEvent({ type: 'ready' });
     // 放映台（主窗 PresenterView）与主进程（结束放映先停录）的控制命令：
     // 录制设备在本窗持有，跨窗经 present:ctrl 转发。经 ref 取最新闭包——
     // mount 时 st=null，直捕首帧 startRecording 会把录像存到 folder=null 的错误位置
@@ -266,21 +274,30 @@ export default function Present() {
     window.api.sendPresentEvent(evt);
   }, []);
 
-  const computed: Computed | null = useMemo(() => (st ? computeDeck(st.deck) : null), [st?.deck, st?.nonce]);
+  const onRef = useCallback((label: string) => send({ type: 'ref', label }), [send]);
+  const onSlideJump = useCallback((index: number) => send({ type: 'goto', index }), [send]);
+  const onZoom = useCallback((abs: string, ext: string, caption?: string) => setLightbox({ abs, ext, caption }), []);
+  const revealed = useMemo(() => new Set(st?.revealed ?? []), [st?.revealed]);
+
+  const computed: Computed | null = useMemo(() => (st ? computeDeck(st.deck) : null), [st?.deck]);
 
   // 放映窗是独立进程：pdf 文档/纵横比缓存冷启动——首次进 PDF 页时 aspect 异步解析
   // （图先塌陷后展开）且文档现解析。装载后后台预热全部 PDF/EPS 图：首次进页
   // aspect 同步命中、文档已解析，600DPI 渲染进离屏缓冲一次性贴回（见 pdfRaster）。
   useEffect(() => {
     if (!computed || !st?.folder) return;
+    const warmed = new Set<string>();
     for (const p of computed.pages) {
       for (const b of p.slide?.blocks ?? []) {
         if (b.type !== 'figure' || !b.src) continue;
+        const abs = absMediaPath(st.folder, b.src);
+        if (warmed.has(abs)) continue;
+        warmed.add(abs);
         const lower = b.src.toLowerCase();
         if (lower.endsWith('.pdf')) {
-          void ensurePdfAspect(absMediaPath(st.folder, b.src)).catch(() => undefined);
+          void ensurePdfAspect(abs).catch(() => undefined);
         } else if (lower.endsWith('.eps')) {
-          void window.api.ensureEpsPdf({ absPath: absMediaPath(st.folder, b.src) })
+          void window.api.ensureEpsPdf({ absPath: abs })
             .then((r) => { if (r.pdf) void ensurePdfAspect(r.pdf).catch(() => undefined); })
             .catch(() => undefined);
         }
@@ -553,11 +570,11 @@ export default function Present() {
               computed={computed}
               folder={st.folder ?? ''}
               mode="present"
-              revealed={new Set(st.revealed)}
-              onRef={(label) => send({ type: 'ref', label })}
-              onSlideJump={(i) => send({ type: 'goto', index: i })}
+              revealed={revealed}
+              onRef={onRef}
+              onSlideJump={onSlideJump}
               highlightLabel={st.flashLabel}
-              onZoom={lightbox ? undefined : (abs, ext, caption) => setLightbox({ abs, ext, caption })}
+              onZoom={lightbox ? undefined : onZoom}
             />
           </div>
         </div>

@@ -3,7 +3,7 @@
 // - pages: 含自动节分隔页的渲染页序列
 // - 节编号恒为 1 / 1.1 / 1.1.1；公式/图/表编号按 config.numbering 连续或按节
 
-import { Deck, Page, Section, Slide } from './types';
+import { Block, Deck, Page, Section, Slide } from './types';
 
 export type RefKind = 'sec' | 'eq' | 'fig' | 'tab';
 
@@ -24,6 +24,29 @@ export interface Computed {
   labelPageIndex: Map<string, number>;
   /** section id -> 该节第一页 index（含分隔页自身） */
   sectionPageIndex: Map<string, number>;
+}
+
+/** 页序与编号成员不变时复用编号表，只更新被编辑页；其它情况交回全量计算。 */
+export function patchComputedSlide(computed: Computed, before: Slide, after: Slide): Computed | null {
+  if (before.id !== after.id) return null;
+  const kind = (block: Block): RefKind | null => {
+    if ((block.type === 'equation' || block.type === 'annoeq') && block.latex != null) return 'eq';
+    if (block.type === 'figure' && block.src != null) return 'fig';
+    if (block.type === 'table' && block.cells != null) return 'tab';
+    return null;
+  };
+  const oldNumbered = before.blocks.filter((block) => kind(block) != null);
+  const newNumbered = after.blocks.filter((block) => kind(block) != null);
+  if (oldNumbered.length !== newNumbered.length) return null;
+  for (let i = 0; i < oldNumbered.length; i++) {
+    const old = oldNumbered[i], next = newNumbered[i];
+    if (old.id !== next.id || old.label !== next.label || kind(old) !== kind(next)) return null;
+  }
+  const at = computed.pages.findIndex((page) => page.kind === 'slide' && page.slide?.id === before.id);
+  if (at < 0) return null;
+  const pages = computed.pages.slice();
+  pages[at] = { ...pages[at], slide: after };
+  return { ...computed, pages };
 }
 
 const REF_RE = /^(\w+):([\w-]+)$/;
