@@ -165,7 +165,7 @@ export const Filmstrip = memo(function Filmstrip() {
           >
             <div className="thumb-page" style={{ width: THUMB_W, height: thumbH }}>
               <div style={{ transform: `scale(${scale})`, transformOrigin: 'top left' }}>
-                <ThumbnailSlide page={p} deck={deck} computed={computed} folder={folder ?? ''} mode="thumb" />
+                <ThumbnailSlide page={p} deck={deck} computed={computed} folder={folder ?? ''} mode="thumb" layoutAuthority />
               </div>
             </div>
             <div className="thumb-no">

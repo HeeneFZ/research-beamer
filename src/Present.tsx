@@ -11,22 +11,25 @@ import { Deck, Page, PAGE_SIZE } from './model/types';
 import { Computed, computeDeck } from './model/numbering';
 import { SlideView } from './components/SlideView';
 import { LightboxInner } from './components/Lightbox';
-import { ensurePdfAspect } from './components/pdfRaster';
+import { ensurePdfAspect, warmPdfPreview } from './components/pdfRaster';
 import { absMediaPath } from './components/paths';
 import { realignKatexRules } from './components/katexRuleSnap';
 import { useBackNav } from './hooks/useBackNav';
 import { useStore } from './state/store';
+import { setMediaRevision } from './model/mediaGeometry';
+import { PageLayout } from './model/layoutSpec';
 import 'katex/dist/katex.min.css';
 import './styles.css';
 
 interface PresentState {
   deck: Deck;
   folder: string;
+  mediaRevision: number;
   current: number;
   revealed: number[];
   flashLabel?: string;
   /** 页级排版状态（编辑器窗扫描产物；放映窗据此渲染，保证两边一致） */
-  pageLayout?: Record<string, { s: number; imgH: number; fit: number }>;
+  pageLayout?: Record<string, PageLayout>;
   nonce: number;
 }
 
@@ -217,8 +220,9 @@ export default function Present() {
     // 同步编辑器窗的页级排版状态到本窗 store（SlideView 从本窗 store 读取排版变量）
     const off = window.api.onPresentState((p: unknown) => {
       const ps = p as PresentStateUpdate;
+      setMediaRevision(ps.mediaRevision);
       const pageLayout = ps.pageLayout ?? (ps.deck ? {} : undefined);
-      if (pageLayout) useStore.setState({ pageLayout });
+      if (pageLayout) useStore.setState({ pageLayout, mediaRevision: ps.mediaRevision });
       setSt((previous) => {
         if (!previous && !ps.deck) return null;
         const revealed = previous && previous.revealed.length === ps.revealed.length
@@ -283,7 +287,7 @@ export default function Present() {
 
   // 放映窗是独立进程：pdf 文档/纵横比缓存冷启动——首次进 PDF 页时 aspect 异步解析
   // （图先塌陷后展开）且文档现解析。装载后后台预热全部 PDF/EPS 图：首次进页
-  // aspect 同步命中、文档已解析，600DPI 渲染进离屏缓冲一次性贴回（见 pdfRaster）。
+  // aspect 同步命中、文档已解析，最高 1200DPI 渲染进离屏缓冲一次性贴回（见 pdfRaster）。
   useEffect(() => {
     if (!computed || !st?.folder) return;
     const warmed = new Set<string>();
@@ -303,7 +307,18 @@ export default function Present() {
         }
       }
     }
-  }, [computed, st?.folder]);
+  }, [computed, st?.folder, st?.mediaRevision]);
+  // Only pre-render the next page's small PDF previews; full detail stays on demand.
+  useEffect(() => {
+    if (!computed || !st?.folder) return;
+    let alive = true;
+    for (const block of computed.pages[st.current + 1]?.slide?.blocks ?? []) {
+      if (block.type !== 'figure' || !block.src?.toLowerCase().endsWith('.pdf')) continue;
+      const abs = absMediaPath(st.folder, block.src);
+      void ensurePdfAspect(abs).then(() => { if (alive) warmPdfPreview(abs); }).catch(() => undefined);
+    }
+    return () => { alive = false; };
+  }, [computed, st?.folder, st?.current, st?.mediaRevision]);
   // 返回引用跳转原处（Alt+← / Backspace / 鼠标后退侧键，与编辑器共用输入层）
   useBackNav(useCallback(() => send({ type: 'back' }), [send]));
 
@@ -605,7 +620,7 @@ export default function Present() {
               >
                 <div className="sorter-thumb" style={{ height: sorterThumbW * (size.h / size.w) }}>
                   <div style={{ width: pxW, height: pxH, transform: `scale(${sorterThumbW / pxW})`, transformOrigin: 'top left' }}>
-                    <SlideView page={p} deck={st.deck} computed={computed} folder={st.folder ?? ''} mode="present" />
+                    <SlideView page={p} deck={st.deck} computed={computed} folder={st.folder ?? ''} mode="thumb" />
                   </div>
                 </div>
                 <div className="sorter-no">{i + 1}</div>

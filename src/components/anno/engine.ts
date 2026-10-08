@@ -215,7 +215,8 @@ export function createAnnoRenderer(surface: AnnoSurface, opts: RendererOpts) {
   let lastExtents: { top: number; bottom: number; left: number; right: number } | null = null;
   const scaleK = (): number => {
     const hr = holder.getBoundingClientRect();
-    return hr.width > 0 && holder.offsetWidth > 0 ? hr.width / holder.offsetWidth : 1;
+    const width = parseFloat(getComputedStyle(holder).width);
+    return hr.width > 0 && width > 0 ? hr.width / width : 1;
   };
 
   /** KaTeX 数学字号（px）——本应用 .katex 压回 1em，即公式容器有效字号 */

@@ -207,15 +207,13 @@ body.dark .present-fab:hover { background: #2b6fbf; }
   container-type: size;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  /* 字体合约：西文衬线 Times New Roman / 无衬线 Arial；中文衬线 宋体 / 无衬线 思源黑体。
-     数学公式仍由 KaTeX 自带字体渲染（KaTeX_Main 系），不受此处影响。 */
-  font-family: Arial, 'Source Han Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+  /* SlideView supplies the shared Latin/CJK stack; KaTeX retains its own fonts. */
 }
-.sv[data-fen='serif'] { font-family: 'Times New Roman', 'SimSun', 'Source Han Serif SC', 'Noto Serif CJK SC', serif; }
-.sv[data-fen='serif'][data-fzh='sans'] { font-family: 'Times New Roman', 'Source Han Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif; }
-.sv[data-fen='sans'][data-fzh='serif'] { font-family: Arial, 'SimSun', 'Source Han Serif SC', 'Noto Serif CJK SC', serif; }
 
 /* ---- 内容页头部（渐变细条；固定高度 8cqh——任何情况下页眉高度与标题字号都不变） ---- */
+/* Resource loading never exposes an intermediate page fit. */
+.sv[data-layout-wait]:not(.mode-thumb) .s-body { visibility: hidden; }
+
 .s-header {
   height: 8cqh; flex: 0 0 auto;
   background: var(--p-grad);
@@ -442,9 +440,14 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 .toc-l3 { padding-left: 12cqw; }
 .toc-l3 .toc-title { font-size: 0.76em; color: var(--p-muted); }
 .toc-l3 .toc-num { font-size: 0.72em; }
-.fblock { min-width: 0; position: relative; }
+.fblock { min-width: 0; position: relative; display: flow-root; }
 .para { margin: 0 0 var(--gap-para, 1.6em); }
-.para-empty { min-height: 1.55em; margin: 0 0 var(--gap-para, 1.6em); }
+.para-empty { min-height: calc(1em * var(--lh, 1.5)); }
+/* Match ProseMirror's whitespace and font features before focus changes the DOM. */
+.para, .items li, .block-editor-wrap .ProseMirror {
+  white-space: break-spaces; overflow-wrap: break-word;
+  font-variant-ligatures: none; font-feature-settings: 'liga' 0;
+}
 
 /* 图 / 视频：等比缩放（object-fit contain 保证永不拉伸）；限高随页面密度（--img-max-h） */
 .fig img, .fig video, .fig canvas.gif-still {
@@ -454,10 +457,12 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 }
 /* 视频首帧画布仅打印用（屏幕态隐藏，@media print 中显示） */
 .vid-firstframe { display: none; }
-.pdf-fig { width: 100%; margin: 0 auto; }
+.pdf-fig { width: 100%; margin: 0 auto; position: relative; }
+.pdf-fig > .fig-note { position: absolute; inset: 0; overflow: hidden; }
+.fig-placeholder { width: 100%; display: grid; place-items: center; background: #f3f4f6; overflow: hidden; }
 .pdf-fig canvas { width: 100%; height: 100%; display: block; border-radius: .6cqw; }
 .items { margin: 0 0 var(--gap-para, 1.6em); padding: 0; list-style: none; }
-.items li { padding-left: 4cqw; position: relative; margin-bottom: var(--gap-item, 0.6em); }
+.items li { padding-left: 4cqw; position: relative; margin-bottom: var(--gap-item, 0.6em); min-height: calc(1em * var(--lh, 1.5)); }
 .items li::before {
   content: '▸'; position: absolute; left: 0.6cqw; top: 0;
   color: var(--p-base); font-size: .9em;
@@ -465,8 +470,8 @@ body.dark .present-fab:hover { background: #2b6fbf; }
 
 /* KaTeX 默认样式为 1.21em——三种语境（展示态行内 .imath / 编辑态行内 .inline-math /
    块级 .eq-disp）统一压回 1em：公式与正文严格等大（用户合约） */
-.imath { margin: 0 .12em; }
-.imath .katex { font-size: 1em; }
+.imath, .inline-math { margin: 0 .12em; white-space: normal; }
+.imath .katex, .inline-math .katex { font-size: 1em; line-height: 1.2; }
 
 /* 公式：与所有块同款「段前 0 + 段后统一」（--gap-para）；公式与编号均与正文等大（1em，用户合约）
    裁切合约：仅横向裁（超宽公式不越栏挤编号），纵向不裁——KaTeX 的 hat/tilde 等上下沿
@@ -702,11 +707,11 @@ body.dark .ord-picker .op-input:focus { border-color: #3584e4; box-shadow: 0 0 0
 .li-ord:hover, .li-ord.open { opacity: 1; }
 .li-ord.set { opacity: 1; color: var(--p-base, #2470c8); background: rgba(255, 255, 255, .88); border: .12cqw solid var(--p-base, #2470c8); }
 /* 编辑态与展示态盒模型对齐（WYSIWYG）：空内容占位高 = 一行文本高，进出编辑零跳动 */
-.block-editor-wrap .ProseMirror { outline: none; min-height: 1.55em; }
+.block-editor-wrap .ProseMirror { outline: none; min-height: calc(1em * var(--lh, 1.5)); }
 .block-editor-wrap .ProseMirror > p { margin: 0; }
 /* 列表镜像 .items 展示态：▸ 主色标记、4cqw 缩进、项距/段距同排版规格变量 */
 .block-editor-wrap .ProseMirror ul { padding-left: 0; margin: 0 0 var(--gap-para, 1.6em); list-style: none; }
-.block-editor-wrap .ProseMirror li { padding-left: 4cqw; position: relative; margin-bottom: var(--gap-item, 0.6em); }
+.block-editor-wrap .ProseMirror li { padding-left: 4cqw; position: relative; margin-bottom: var(--gap-item, 0.6em); min-height: calc(1em * var(--lh, 1.5)); }
 .block-editor-wrap .ProseMirror li::before {
   content: '▸'; position: absolute; left: 0.6cqw; top: 0;
   color: var(--p-base); font-size: .9em;
@@ -796,8 +801,6 @@ body.dark .bubble-bar button { background: #2a3038; border-color: #384049; color
 body.dark .bubble-bar button:hover { background: #2c3a4c; border-color: #3584e4; color: #7db4f0; }
 body.dark .bubble-bar button.on { background: #3584e4; border-color: #3584e4; color: #fff; }
 body.dark .bb-sep { background: #333a44; }
-.inline-math { line-height: 1; margin: 0 .18em; }
-.inline-math .katex { font-size: 1em; line-height: 1.1; }
 
 /* =========================================
    放映窗口（present）与演讲者视图（presenter）

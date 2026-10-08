@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
-import { cancelCanvasRender, fileUrl, renderPdfToCanvas } from './pdfRaster';
+import { cancelCanvasRender, fileUrl, renderPdfToCanvas, PDF_DPI_SCALE } from './pdfRaster';
 import { IcoZoomIn, IcoZoomOut, IcoReset, IcoClose } from './icons';
 import { Computed } from '../model/numbering';
 import { Palette } from '../model/types';
@@ -71,8 +71,8 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
       // 显示宽 = wrap CSS 宽 × zoom（transform scale 作用于 wrap）；
       // 位图 = 显示宽 × dpr → 任意缩放都锐利（EditorApp 同款策略）
       const wrapW = canvas.parentElement?.clientWidth || 900;
-      const w = Math.min(6000, wrapW * zoom);
-      renderPdfToCanvas(pdfTarget, canvas, w, window.devicePixelRatio || 1);
+      const pixels = Math.min(wrapW * PDF_DPI_SCALE, wrapW * zoom * (window.devicePixelRatio || 1));
+      renderPdfToCanvas(pdfTarget, canvas, pixels, 1);
     }, 120);
     return () => { clearTimeout(t); cancelCanvasRender(canvas); };
   }, [isPdf, pdfTarget, zoom]);

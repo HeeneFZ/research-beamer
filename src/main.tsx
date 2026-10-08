@@ -19,9 +19,10 @@ installKatexRuleSnap(() => {
   });
 });
 
-const root = createRoot(document.getElementById('root')!);
-if (window.location.hash.replace(/^#/, '') === 'present') {
-  root.render(<Present />);
-} else {
-  root.render(<App />);
-}
+// Load the small bundled math faces once, avoiding fallback metrics when editing
+// introduces a new symbol. The visible page is never laid out with a temporary font.
+const mathFonts = [...document.fonts].filter((face) => face.family.includes('KaTeX_'));
+void Promise.all(mathFonts.map((face) => face.load().catch(() => null))).then(() => {
+  const root = createRoot(document.getElementById('root')!);
+  root.render(window.location.hash.replace(/^#/, '') === 'present' ? <Present /> : <App />);
+});

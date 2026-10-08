@@ -81,8 +81,8 @@ export function Toolbar() {
       <label>
         中文字体
         <select value={c.fontZh} onChange={(e) => setConfig({ fontZh: e.target.value as typeof c.fontZh })}>
-          <option value="serif">宋体系</option>
-          <option value="sans">黑体系</option>
+          <option value="serif">思源宋体 / Noto 宋体</option>
+          <option value="sans">思源黑体 / Noto 黑体</option>
         </select>
       </label>
       <label>

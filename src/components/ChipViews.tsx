@@ -1,10 +1,10 @@
 // React nodeviews for inline atom nodes: math, cross-ref chip.
 // 行内公式编辑 = math-float 浮层（portal 到 body，脱离 ProseMirror DOM，
 // 按键不被编辑器拦截；复用 LatexEditor 的高亮与 \ 联想）——EditorApp 同款。
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { NodeViewWrapper, NodeViewProps } from '@tiptap/react';
-import { katexHtml } from './MathView';
+import { katexHtml, preprocessMath } from './MathView';
 import { LatexEditor, stripMathDelims } from './LatexEditor';
 import { refDisplay, refPageIndex, refParts } from '../model/numbering';
 import { useStore } from '../state/store';
@@ -39,6 +39,9 @@ export function InlineMathView({ node, updateAttributes }: NodeViewProps) {
   const [editing, setEditing] = useState(false);
   const [rect, setRect] = useState<{ left: number; top: number } | null>(null);
   const latex: string = node.attrs.latex ?? '';
+  const palette = useStore((s) => s.deck.config.palette);
+  const tex = useMemo(() => preprocessMath(latex, palette).tex, [latex, palette]);
+  const html = useMemo(() => katexHtml(tex, false), [tex]);
   const spanRef = useRef<HTMLSpanElement | null>(null);
 
   const openAt = (r: { left: number; bottom: number; top: number }) => {
@@ -60,7 +63,7 @@ export function InlineMathView({ node, updateAttributes }: NodeViewProps) {
   }, []);
 
   const body = latex
-    ? <span dangerouslySetInnerHTML={{ __html: katexHtml(latex, false) }} />
+    ? <span dangerouslySetInnerHTML={{ __html: html }} />
     : <span className="inline-math-ph">$…$</span>;
 
   return (

@@ -19,7 +19,14 @@ export function InlineText({
   noRefs?: boolean;
 }) {
   const tokens = useMemo(() => tokenizeInline(text || ''), [text]);
-  return <>{renderTokens(tokens, computed, lang, palette, onRef, noRefs)}</>;
+  return <>{renderTokens(tokens, computed, lang, palette, onRef, noRefs)}{endsInBreak(tokens) && <br />}</>;
+}
+
+// ProseMirror keeps a trailing caret line after a hard break; static text needs it too.
+function endsInBreak(tokens: InlineToken[]): boolean {
+  const last = tokens[tokens.length - 1];
+  if (!last) return false;
+  return last.t === 'text' ? last.v.endsWith('\n') : 'children' in last && endsInBreak(last.children);
 }
 
 function renderTokens(

@@ -39,6 +39,11 @@ export interface SpacingState {
   fit: number;
 }
 
+/** Finalized static layout; navigation and focus reuse a matching signature. */
+export interface PageLayout extends SpacingState {
+  signature?: string;
+}
+
 export interface LayoutSpec {
   /** 正文物理 pt = 标准 × PPT2PHYS × fontScale */
   bodyPt: number;

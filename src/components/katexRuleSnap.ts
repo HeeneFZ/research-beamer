@@ -1,3 +1,5 @@
+import { unifyKatexBrace } from './katexBrace';
+
 // KaTeX 规则线（分数线/上下划线/根号顶线）渲染修正
 //
 // 三个问题、一套机制（设备像素下限 + 背景带/SVG 带重写 + 全量增量双入口）：
@@ -42,30 +44,6 @@
 export const VINCULUM_RE = /(M\d+ 80\s*[hH]400000v)(\d+)(h-400000z|H\d+z)/g;
 
 const RULE_SEL = '.katex .frac-line, .katex .underline-line, .katex .overline-line';
-
-/** 大定界符（{ } 等）字形堆叠接缝修补：KaTeX 用「字形片段 + SVG 延伸条」拼装高定界符，
- *  接缝两侧分别由字体光栅化（字形笔画经 hinting 吸附设备像素网格）与 SVG 矢量绘制
- *  （分数位置）落位——亚像素相位差让接缝行只得到约一半墨迹覆盖（实测亮度 ~160-220，
- *  正常笔画 ~20-50），呈一条浅色断缝；笔画中心还常有 ~1px 横向错位。延伸条是纯矩形
- *  路径，scaleY 拉伸只是变长不变形：以中心为原点两端各延长 0.08em，让接缝处两层墨迹
- *  稳定重叠（伸入字形竖笔区域，同色墨迹不可见），断缝恒被覆盖。单 SVG 定界符
- *  （括号/竖线，KaTeX 自带整段路径）无缝，跳过。 */
-const DELIM_STRETCH_EM = 0.08;
-
-function stretchDelimBars(mult: HTMLElement): void {
-  if (mult.dataset.delimStretch) return;
-  mult.dataset.delimStretch = '1';
-  if (!mult.querySelector('.delimsizinginner')) return; // 单 SVG 定界符：无缝
-  for (const svg of mult.querySelectorAll('svg')) {
-    const vb = svg.getAttribute('viewBox');
-    if (!vb) continue;
-    const hEm = parseFloat(vb.trim().split(/\s+/)[3] || '') / 1000;
-    if (!(hEm > 0.2)) continue; // 非延伸条（保护性下限：延伸条恒 >0.6em）
-    const k = (hEm + 2 * DELIM_STRETCH_EM) / hEm;
-    svg.style.transform = `scaleY(${k.toFixed(5)})`;
-    svg.style.transformOrigin = 'center';
-  }
-}
 
 /** 设备像素下限（分数线与根号线共用）：保证带在【最坏栅格化】下至少 ~0.55 纹素
  *  （AA 可见阈值 ~0.5 纹素；实测 0.36 纹素消失 / 0.38 可见）。
@@ -188,8 +166,8 @@ function scheduleRestyle(roots: Element[]): void {
     if (r instanceof HTMLElement) {
       if (r.matches(RULE_SEL)) pendingRules.add(r);
       for (const el of r.querySelectorAll<HTMLElement>(RULE_SEL)) pendingRules.add(el);
-      for (const mult of r.querySelectorAll<HTMLElement>('.delimsizing.mult')) stretchDelimBars(mult);
-      if (r.matches('.delimsizing.mult')) stretchDelimBars(r);
+      for (const mult of r.querySelectorAll<HTMLElement>('.delimsizing.mult')) unifyKatexBrace(mult);
+      if (r.matches('.delimsizing.mult')) unifyKatexBrace(r);
     }
     // 自匹配：observer 也可能推送单个插入的 path 节点（后代查询查不到自身）
     if (r instanceof SVGPathElement) {
@@ -301,6 +279,15 @@ export function installKatexRuleSnap(subscribeZoom: () => void): void {
   });
   mo.observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener('resize', realignKatexRules);
+  // Windows monitor changes can alter DPR without changing the CSS viewport size.
+  const watchResolution = () => {
+    const query = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    query.addEventListener('change', () => {
+      realignKatexRules();
+      watchResolution();
+    }, { once: true });
+  };
+  watchResolution();
   subscribeZoom();
   scheduleRestyle([document.documentElement]); // 首帧存量处理（observer 只看增量）
 }

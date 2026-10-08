@@ -7,11 +7,12 @@ import { Block } from '../model/types';
 import { Computed } from '../model/numbering';
 import { AnnoState, defaultAnnoState } from '../model/anno';
 import { createAnnoRenderer } from './anno/engine';
+import { slideFontStack } from '../model/fonts';
 
 /** 与 styles.css .sv[data-fen] 字体栈一致（弹窗在 .sv 外时手动指定） */
 export const ANNO_FONT_STACKS: Record<'serif' | 'sans', string> = {
-  serif: "'Times New Roman', 'SimSun', 'Source Han Serif SC', 'Noto Serif CJK SC', serif",
-  sans: "Arial, 'Source Han Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif",
+  serif: slideFontStack('serif', 'serif'),
+  sans: slideFontStack('sans', 'sans'),
 };
 
 /** 标注文字 font-family：auto = 继承（幻灯片内 .sv 已带主题栈）；弹窗内需显式解析 */
@@ -52,6 +53,9 @@ export function AnnoEquationView({
       },
     );
     r.renderAll();
+    const wrap = wrapRef.current!;
+    const refresh = () => r.refreshCanvas();
+    wrap.addEventListener('layoutprobe', refresh);
     // KaTeX 字体晚到会使墨迹度量用到回退字体（高亮框偏大）——就绪后重测一次
     let alive = true;
     if (document.fonts && document.fonts.status !== 'loaded') {
@@ -61,10 +65,10 @@ export function AnnoEquationView({
     let lastW = -1;
     const ro = new ResizeObserver(() => {
       const w = eqnRef.current?.offsetWidth ?? 0;
-      if (Math.abs(w - lastW) > 0.5) { lastW = w; r.renderAll(); }
+      if (Math.abs(w - lastW) > 0.5) { lastW = w; r.refreshCanvas(); }
     });
     ro.observe(eqnRef.current!);
-    return () => { alive = false; ro.disconnect(); };
+    return () => { alive = false; ro.disconnect(); wrap.removeEventListener('layoutprobe', refresh); };
     // annoKey：对象每次解析都是新引用，用序列化串做依赖
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [latex, annoKey]);

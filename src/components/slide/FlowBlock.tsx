@@ -1,6 +1,6 @@
 // 单个流式块：编辑态/展示态分发 + 块点击进编辑 + BlockToolbar 挂载
 
-import { CSSProperties, useLayoutEffect, useRef, useState } from 'react';
+import { CSSProperties, useState } from 'react';
 import { Block, Deck, Slide } from '../../model/types';
 import { Computed } from '../../model/numbering';
 import { InlineText } from '../InlineText';
@@ -40,31 +40,6 @@ export function FlowBlock({
   const updateBlock = useStore((s) => s.updateBlock);
   const isEditing = mode === 'edit' && editing != null && editing.blockId === block.id && editing.slideId === slide?.id;
   const cls = 'fblock' + (highlight ? ' flash-hl' : '') + (mode === 'edit' ? ' editable' : '');
-  // 进出编辑零跳动（钉子法）：文本块进入编辑时 contenteditable 的行盒度量与静态渲染有
-  // 亚像素级差异（实测 +1.3px，white-space/ligatures 等 CSS 对齐均无法消除）。进编辑瞬间
-  // 把块钉死为「展示态高度 + 展示态间距」：显式 height 阻断子元素 margin 坍塌穿透，
-  // 编辑态高出的 ~1px 溢进块间空白（>=19px）不可见；ResizeObserver 发现内容真实增长
-  // 超 8px 才释放钉子恢复自然流；退出编辑时释放（展示态总高=钉住总高，双向零位移）。
-  // 仅文本块（段落/列表）；带 panel 的块（公式/图/表）编辑态本来就会重排，不钉。
-  // ⚠ 单位陷阱：画布用 transform: scale 缩放（EditorCanvas），getBoundingClientRect 是
-  // 缩放后的绘制坐标，写进 style 会被再放大一次（曾致 +35px 回移）——测量必须一律用
-  // getComputedStyle/布局级 CSS px，禁用 rect。
-  const rootRef = useRef<HTMLDivElement>(null);
-  const [pin, setPin] = useState<{ h: number; mb: number } | null>(null);
-  const isTextBlock = block.type === 'paragraph' || block.type === 'itemize';
-  useLayoutEffect(() => {
-    if (!isEditing && pin) setPin(null);
-  }, [isEditing, pin]);
-  useLayoutEffect(() => {
-    if (!isEditing || !pin || !rootRef.current) return;
-    const pm = rootRef.current.querySelector('.ProseMirror');
-    if (!pm) return;
-    const ro = new ResizeObserver(() => {
-      if (parseFloat(getComputedStyle(pm).height) > pin.h + 8) setPin(null);
-    });
-    ro.observe(pm);
-    return () => ro.disconnect();
-  }, [isEditing, pin]);
   // 编辑态：图/视频边缘拖拽调宽（直接操作，写入 block.width 即显式设定）
   const onWidthChange = mode === 'edit' && slide
     ? (w: number) => updateBlock(slide.id, block.id, { width: w })
@@ -195,10 +170,9 @@ export function FlowBlock({
   }
   return (
     <div
-      ref={rootRef}
       className={cls}
       data-bid={block.id}
-      style={isEditing && pin ? { ...(anim || {}), height: pin.h, marginBottom: pin.mb } : anim}
+      style={anim}
       onClick={(e) => {
         const t = e.target as HTMLElement;
         if (t.closest('.ref-chip, .xref, .fig-zoom-btn, .edge-rz, video, .inline-math, a, .btools-float, .btools-menu-float, .ord-badge, .ord-picker, .li-ord')) {
@@ -212,19 +186,6 @@ export function FlowBlock({
           return;
         }
         if (!isEditing) {
-          if (isTextBlock) {
-            const el = e.currentTarget as HTMLElement;
-            // 钉子取值：块高=根盒 computed 高（布局 CSS px，免疫画布 transform scale）；
-            // 间距=展示态间距载体（.para/.items）的 marginBottom（.fblock 自身无 margin，
-            // 兄弟间隙全部来自该载体坍塌穿透，故显式钉回即精确相等）
-            const carrier = el.querySelector('.para, .items');
-            if (carrier) {
-              setPin({
-                h: parseFloat(getComputedStyle(el).height),
-                mb: parseFloat(getComputedStyle(carrier).marginBottom) || 0,
-              });
-            }
-          }
           setEditing({ slideId: slide.id, blockId: block.id });
         }
       }}

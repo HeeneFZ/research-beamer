@@ -96,6 +96,7 @@ export default function App() {
   const flash = useStore((s) => s.flash);
   const folder = useStore((s) => s.folder);
   const pageLayout = useStore((s) => s.pageLayout);
+  const mediaRevision = useStore((s) => s.mediaRevision);
   const [presentNonce, setPresentNonce] = useState(0);
   const lastPresentState = useRef<{ deck: typeof deck; pageLayout: typeof pageLayout; ready: number } | null>(null);
 
@@ -108,6 +109,7 @@ export default function App() {
     window.api.sendPresentState({
       ...(full ? { deck } : {}),
       folder: folder ?? '',
+      mediaRevision,
       current,
       revealed: orders.slice(0, revealStep),
       flashLabel: flash?.page === current ? flash.label : undefined,
@@ -115,7 +117,7 @@ export default function App() {
       nonce: Date.now(),
     });
     lastPresentState.current = { deck, pageLayout, ready: presentNonce };
-  }, [presenting, deck, computed, current, revealStep, flash, folder, pageLayout, presentNonce]);
+  }, [presenting, deck, computed, current, revealStep, flash, folder, pageLayout, presentNonce, mediaRevision]);
 
   // 放映事件监听注册一次（handler 全部经 getState 取即时态，无闭包依赖）：
   // 结束放映后仍需收尾事件——recSaved 的「录像已保存」提示在落盘完成时才到，

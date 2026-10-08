@@ -2,6 +2,7 @@
 
 import { Deck, Page } from '../../model/types';
 import { Computed } from '../../model/numbering';
+import { PageLayout } from '../../model/layoutSpec';
 
 export type SlideMode = 'edit' | 'thumb' | 'preview' | 'present' | 'print';
 
@@ -11,6 +12,11 @@ export interface SlideViewProps {
   computed: Computed;
   folder: string;
   mode?: SlideMode;
+  /** Only the editor's static filmstrip owns layout calculation. Other views consume it. */
+  layoutAuthority?: boolean;
+  /** PDF captures content and its finalized layout together, even if editing continues. */
+  layoutSnapshot?: Record<string, PageLayout>;
+  mediaSnapshot?: number;
   revealed?: Set<number>;
   onRef?: (label: string) => void;
   onSlideJump?: (pageIndex: number) => void;

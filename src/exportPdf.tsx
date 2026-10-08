@@ -13,9 +13,14 @@ function pdfName(title: string): string {
   return t.replace(/[\\/:*?"<>|]/g, '').trim() || 'deck';
 }
 
-async function waitForPrintContent(host: HTMLElement, pageCount: number): Promise<void> {
+function checkPrintProject(mediaRevision: number): void {
+  if (useStore.getState().mediaRevision !== mediaRevision) throw new Error('工程已切换，本次 PDF 导出已取消');
+}
+
+async function waitForPrintContent(host: HTMLElement, pageCount: number, mediaRevision: number): Promise<void> {
   const deadline = Date.now() + 45000;
   while (Date.now() < deadline) {
+    checkPrintProject(mediaRevision);
     const failed = host.querySelector<HTMLElement>('[data-media-error]');
     if (failed) throw new Error(failed.dataset.mediaError || '媒体加载失败');
     const images = [...host.querySelectorAll('img')];
@@ -25,6 +30,7 @@ async function waitForPrintContent(host: HTMLElement, pageCount: number): Promis
       && images.every((image) => image.complete && image.naturalWidth > 0)
       && canvases.every((canvas) => canvas.width > 0 && canvas.height > 0 && !canvas.dataset.mediaPending)
       && !host.querySelector('[data-eps-pending]')
+      && !host.querySelector('[data-layout-ready="false"]')
       && (!document.fonts || document.fonts.status === 'loaded');
     if (ready) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -33,30 +39,44 @@ async function waitForPrintContent(host: HTMLElement, pageCount: number): Promis
 }
 
 let exporting = false;
+async function capturePrintSnapshot(): Promise<ReturnType<typeof useStore.getState>> {
+  const deadline = Date.now() + 45000;
+  while (Date.now() < deadline) {
+    // Let the current static filmstrip commit its content and geometry before freezing.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const state = useStore.getState();
+    const pages = document.querySelectorAll('.filmstrip .sv');
+    if (pages.length === state.computed.pages.length
+      && [...pages].every((page) => page.getAttribute('data-layout-ready') === 'true')) return state;
+  }
+  throw new Error('页面排版尚未就绪，请检查素材后重试');
+}
+
 export async function exportPDF(): Promise<void> {
   if (exporting) return;
   exporting = true;
-  const s = useStore.getState();
   const host = document.createElement('div');
   host.id = 'print-root';
   let root: ReturnType<typeof createRoot> | null = null;
   const style = document.createElement('style');
   try {
-    const r = await window.api.exportPDF({ suggestedName: pdfName(s.deck.config.title) + '.pdf' });
+    const r = await window.api.exportPDF({ suggestedName: pdfName(useStore.getState().deck.config.title) + '.pdf' });
     if (!r?.path) return;
+    const s = await capturePrintSnapshot();
     document.body.appendChild(host);
     root = createRoot(host);
     const c = s.computed;
     root.render(
       c.pages.map((p) => (
         <div className="print-page" key={p.index}>
-          <SlideView page={p} deck={s.deck} computed={c} folder={s.folder ?? ''} mode="print" />
+          <SlideView page={p} deck={s.deck} computed={c} folder={s.folder ?? ''} mode="print" layoutSnapshot={s.pageLayout} mediaSnapshot={s.mediaRevision} />
         </div>
       )),
     );
 
-    await waitForPrintContent(host, c.pages.length);
+    await waitForPrintContent(host, c.pages.length, s.mediaRevision);
     await new Promise((r2) => setTimeout(r2, 300)); // 字体/布局稳定
+    checkPrintProject(s.mediaRevision);
     // 规则线（分数线等）按打印矢量口径重算：屏幕态的 1 设备行下限在矢量输出中
     // 会让规则线比字形笔画粗 ~2×，PDF 需要纯 0.04em 设计值
     restyleRulesForPrint();
@@ -79,7 +99,7 @@ export async function exportPDF(): Promise<void> {
     const bytes = out && 'bytes' in out ? out.bytes : 0;
     s.setFlashMsg(bytes ? `PDF 已导出（${(bytes / 1048576).toFixed(1)} MB）` : 'PDF 导出失败');
   } catch (e) {
-    s.setFlashMsg('PDF 导出失败：' + String(e));
+    useStore.getState().setFlashMsg('PDF 导出失败：' + String(e));
   } finally {
     style.remove();
     root?.unmount();

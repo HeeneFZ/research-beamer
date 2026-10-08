@@ -16,6 +16,7 @@ import { CSSProperties, memo, useEffect, useMemo, useRef, useState } from 'react
 import { createPortal } from 'react-dom';
 import { Block, PAGE_SIZE, Slide } from '../model/types';
 import { paletteVars } from '../model/palette';
+import { slideFontStack } from '../model/fonts';
 import { computeLayoutSpec, defaultSpacing, layoutCssVars } from '../model/layoutSpec';
 import { InlineText } from './InlineText';
 import { TitleEditor, FooterEditor, CoverFieldEditor } from './BlockEditors';
@@ -45,7 +46,7 @@ export function referenceSignature(computed: SlideViewProps['computed']): string
 }
 
 export const SlideView = memo(function SlideView({
-  page, deck, computed, folder, mode = 'edit', revealed, onRef, onSlideJump, onZoom, highlightLabel,
+  page, deck, computed, folder, mode = 'edit', layoutAuthority = false, layoutSnapshot, mediaSnapshot, revealed, onRef, onSlideJump, onZoom, highlightLabel,
 }: SlideViewProps) {
   const { config } = deck;
   const size = PAGE_SIZE[config.aspect];
@@ -84,31 +85,31 @@ export const SlideView = memo(function SlideView({
   }, [scannable, layout, slide0?.blocks, slide0?.fontScale, config.fontSize, config.aspect]);
   // 页级排版状态（store.pageLayout：扫描器静默探测写入，全模式统一读取——放映/PDF 与编辑画布一致）
   const fitKey = slide0 ? `${slide0.id}|${config.aspect}` : null;
-  const layoutState = useStore((s) => (fitKey ? s.pageLayout[fitKey] : undefined));
+  const layoutState = useStore((s) => (fitKey ? (layoutSnapshot ?? s.pageLayout)[fitKey] : undefined));
+  const mediaRevision = useStore((s) => mediaSnapshot ?? s.mediaRevision);
   const style: CSSProperties = {
     width: `${size.w}mm`,
     height: `${size.h}mm`,
+    fontFamily: slideFontStack(config.fontEn, config.fontZh),
     ...paletteVars(config.palette),
     ...(spec ? (layoutCssVars(spec, layoutState ?? defaultSpacing(spec)) as unknown as CSSProperties) : {}),
   };
   // 精确内容签名：等字数替换、字体/双栏比例/素材变化同样会影响真实 DOM 高度。
   // 结构共享让未修改页复用序列化结果；引用编号指纹全 deck 只计算一次。
   const blockSig = useMemo(() => JSON.stringify({
-    slide: slide0, layout, folder, fontSize: config.fontSize,
+    blocks: slide0?.blocks.map(({ order, itemOrders, ...geometry }) => geometry),
+    fontScale: slide0?.fontScale, ratio: slide0?.ratio, layout, folder, fontSize: config.fontSize,
     fontZh: config.fontZh, fontEn: config.fontEn, language: config.language, palette: config.palette,
   }), [slide0, layout, folder, config.fontSize, config.fontZh, config.fontEn, config.language, config.palette]);
   const tocSig = layout === 'toc'
     ? '|toc:' + deck.items.filter((it) => it.kind === 'section').map((it) => (it.kind === 'section' ? it.section.title : '')).join('|')
     : '';
   const editing = useStore((s) => mode === 'edit' ? s.editing : null);
-  // 静默探测扫描：胶片缩略图恒运行（与画布同 mm 尺寸排版，打开工程即把全部页
-  // 后台算完，进页即是终态）；画布扫描在本页无编辑时运行、present/print 只读 store。
-  // 画布扫描在本页编辑期间让位：TipTap 编辑态行盒比静态渲染高 ~1.3px，画布/胶片
-  // 两个扫描器对同一 key 交替提交不同终态（实测 fit 0.657↔0.6641 每 ~400ms 翻转，
-  // 页脚近满页肉眼可见持续抽动）。胶片扫描器测的是静态 DOM——本来就是权威值，
-  // 编辑期间只留它一个，退出编辑后画布扫描恢复并复核（相同值 no-op）。
+  // All visible modes consume the finalized static thumbnail layout.
   const editingThisSlide = mode === 'edit' && editing != null && editing.slideId === slide0?.id;
-  useLayoutScan(bodyRef, slide0?.id, scannable && (mode === 'thumb' || (mode === 'edit' && !editingThisSlide)), config.aspect, blockSig + tocSig, referenceSignature(computed));
+  const layoutSignature = blockSig + tocSig + referenceSignature(computed) + `|media:${mediaRevision}`;
+  const layoutReady = !scannable || layoutState?.signature === layoutSignature;
+  useLayoutScan(bodyRef, fitKey, scannable && layoutAuthority, layoutSignature, spec);
 
   const setEditing = useStore((s) => s.setEditing);
 
@@ -358,6 +359,8 @@ export const SlideView = memo(function SlideView({
       className={`sv mode-${mode}`}
       data-fen={config.fontEn}
       data-fzh={config.fontZh}
+      data-layout-ready={layoutReady}
+      data-layout-wait={!layoutReady && !(editingThisSlide && layoutState) ? '' : undefined}
       style={style}
     >
       {body}

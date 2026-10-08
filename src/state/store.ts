@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import {
   Block, BlockType, Deck, DeckConfig, DeckItem, Layout, Page, Slide, createDefaultConfig, newId,
 } from '../model/types';
-import { SpacingState } from '../model/layoutSpec';
+import { PageLayout } from '../model/layoutSpec';
+import { setMediaRevision } from '../model/mediaGeometry';
 import { computeDeck, Computed, patchComputedSlide, refPageIndex, refParts } from '../model/numbering';
 import { colEndPlan, colRegionAt, reseedColPlaceholders, stripEmptyColRegions } from '../model/segments';
 import { serializeMarkdown, parseMarkdown, normLabel, LABEL_PREFIX, dedupeRefLabel } from '../model/markdown';
@@ -35,6 +36,7 @@ interface StoreState {
   deck: Deck;
   computed: Computed;
   folder: string | null;
+  mediaRevision: number;
   current: number; // 当前页 index（computed.pages）
   dirty: boolean;
   darkMode: boolean;
@@ -55,7 +57,7 @@ interface StoreState {
   presentRecording: boolean;
   /** 页级排版状态（key = slideId|aspect；内存态，不入 md/历史；全模式共享，
    *  由 useLayoutScan 静默探测写入，SlideView 各模式统一读取——编辑/胶片/放映/PDF 一致） */
-  pageLayout: Record<string, SpacingState>;
+  pageLayout: Record<string, PageLayout>;
   /** 块剪贴板（复制/粘贴按钮；内存态跨页跨工程有效，不入 md/历史） */
   clipBlock: Block | null;
   copyBlock(slideId: string, blockId: string): void;
@@ -81,7 +83,7 @@ interface StoreState {
   presentReverse(): void;
   insertColEnd(slideId: string, blockId: string): void;
   insertColRegion(slideId: string, afterId: string | null): string;
-  setPageLayout(key: string, st: SpacingState): void;
+  setPageLayout(key: string, st: PageLayout): void;
   setEditing(e: EditState | null): void;
   setFocus(id: string | null, pos?: 'start' | 'end'): void;
   setLightbox(l: LightboxState | null): void;
@@ -182,6 +184,7 @@ export const useStore = create<StoreState>((set, get) => {
     presenting: false,
     presentRecording: false,
     pageLayout: {},
+    mediaRevision: 0,
     clipBlock: null,
 
     /** 复制块到剪贴板（内存态；粘贴时重新生成 id/剥除全局唯一字段） */
@@ -577,7 +580,7 @@ export const useStore = create<StoreState>((set, get) => {
     setPageLayout: (key, st) =>
       set((s) => {
         const cur = s.pageLayout[key];
-        if (cur && cur.s === st.s && cur.imgH === st.imgH && cur.fit === st.fit) return s;
+        if (cur && cur.signature === st.signature && cur.s === st.s && cur.imgH === st.imgH && cur.fit === st.fit) return s;
         return { pageLayout: { ...s.pageLayout, [key]: st } };
       }),
 
@@ -587,7 +590,9 @@ export const useStore = create<StoreState>((set, get) => {
       clearHistory();
       attachHistoryFolder(null, '');
       const d = freshDeck();
-      set({ deck: d, computed: computeDeck(d), folder: null, dirty: false, ...projectViewDefaults });
+      const mediaRevision = get().mediaRevision + 1;
+      setMediaRevision(mediaRevision);
+      set({ deck: d, computed: computeDeck(d), folder: null, dirty: false, ...projectViewDefaults, mediaRevision });
     },
 
     openProject: async () => {
@@ -612,7 +617,9 @@ export const useStore = create<StoreState>((set, get) => {
         clearHistory();
         // 历史 adopt：读回该工程目录下的 .beamer-history.json 恢复撤销栈
         attachHistoryFolder(folder, JSON.stringify(deck));
-        set({ deck, computed, folder, dirty: false, ...projectViewDefaults });
+        const mediaRevision = get().mediaRevision + 1;
+        setMediaRevision(mediaRevision);
+        set({ deck, computed, folder, dirty: false, ...projectViewDefaults, mediaRevision });
       } catch (e) {
         set({ flashMsg: '工程解析失败：' + String(e) });
       }
