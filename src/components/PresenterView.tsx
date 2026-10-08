@@ -105,6 +105,14 @@ export function PresenterView() {
         )}
       </div>
       <div className="presenter-side">
+        <div className="presenter-top-actions">
+          <button className="presenter-swap" title="交换放映和监看屏幕"
+            onClick={async () => {
+              const result = await window.api.swapPresentScreens();
+              if (!result.ok) useStore.getState().setFlashMsg(result.error === 'single-display' ? '需要连接两个显示器才能交换屏幕' : '请将两个窗口放在不同的屏幕上再交换');
+            }}>⇄ 交换屏幕</button>
+          <button className="presenter-end" onClick={endPresent}>结束放映</button>
+        </div>
         <div className="presenter-block">
           <div className="presenter-label">下一页 <span className="pt-page">{(page?.no ?? 0)} / {computed.pages.length}</span></div>
           <div className="presenter-next" ref={next.ref}>
@@ -145,15 +153,7 @@ export function PresenterView() {
           >
             {presentRecording ? '■ 停止录制' : '● 录制放映'}
           </button>
-          <button
-            className="presenter-swap"
-            title="交换放映/监看屏幕（多屏演讲时放映屏与监看屏互换）"
-            onClick={() => { void window.api.swapPresentScreens(); }}
-          >
-            ⇄ 交换屏幕
-          </button>
         </div>
-        <button className="presenter-end" onClick={endPresent}>结束放映 (Esc)</button>
       </div>
     </div>
   );

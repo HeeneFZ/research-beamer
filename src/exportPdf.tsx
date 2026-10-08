@@ -5,6 +5,7 @@ import { useStore } from './state/store';
 import { SlideView } from './components/SlideView';
 import { restyleRulesForPrint, VINCULUM_RE } from './components/katexRuleSnap';
 import { PAGE_SIZE } from './model/types';
+import { mediaAssetSignature } from './model/mediaResources';
 
 /** PDF 建议文件名：标题可含 $..$ 行内公式（含 \ 等源码字符，Windows 文件名非法）——
  *  剥定界符取 LaTeX 源文本，再剔除文件系统非法字符 */
@@ -39,14 +40,18 @@ async function waitForPrintContent(host: HTMLElement, pageCount: number, mediaRe
 }
 
 let exporting = false;
-async function capturePrintSnapshot(): Promise<ReturnType<typeof useStore.getState>> {
+async function capturePrintSnapshot(mediaRevision: number): Promise<ReturnType<typeof useStore.getState>> {
   const deadline = Date.now() + 45000;
   while (Date.now() < deadline) {
+    checkPrintProject(mediaRevision);
     // Let the current static filmstrip commit its content and geometry before freezing.
     await new Promise((resolve) => setTimeout(resolve, 20));
     const state = useStore.getState();
+    checkPrintProject(mediaRevision);
     const pages = document.querySelectorAll('.filmstrip .sv');
     if (pages.length === state.computed.pages.length
+      && state.mediaPreparation.phase === 'ready'
+      && state.mediaPreparation.assetSignature === mediaAssetSignature(state.deck)
       && [...pages].every((page) => page.getAttribute('data-layout-ready') === 'true')) return state;
   }
   throw new Error('页面排版尚未就绪，请检查素材后重试');
@@ -55,6 +60,7 @@ async function capturePrintSnapshot(): Promise<ReturnType<typeof useStore.getSta
 export async function exportPDF(): Promise<void> {
   if (exporting) return;
   exporting = true;
+  const mediaRevision = useStore.getState().mediaRevision;
   const host = document.createElement('div');
   host.id = 'print-root';
   let root: ReturnType<typeof createRoot> | null = null;
@@ -62,14 +68,15 @@ export async function exportPDF(): Promise<void> {
   try {
     const r = await window.api.exportPDF({ suggestedName: pdfName(useStore.getState().deck.config.title) + '.pdf' });
     if (!r?.path) return;
-    const s = await capturePrintSnapshot();
+    checkPrintProject(mediaRevision);
+    const s = await capturePrintSnapshot(mediaRevision);
     document.body.appendChild(host);
     root = createRoot(host);
     const c = s.computed;
     root.render(
       c.pages.map((p) => (
         <div className="print-page" key={p.index}>
-          <SlideView page={p} deck={s.deck} computed={c} folder={s.folder ?? ''} mode="print" layoutSnapshot={s.pageLayout} mediaSnapshot={s.mediaRevision} />
+          <SlideView page={p} deck={s.deck} computed={c} folder={s.folder ?? ''} mode="print" layoutSnapshot={s.pageLayout} mediaSnapshot={s.mediaRevision} resourceSnapshot={s.mediaPreparation} />
         </div>
       )),
     );

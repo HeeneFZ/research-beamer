@@ -34,6 +34,7 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
   /** 提供时 caption 经 InlineText 渲染（含行内公式/引用/着色）；缺省纯文本 */
   captionCtx?: { computed: Computed; lang: 'zh' | 'en'; palette: Palette };
 }) {
+  const preparation = useStore((state) => state.mediaPreparation);
   const [zoom, setZoom] = useState(1);
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
@@ -72,10 +73,10 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
       // 位图 = 显示宽 × dpr → 任意缩放都锐利（EditorApp 同款策略）
       const wrapW = canvas.parentElement?.clientWidth || 900;
       const pixels = Math.min(wrapW * PDF_DPI_SCALE, wrapW * zoom * (window.devicePixelRatio || 1));
-      renderPdfToCanvas(pdfTarget, canvas, pixels, 1);
+      renderPdfToCanvas(pdfTarget, canvas, pixels, 1, preparation);
     }, 120);
     return () => { clearTimeout(t); cancelCanvasRender(canvas); };
-  }, [isPdf, pdfTarget, zoom]);
+  }, [isPdf, pdfTarget, zoom, preparation]);
 
 
   const onKey = useCallback((e: KeyboardEvent) => {

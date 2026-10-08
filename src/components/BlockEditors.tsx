@@ -3,7 +3,7 @@
 // 弹窗体系对齐 EditorApp ModalShell：modal-mask + modal + fld/txt + modal-actions，
 // 全部 px 单位（portal 到 body，cqw 在 .sv 容器外会退化为 vw，故弹窗内禁用 cqw 类）。
 
-import { useEffect, useRef, useState } from 'react';
+import { ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { slideOf, useStore } from '../state/store';
 import { Block, Slide } from '../model/types';
@@ -15,6 +15,8 @@ import { fileUrl } from './pdfRaster';
 import { PdfCanvas, EpsFigure } from './FigureView';
 import { LatexEditor, stripMathDelims } from './LatexEditor';
 import { RichFieldEditor } from './RichFieldEditor';
+import { Popover, elementAnchor } from './Popover';
+import type { AnchorRect } from './OrderPicker';
 import { IcoClose } from './icons';
 const closeEditing = () => useStore.getState().setEditing(null);
 
@@ -30,7 +32,7 @@ export function Modal({ title, children, onClose, wide, extra }: {
 }) {
   const bornAt = useRef(Date.now());
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (!e.isComposing && e.keyCode !== 229 && e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -64,6 +66,13 @@ export function MediaPanel({ slide, block, kind }: { slide: Slide; block: Block;
   const commit = (patch: Partial<Block>) => updateBlock(slide.id, block.id, patch);
   const abs = folder && block.src ? absMedia(folder, block.src) : null;
   const lower = (block.src || '').toLowerCase();
+  const done = () => {
+    const w = num(width), o = num(order);
+    commit({ width: w != null && w > 0 && w <= 1 ? w : undefined,
+      label: kind === 'figure' ? (label ? normLabel(prefix, label) : undefined) : block.label,
+      caption: caption || undefined, order: o != null && o >= 1 ? Math.floor(o) : undefined });
+    closeEditing();
+  };
 
   const saveAs = async () => {
     if (!folder || !block.src) return;
@@ -80,7 +89,7 @@ export function MediaPanel({ slide, block, kind }: { slide: Slide; block: Block;
   };
 
   return (
-    <Modal title={kind === 'figure' ? '图片属性' : '视频属性'} onClose={closeEditing} wide>
+    <Modal title={kind === 'figure' ? '图片属性' : '视频属性'} onClose={done} wide>
       {abs && (
         <div className="media-preview">
           {kind === 'video' ? (
@@ -126,7 +135,7 @@ export function MediaPanel({ slide, block, kind }: { slide: Slide; block: Block;
         )}
         <button onMouseDown={(e) => e.preventDefault()} onClick={() => { void saveAs(); }}>保存图像副本…</button>
         <button onMouseDown={(e) => e.preventDefault()} onClick={() => { void replaceMedia(); }}>更换媒体…</button>
-        <button className="primary" onClick={closeEditing}>完成</button>
+        <button className="primary" onClick={done}>完成</button>
       </div>
     </Modal>
   );
@@ -145,7 +154,8 @@ export function EquationEditor({ slide, block, computed }: {
   const commit = (patch: Partial<Block>) => updateBlock(slide.id, block.id, patch);
   // latex 在关闭/提交时落盘（编辑中途不落，避免每次击键触发页面重排）
   const commitAll = () => {
-    commit({ latex, label: label ? normLabel('eq', label) : undefined });
+    const o = num(order);
+    commit({ latex, label: label ? normLabel('eq', label) : undefined, order: o != null && o >= 1 ? Math.floor(o) : undefined });
   };
   const done = () => { commitAll(); closeEditing(); };
   const live = { ...block, latex, label: label ? normLabel('eq', label) : undefined };
@@ -182,8 +192,13 @@ export function TableEditor({ slide, block }: { slide: Slide; block: Block }) {
   const cells = block.cells || [[]];
   const commit = (patch: Partial<Block>) => updateBlock(slide.id, block.id, patch);
   const setCells = (c: string[][]) => commit({ cells: c });
+  const done = () => {
+    const o = num(order);
+    commit({ label: label ? normLabel('tab', label) : undefined, caption: caption || undefined, order: o != null && o >= 1 ? Math.floor(o) : undefined });
+    closeEditing();
+  };
   return (
-    <Modal title="表格编辑" onClose={closeEditing} wide>
+    <Modal title="表格编辑" onClose={done} wide>
       <table className="three-line edit">
         <tbody>
           {cells.map((row, i) => (
@@ -226,7 +241,7 @@ export function TableEditor({ slide, block }: { slide: Slide; block: Block }) {
       <div className="modal-actions">
         <button className="danger" onMouseDown={(e) => e.preventDefault()} onClick={() => { deleteBlock(slide.id, block.id); closeEditing(); }}>删除表格</button>
         <span className="spacer" />
-        <button className="primary" onClick={closeEditing}>完成</button>
+        <button className="primary" onClick={done}>完成</button>
       </div>
     </Modal>
   );
@@ -253,72 +268,49 @@ export function TitleEditor({ slide }: { slide: Slide }) {
   );
 }
 
-/** 封面/尾页字段行内编辑（渐变卡白字，与页眉 title-edit 同款视觉；blur/Enter/Esc 提交）。
- *  math=true（大标题）为 TipTap 富文本字段：$$ / $x$ 键入行内公式芯片，
- *  与正文行内公式同款交互；其余字段（作者/单位/日期/副标题）保持纯文本 */
-export function CoverFieldEditor({ slideId, value, onCommit, placeholder, math }: {
-  slideId: string; value: string; onCommit: (v: string) => void; placeholder?: string; math?: boolean;
+/** Keep the rendered cover grammar in place; source editing lives in a screen-space popup. */
+export function CoverFieldEditor({ slideId, value, rawValue, onCommit, placeholder, math, preview, label }: {
+  slideId: string; value: string; rawValue?: string; onCommit: (v: string) => void;
+  placeholder?: string; math?: boolean; preview: ReactNode; label?: string;
 }) {
-  const commit = (v: string) => { if (slideOf(useStore.getState().deck, slideId)) onCommit(v); };
-  // math 字段与纯文本字段分体（各自持 hooks，math 切换不破坏 hook 序）
-  if (math) return <CoverTitleEditor slideId={slideId} value={value} onCommit={commit} placeholder={placeholder} />;
-  return <CoverPlainFieldEditor slideId={slideId} value={value} onCommit={commit} placeholder={placeholder} />;
-}
-
-/** 封面大标题（math）：TipTap 富文本字段，$$ / $x$ 键入行内公式芯片 */
-function CoverTitleEditor({ slideId, value, onCommit, placeholder }: {
-  slideId: string; value: string; onCommit: (v: string) => void; placeholder?: string;
-}) {
-  // 结束编辑仅在编辑态仍指向本字段时收起（失焦判定延迟 150ms，期间用户可能
-  // 直接点开另一字段——InlineBlockEditor 同款守卫）
-  const done = () => {
-    const e = useStore.getState().editing;
-    if (e?.slideId === slideId && e.field === 'coverTitle') closeEditing();
+  const session = useRef(useStore.getState().editing).current;
+  const initial = useRef({ display: value, raw: rawValue ?? value }).current;
+  const [anchor, setAnchor] = useState<AnchorRect | null>(null);
+  const [text, setText] = useState(value);
+  const textRef = useRef(text);
+  const closed = useRef(false);
+  textRef.current = text;
+  useLayoutEffect(() => {
+    const target = document.querySelector<HTMLElement>(`.mode-edit [data-cover-field="${session?.field}"]`);
+    if (target) setAnchor(elementAnchor(target));
+  }, []);
+  const commit = (text: string) => {
+    if (!slideOf(useStore.getState().deck, slideId)) return;
+    onCommit(text === initial.display ? initial.raw : text);
   };
-  return (
-    <RichFieldEditor
-      cls="title-edit cover-edit"
-      live
-      value={value}
-      placeholder={placeholder}
-      onCommit={onCommit}
-      onDone={done}
-      onCancel={done}
-    />
-  );
-}
-
-/** 封面/尾页其余字段（作者/单位/日期/副标题）：纯文本 input（渐变卡白字） */
-function CoverPlainFieldEditor({ slideId, value, onCommit, placeholder }: {
-  slideId: string; value: string; onCommit: (v: string) => void; placeholder?: string;
-}) {
-  const ref = useRef<HTMLInputElement>(null);
-  const editingAtMount = useRef(useStore.getState().editing).current;
-  const [val, setVal] = useState(value);
-  useEffect(() => { ref.current?.focus(); ref.current?.select(); }, []);
   const done = () => {
-    onCommit(val);
-    if (useStore.getState().editing === editingAtMount) closeEditing();
+    if (closed.current) return;
+    closed.current = true;
+    if (!math) commit(textRef.current);
+    if (useStore.getState().editing === session) closeEditing();
   };
-  return (
-    <input
-      ref={ref}
-      className="title-edit cover-edit"
-      spellCheck={false}
-      value={val}
-      placeholder={placeholder}
-      onChange={(e) => setVal(e.target.value)}
-      onBlur={done}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') done();
-        else if (e.key === 'Escape') closeEditing(); // Esc = 取消（不提交）
-        e.stopPropagation();
-      }}
-      onClick={(e) => e.stopPropagation()}
-    />
-  );
+  const cancel = () => { closed.current = true; commit(initial.raw); if (useStore.getState().editing === session) closeEditing(); };
+  useEffect(() => () => { if (!math && !closed.current) commit(textRef.current); }, []);
+  return <>{preview}{anchor && <Popover anchor={anchor} className="field-popover" onClose={done}>
+    <div className="field-popover-label">{label ?? '编辑字段'}</div>
+    {math ? <RichFieldEditor cls="field-input" live multiline={session?.field === 'coverTitle'} value={value}
+      onCommit={commit} onDone={done} onCancel={cancel} placeholder={placeholder} /> :
+      <input className="field-input" autoFocus value={text} spellCheck={false} placeholder={placeholder}
+        onChange={(e) => setText(e.target.value)} onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+          if (e.key === 'Enter') done();
+          if (e.key === 'Escape') cancel();
+        }} />}
+    <div className="field-popover-hint">{session?.field === 'coverAuthors' ? '多位作者用 ; 分隔，上标写成 姓名^1,2' : session?.field === 'coverAff' ? '多个单位用 ; 分隔，序号对应作者上标' : math ? '$…$ 插入公式；Enter 完成，Esc 取消' : 'Enter 完成，Esc 取消'}</div>
+    <button onMouseDown={(e) => e.preventDefault()} onClick={done}>完成</button>
+  </Popover>}</>;
 }
-
 /** 页脚附加信息编辑（纯页级：写入本页 slide.footNote；空值=本页页脚留空，无全局回退）。
  *  提交三通道：Enter 显式提交 / onBlur 失焦提交 / 卸载兜底提交——画布空白 mousedown
  *  先把 editing 置空，组件卸载时 blur 不派发（DOM 已摘除），onBlur 永远不跑，

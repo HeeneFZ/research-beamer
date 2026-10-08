@@ -6,17 +6,15 @@ import { InlineText } from '../InlineText';
 
 /** 作者上标：张三^1,2; 李四^1 -> 名字 + <sup>；分隔符随语言 */
 export function AuthorsLine({ authors, lang }: { authors: string; lang: 'zh' | 'en' }) {
-  const names = authors.split(';').map((s) => s.trim()).filter(Boolean);
+  const names = parseAuthors(authors);
   const joiner = lang === 'zh' ? '，' : '; ';
   return (
     <>
       {names.map((n, i) => {
-        const m = n.match(/\^([\d,\s]+)$/);
-        const name = m ? n.slice(0, m.index).trim() : n;
         return (
           <span key={i} className="cover-name">
-            {name}
-            {m && <sup>{m[1].replace(/\s/g, '')}</sup>}
+            {n.name}
+            {n.sup && <sup>{n.sup}</sup>}
             {i < names.length - 1 ? joiner : ''}
           </span>
         );
@@ -25,12 +23,19 @@ export function AuthorsLine({ authors, lang }: { authors: string; lang: 'zh' | '
   );
 }
 
+function parseAuthors(authors: string) {
+  return authors.split(';').map((value) => value.trim()).filter(Boolean).map((value) => {
+    const match = value.match(/\^([\d,\s]+)$/);
+    return { name: match ? value.slice(0, match.index).trim() : value, sup: match?.[1].replace(/\s/g, '') };
+  });
+}
+
 /** 作者单位（封面作者行下方）：affiliations 用 ; 分隔多个，序号对应作者上标 ^1 ^2。
  *  单个单位且作者无上标 → 无编号一行；多个或有上标 → 上标编号逐行列出 */
 export function AffiliationsView({ affiliations, authors }: { affiliations: string; authors: string }) {
   const affs = affiliations.split(';').map((s) => s.trim()).filter(Boolean);
   if (!affs.length) return null;
-  const hasSup = /\^[\d,\s]+$/.test(authors);
+  const hasSup = parseAuthors(authors).some((author) => !!author.sup);
   const numbered = affs.length > 1 || hasSup;
   return (
     <div className="cover-affs">

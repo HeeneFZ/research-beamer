@@ -5,7 +5,7 @@
 
 /** 命中任意浮层（含页面外 portal）返回 true */
 export const OVERLAY_SELECTOR =
-  '.modal-mask, .lb-overlay, .ref-picker, .slash-menu, .btools-float, .btools-menu-float, .math-float, .strip-menu, .ctx, .menu-drop, .sec-menu, .bubble-bar';
+  '.modal-mask, .lb-overlay, .ref-picker, .slash-menu, .btools-float, .btools-menu-float, .math-float, .strip-menu, .ctx, .menu-drop, .sec-menu, .field-popover, .bubble-bar';
 
 export function onOverlay(t: EventTarget | null): boolean {
   return t instanceof HTMLElement && !!t.closest(OVERLAY_SELECTOR);

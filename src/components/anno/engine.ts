@@ -187,7 +187,7 @@ export interface RendererOpts {
   /** wrap 最小内边距 {v: 垂直, h: 水平, m: 外扩余量}——编辑画布大、幻灯片近似 0 */
   padMin: { v: number; h: number; m: number };
   /** 标注文字 font-family（'' = 继承主题） */
-  labelFontCss: string;
+  labelFontCss: string | (() => string);
   onMarkSelect?: (id: string) => void;
   /** 双击高亮框 → 直接为该标记新建标注（快捷路径） */
   onMarkDoubleClick?: (id: string) => void;
@@ -370,7 +370,8 @@ export function createAnnoRenderer(surface: AnnoSurface, opts: RendererOpts) {
       const wrapEm = parseFloat(getComputedStyle(wrap).fontSize) || 16;
       label.style.fontSize = L / wrapEm + 'em';
       label.style.color = labelColor;
-      if (opts.labelFontCss) label.style.fontFamily = opts.labelFontCss;
+      const font = typeof opts.labelFontCss === 'function' ? opts.labelFontCss() : opts.labelFontCss;
+      if (font) label.style.fontFamily = font;
       label.innerHTML = annLabelText(a.text);
       label.dataset.annId = a.id;
       if (sel?.annId === a.id) label.classList.add('sel');
@@ -594,10 +595,11 @@ export function createAnnoRenderer(surface: AnnoSurface, opts: RendererOpts) {
   }
 
   /** 公式 DOM 不变，标记/标注/样式微调（锚定在 drawMarks 内重做） */
-  function refreshCanvas(): void {
-    drawMarks();
+  function refreshCanvas(): AnnoMark[] {
+    const lost = drawMarks();
     drawAnnotations();
     updateWrapPadding();
+    return lost;
   }
 
   /** 悬停卡片 → 虚线亮出锚点位置 */

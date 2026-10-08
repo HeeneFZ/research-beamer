@@ -1,9 +1,12 @@
 import { create } from 'zustand';
 import {
-  Block, BlockType, Deck, DeckConfig, DeckItem, Layout, Page, Slide, createDefaultConfig, newId,
+  Block, BlockType, Deck, DeckConfig, Layout, Page, Slide, createDefaultConfig, newId,
 } from '../model/types';
 import { PageLayout } from '../model/layoutSpec';
 import { setMediaRevision } from '../model/mediaGeometry';
+import { OutlineAnchor, OutlineSource, planOutlineMove, stripOrphanSections } from '../model/outline';
+import { MediaPreparation, emptyMediaPreparation } from '../model/mediaResources';
+export { stripOrphanSections } from '../model/outline';
 import { computeDeck, Computed, patchComputedSlide, refPageIndex, refParts } from '../model/numbering';
 import { colEndPlan, colRegionAt, reseedColPlaceholders, stripEmptyColRegions } from '../model/segments';
 import { serializeMarkdown, parseMarkdown, normLabel, LABEL_PREFIX, dedupeRefLabel } from '../model/markdown';
@@ -37,6 +40,7 @@ interface StoreState {
   computed: Computed;
   folder: string | null;
   mediaRevision: number;
+  mediaPreparation: MediaPreparation;
   current: number; // 当前页 index（computed.pages）
   dirty: boolean;
   darkMode: boolean;
@@ -74,6 +78,7 @@ interface StoreState {
   duplicateSlide(slideId: string): void;
   addSectionBefore(slideId: string, title: string, level: 1 | 2 | 3): void;
   moveSlide(slideId: string, beforeId: string | null): void;
+  moveOutline(source: OutlineSource, anchor: OutlineAnchor | null): void;
   renameSection(sectionId: string, title: string): void;
   jumpToRef(label: string): void;
   startPresent(): Promise<void>;
@@ -84,6 +89,7 @@ interface StoreState {
   insertColEnd(slideId: string, blockId: string): void;
   insertColRegion(slideId: string, afterId: string | null): string;
   setPageLayout(key: string, st: PageLayout): void;
+  setMediaPreparation(preparation: MediaPreparation): void;
   setEditing(e: EditState | null): void;
   setFocus(id: string | null, pos?: 'start' | 'end'): void;
   setLightbox(l: LightboxState | null): void;
@@ -185,6 +191,7 @@ export const useStore = create<StoreState>((set, get) => {
     presentRecording: false,
     pageLayout: {},
     mediaRevision: 0,
+    mediaPreparation: emptyMediaPreparation(),
     clipBlock: null,
 
     /** 复制块到剪贴板（内存态；粘贴时重新生成 id/剥除全局唯一字段） */
@@ -367,7 +374,7 @@ export const useStore = create<StoreState>((set, get) => {
       if (idx < 0) return;
       const src = s.deck.items[idx];
       if (src.kind !== 'slide') return;
-      const copy: Slide = JSON.parse(JSON.stringify(src.slide));
+      const copy: Slide = structuredClone(src.slide);
       // 复制页须剥除交叉引用标签：label 是全 deck 唯一键（编号/跳转按 label 索引，
       // 重复后者覆盖前者，[@fig:x] 会静默指向副本），副本块不带走原标签
       const reId = (b: Block): Block => {
@@ -379,6 +386,8 @@ export const useStore = create<StoreState>((set, get) => {
       mutate((d) => {
         d.items.splice(idx + 1, 0, { kind: 'slide', slide: copy });
       }, false);
+      const current = get().computed.pages.findIndex((page) => page.slide?.id === copy.id);
+      set({ current, editing: null, focusId: null, revealStep: 0 });
     },
 
     /** 在指定页前新建节（页眉面包屑＋/菜单入口）：节分隔页由 computeDeck 自动生成 */
@@ -391,36 +400,18 @@ export const useStore = create<StoreState>((set, get) => {
       }, false);
     },
 
-    /** 大纲拖拽换页序：把 slide 移到目标 slide 之前（beforeId=null 移到全 deck 末尾）。
-     *  层级语义：slide 项在 items 数组里原位移动，节归属由 computeDeck 按
-     *  前置 section 标题重算——移到某节标题之前即脱离该节，语义自然。
-     *  禁区：不可移到 title/toc 之前（特殊页恒居首部）。 */
-    moveSlide: (slideId: string, beforeId: string | null) => {
-      const s = get();
-      const from = d_indexOf(s.deck, slideId);
-      if (from < 0) return;
-      let to: number;
-      if (beforeId == null) {
-        to = s.deck.items.length;
-      } else {
-        const t = d_indexOf(s.deck, beforeId);
-        if (t < 0 || t === from) return;
-        to = t;
-      }
-      // 落点在 title/toc 特殊页之前 → 拒绝（保持特殊页恒居首部）
-      const items = s.deck.items;
-      const firstContent = items.findIndex((x) => x.kind === 'slide' && !['title', 'toc', 'end'].includes(x.slide.layout));
-      if (firstContent > 0 && to < firstContent && from >= firstContent) return;
-      mutate((d) => {
-        const [it] = d.items.splice(from, 1);
-        const at = from < to ? to - 1 : to;
-        d.items.splice(at, 0, it);
-      }, false);
-      const c = get().computed;
-      const idx = c.pages.findIndex((pg) => pg.kind === 'slide' && pg.slide?.id === slideId);
-      if (idx >= 0) set({ current: idx });
+    moveSlide: (slideId, beforeId) => get().moveOutline({ kind: 'slide', id: slideId }, beforeId ? { kind: 'slide', id: beforeId, position: 'before' } : null),
+    moveOutline: (source, anchor) => {
+      const state = get();
+      const plan = planOutlineMove(state.deck.items, source, anchor);
+      if (!plan) return;
+      mutate((deck) => { deck.items = stripOrphanSections(plan.items, plan.candidates); }, false);
+      const computed = get().computed;
+      const current = source.kind === 'slide'
+        ? computed.pages.findIndex((page) => page.slide?.id === source.id)
+        : computed.sectionPageIndex.get(source.id);
+      if (current != null && current >= 0) set({ current, editing: null, focusId: null, revealStep: 0 });
     },
-
     renameSection: (sectionId, title) =>
       mutate((d) => {
         const i = d.items.findIndex((x) => x.kind === 'section' && x.section.id === sectionId);
@@ -583,6 +574,7 @@ export const useStore = create<StoreState>((set, get) => {
         if (cur && cur.signature === st.signature && cur.s === st.s && cur.imgH === st.imgH && cur.fit === st.fit) return s;
         return { pageLayout: { ...s.pageLayout, [key]: st } };
       }),
+    setMediaPreparation: (mediaPreparation) => set({ mediaPreparation }),
 
     newProject: () => {
       projectSession++;
@@ -592,7 +584,7 @@ export const useStore = create<StoreState>((set, get) => {
       const d = freshDeck();
       const mediaRevision = get().mediaRevision + 1;
       setMediaRevision(mediaRevision);
-      set({ deck: d, computed: computeDeck(d), folder: null, dirty: false, ...projectViewDefaults, mediaRevision });
+      set({ deck: d, computed: computeDeck(d), folder: null, dirty: false, ...projectViewDefaults, mediaRevision, mediaPreparation: emptyMediaPreparation() });
     },
 
     openProject: async () => {
@@ -619,7 +611,7 @@ export const useStore = create<StoreState>((set, get) => {
         attachHistoryFolder(folder, JSON.stringify(deck));
         const mediaRevision = get().mediaRevision + 1;
         setMediaRevision(mediaRevision);
-        set({ deck, computed, folder, dirty: false, ...projectViewDefaults, mediaRevision });
+        set({ deck, computed, folder, dirty: false, ...projectViewDefaults, mediaRevision, mediaPreparation: emptyMediaPreparation() });
       } catch (e) {
         set({ flashMsg: '工程解析失败：' + String(e) });
       }
@@ -703,29 +695,6 @@ export function moveTargetOf(blocks: Block[], blockId: string, beforeId: string 
   }
   if (target === from || target === from + 1) return null; // 位置未变
   return from < target ? target - 1 : target;
-}
-
-/** 删除页后清理孤儿节标题：节标题到下一个 level≤自身 的节标题（或 items 末尾）
- *  之间没有任何内容页（content/twoCol；title/toc/end 特殊页不算归属）→ 该节已无
- *  页面引用，移除。含链式孤儿：章仅剩的页删掉后，章与其空小节一并移除
- *  （用户实测：删页后孤儿小节残留，其后新建章会被它抢占归属）。
- *  纯函数：无孤儿时原引用返回（避免无谓克隆）。 */
-export function stripOrphanSections(items: DeckItem[]): DeckItem[] {
-  const isContent = (it: DeckItem): boolean =>
-    it.kind === 'slide' && (it.slide.layout === 'content' || it.slide.layout === 'twoCol');
-  const orphan = new Set<number>();
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    if (it.kind !== 'section') continue;
-    let has = false;
-    for (let j = i + 1; j < items.length; j++) {
-      const jt = items[j];
-      if (jt.kind === 'section' && jt.section.level <= it.section.level) break;
-      if (isContent(jt)) { has = true; break; }
-    }
-    if (!has) orphan.add(i);
-  }
-  return orphan.size ? items.filter((_, i) => !orphan.has(i)) : items;
 }
 
 function d_indexOfSection(deck: Deck, sectionId: string): number {

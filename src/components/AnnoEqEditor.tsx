@@ -12,6 +12,7 @@ import { createAnnoRenderer, AnnoRenderer } from './anno/engine';
 import { annoLabelFontCss } from './AnnoEquationView';
 import { Modal } from './BlockEditors';
 import { LatexEditor, stripMathDelims } from './LatexEditor';
+import { ScaleHandles } from './ScaleHandles';
 
 const closeEditing = () => useStore.getState().setEditing(null);
 const TYPE_LABELS: Record<AnnoMark['type'], string> = { box: '高亮框', text: '文字着色', plain: '锚点' };
@@ -31,11 +32,14 @@ export function AnnoEqEditor({ slide, block }: { slide: Slide; block: Block }) {
   const updateBlock = useStore((s) => s.updateBlock);
   const deleteBlock = useStore((s) => s.deleteBlock);
   const fontEn = useStore((s) => s.deck.config.fontEn);
+  const fontZh = useStore((s) => s.deck.config.fontZh);
   const [latex, setLatex] = useState(block.latex || '');
   const [label, setLabel] = useState(block.label || '');
   const [order, setOrder] = useState(block.order != null ? String(block.order) : '');
   const initialAnno = useMemo(() => structuredClone(block.anno ?? defaultAnnoState()), [block.id]);
   const annoRef = useRef<AnnoState>(initialAnno);
+  const initialScale = useRef(initialAnno.scale).current;
+  const [scalePreview, setScalePreview] = useState<number | null>(null);
   const [ver, setVer] = useState(0);
   const bump = () => setVer((v) => v + 1);
   const [sel, setSel] = useState<{ markId: string | null; annId: string | null }>({ markId: null, annId: null });
@@ -76,7 +80,7 @@ export function AnnoEqEditor({ slide, block }: { slide: Slide; block: Block }) {
         getAnno: () => annoRef.current,
         interactive: true,
         padMin: { v: 88, h: 56, m: 22 },
-        labelFontCss: annoLabelFontCss(annoRef.current.labelFont, fontEn, false),
+        labelFontCss: () => annoLabelFontCss(annoRef.current.labelFont, fontEn, false, fontZh),
         onMarkSelect: (id) => setSel({ markId: id, annId: null }),
         onMarkDoubleClick: (id) => addAnnotation([id]),
         onAnnDrag: (id, x, y) => setDrag({ id, x, y }),
@@ -94,7 +98,12 @@ export function AnnoEqEditor({ slide, block }: { slide: Slide; block: Block }) {
     }
     return () => { alive = false; rendererRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latex, ver, fontEn]);
+  }, [latex, fontEn, fontZh]);
+
+  useLayoutEffect(() => {
+    const lost = rendererRef.current?.refreshCanvas() ?? [];
+    setLostIds((old) => old.size === lost.length && lost.every((mark) => old.has(mark.id)) ? old : new Set(lost.map((mark) => mark.id)));
+  }, [ver, scalePreview]);
 
   /** 选中态变化只重绘画布（不重建引擎） */
   useEffect(() => {
@@ -227,7 +236,8 @@ export function AnnoEqEditor({ slide, block }: { slide: Slide; block: Block }) {
   };
 
   const done = () => {
-    commit({ latex, label: label ? normLabel('eq', label) : undefined, anno: annoRef.current });
+    const parsedOrder = parseInt(order, 10);
+    commit({ latex, label: label ? normLabel('eq', label) : undefined, anno: structuredClone(annoRef.current), order: Number.isFinite(parsedOrder) && parsedOrder >= 1 ? parsedOrder : undefined });
     closeEditing();
   };
 
@@ -395,13 +405,14 @@ export function AnnoEqEditor({ slide, block }: { slide: Slide; block: Block }) {
           }}>
           {toastMsg && <div className="ae-toast">{toastMsg}</div>}
           {!latex.trim() && <div className="ae-canvas-hint"><span className="big">∑</span>输入公式后在此创建标注</div>}
-          <div className="ae-wrap" ref={wrapRef}>
+          <div className="ae-wrap scalable-equation" ref={wrapRef}>
             <div className="ae-holder" ref={holderRef}>
-              <div className="eq-disp ae-eqn" ref={eqnRef} style={{ fontSize: anno.fontSize + 'px' }} />
+              <div className="eq-disp ae-eqn" ref={eqnRef} style={{ fontSize: `${anno.fontSize * (scalePreview ?? anno.scale) / initialScale}px` }} />
               <div className="ae-marks" ref={marksRef} />
               <svg className="ae-svg" ref={svgRef} />
               <div className="ae-anns" ref={annRef} />
             </div>
+            <ScaleHandles hostRef={eqnRef} scale={anno.scale} onPreview={setScalePreview} onCommit={(scale) => { anno.scale = scale; bump(); }} />
           </div>
         </div>
 
@@ -411,8 +422,7 @@ export function AnnoEqEditor({ slide, block }: { slide: Slide; block: Block }) {
             <div className="ae-opt-grid">
               <label title="编辑预览字号（仅编辑视口舒适度，不影响幻灯片渲染；画布上滚轮可调）">预览字号 <input type="range" min={16} max={48} value={anno.fontSize}
                 onChange={(e) => { anno.fontSize = +e.target.value; bump(); }} /> <span className="ae-mono">{anno.fontSize}px</span></label>
-              <label title="幻灯片上的公式放大（相对正文字号；标注文字随之可读）">展示放大 <input type="range" min={50} max={200} step={5} value={Math.round(anno.scale * 100)}
-                onChange={(e) => { anno.scale = +e.target.value / 100; bump(); }} /> <span className="ae-mono">{Math.round(anno.scale * 100)}%</span></label>
+              <span className="ae-mono" title="拖动预览两侧手柄调整">展示比例 {Math.round((scalePreview ?? anno.scale) * 100)}%</span>
               <label title="标注文字相对公式的字号比例">标注字号 <select value={anno.annFontScale}
                 onChange={(e) => { anno.annFontScale = +e.target.value; bump(); }}>
                 <option value={0.4}>40%</option><option value={0.5}>50%</option>

@@ -23,6 +23,7 @@ import { TitleEditor, FooterEditor, CoverFieldEditor } from './BlockEditors';
 import { useStore } from '../state/store';
 import { SlideViewProps } from './slide/types';
 import { useLayoutScan } from './slide/useLayoutScan';
+import { useMediaReady } from './slide/useMediaReady';
 import { buildSegments } from '../model/segments';
 import { FlowBlock } from './slide/FlowBlock';
 import { SectionBreadcrumb } from './slide/SectionBreadcrumb';
@@ -46,7 +47,7 @@ export function referenceSignature(computed: SlideViewProps['computed']): string
 }
 
 export const SlideView = memo(function SlideView({
-  page, deck, computed, folder, mode = 'edit', layoutAuthority = false, layoutSnapshot, mediaSnapshot, revealed, onRef, onSlideJump, onZoom, highlightLabel,
+  page, deck, computed, folder, mode = 'edit', layoutAuthority = false, layoutSnapshot, mediaSnapshot, resourceSnapshot, revealed, onRef, onSlideJump, onZoom, highlightLabel,
 }: SlideViewProps) {
   const { config } = deck;
   const size = PAGE_SIZE[config.aspect];
@@ -54,6 +55,7 @@ export const SlideView = memo(function SlideView({
   const layout: string = page.kind === 'divider' ? 'section' : page.slide?.layout || 'content';
 
   const bodyRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // 空页首块类型菜单（portal 到 body 的浮层，存屏幕坐标；仅编辑画布需要）
   const [firstMenu, setFirstMenu] = useState<{ x: number; y: number } | null>(null);
@@ -109,6 +111,7 @@ export const SlideView = memo(function SlideView({
   const editingThisSlide = mode === 'edit' && editing != null && editing.slideId === slide0?.id;
   const layoutSignature = blockSig + tocSig + referenceSignature(computed) + `|media:${mediaRevision}`;
   const layoutReady = !scannable || layoutState?.signature === layoutSignature;
+  const mediaReady = useMediaReady(rootRef, mode !== 'thumb', layoutSignature);
   useLayoutScan(bodyRef, fitKey, scannable && layoutAuthority, layoutSignature, spec);
 
   const setEditing = useStore((s) => s.setEditing);
@@ -122,22 +125,27 @@ export const SlideView = memo(function SlideView({
     // label 已归一化带前缀（eq:x），flash.label 是裸键（x）——按后缀匹配
     return b.label === highlightLabel || b.label.endsWith(':' + highlightLabel);
   };
-  const flowProps = { deck, folder, computed, mode, revealed, onRef, onZoom: onZoom ?? onZoomFig };
+  const flowProps = { deck, folder, computed, mode, revealed, onRef, resourceSnapshot, onZoom: onZoom ?? onZoomFig };
   const renderFlow = (blocks: Block[]) => blocks.map((b) => (
     <FlowBlock key={b.id} block={b} slide={page.slide} {...flowProps} highlight={hl(b)} />
   ));
 
-  const renderSegments = (blocks: Block[]) =>
-    buildSegments(blocks).map((seg, i) => {
+  const renderSegments = (blocks: Block[]) => {
+    const segments = buildSegments(blocks);
+    const visibleSegments = segments.filter((segment) => segment.kind === 'cols'
+      || segment.blocks.some((block) => block.type !== 'paragraph' || !!block.text?.trim()));
+    const mixedColumns = visibleSegments.length > 1;
+    return segments.map((seg, i) => {
       if (seg.kind === 'full') return <div key={i} className="seg-full">{renderFlow(seg.blocks)}</div>;
       const colsStyle = { '--col-ratio': String(slide0?.ratio ?? 0.5) } as unknown as CSSProperties;
       return (
-        <div key={i} className="cols" style={colsStyle}>
+        <div key={i} className={'cols' + (mixedColumns ? ' cols-boundary' : '')} style={colsStyle}>
           <div className="col col-l">{renderFlow(seg.left)}</div>
           <div className="col col-r">{renderFlow(seg.right)}</div>
         </div>
       );
     });
+  };
 
   let body: JSX.Element;
   if (layout === 'title') {
@@ -152,25 +160,27 @@ export const SlideView = memo(function SlideView({
       <>
         <div className="cover-stage">
           <div className="cover-card title-card">
-            <h1 className={'cover-title' + editCls} onClick={startEdit('coverTitle')}>
+            <h1 data-cover-field="coverTitle" className={'cover-title' + editCls} onClick={startEdit('coverTitle')}>
               {ef === 'coverTitle'
-                ? <CoverFieldEditor slideId={sl!.id} math value={config.title} onCommit={(v) => setConfig({ title: v || config.title })} />
+                ? <CoverFieldEditor slideId={sl!.id} math value={config.title} label="汇报标题" preview={<InlineText text={config.title} computed={computed} lang={lang} palette={config.palette} />} onCommit={(v) => setConfig({ title: v || config.title })} />
                 : <InlineText text={config.title} computed={computed} lang={lang} palette={config.palette} />}
             </h1>
             <div className="cover-bar" />
-            <div className={'cover-authors' + editCls} onClick={startEdit('coverAuthors')}>
+            <div data-cover-field="coverAuthors" className={'cover-authors' + editCls} onClick={startEdit('coverAuthors')}>
               {ef === 'coverAuthors'
-                ? <CoverFieldEditor slideId={sl!.id} value={config.authors} onCommit={(v) => setConfig({ authors: v })} />
+                ? <CoverFieldEditor slideId={sl!.id} value={config.authors} label="作者与上标" preview={config.authors ? <AuthorsLine authors={config.authors} lang={lang} /> : <span className="cover-affs-ph">＋ 作者（张三^1; 李四^2）</span>} onCommit={(v) => setConfig({ authors: v })} />
                 : config.authors
                   ? <AuthorsLine authors={config.authors} lang={lang} />
                   : mode === 'edit' ? <span className="cover-affs-ph">＋ 作者（张三^1; 李四^2）</span> : null}
             </div>
             {/* 作者单位：作者行下方编号列出（序号对应 ^1 ^2 上标）；点击编辑（; 分隔多个） */}
-            <div className={'cover-affs-wrap' + editCls} onClick={startEdit('coverAff')}>
+            <div data-cover-field="coverAff" className={'cover-affs-wrap' + editCls} onClick={startEdit('coverAff')}>
               {ef === 'coverAff' ? (
                 <CoverFieldEditor
                   slideId={sl!.id}
                   value={config.affiliations}
+                  label="作者单位"
+                  preview={config.affiliations ? <AffiliationsView affiliations={config.affiliations} authors={config.authors} /> : <span className="cover-affs-ph">＋ 点击填写单位</span>}
                   placeholder="单位（多个用 ; 分隔，对应作者上标 1,2…）"
                   onCommit={(v) => setConfig({ affiliations: v })}
                 />
@@ -181,9 +191,9 @@ export const SlideView = memo(function SlideView({
                 <span className="cover-affs-ph">＋ 点击填写单位</span>
               )}
             </div>
-            <div className={'cover-date' + editCls} onClick={startEdit('coverDate')}>
+            <div data-cover-field="coverDate" className={'cover-date' + editCls} onClick={startEdit('coverDate')}>
               {ef === 'coverDate'
-                ? <CoverFieldEditor slideId={sl!.id} value={config.date} onCommit={(v) => setConfig({ date: v })} />
+                ? <CoverFieldEditor slideId={sl!.id} value={config.date} label="日期" preview={config.date || <span className="cover-affs-ph">＋ 日期</span>} onCommit={(v) => setConfig({ date: v })} />
                 : config.date || (mode === 'edit' ? <span className="cover-affs-ph">＋ 日期</span> : null)}
             </div>
             {/* Logo：锚定态（无 logoPos）渲染在卡内右下角；浮动态在页面级（见下方）。
@@ -199,7 +209,7 @@ export const SlideView = memo(function SlideView({
     body = (
       <>
         <div className="s-header">
-          <div className="s-title">{lang === 'zh' ? '目录' : 'Contents'}</div>
+          <div className="s-title"><div className="s-title-content">{lang === 'zh' ? '目录' : 'Contents'}</div></div>
         </div>
         <div className="s-body toc-body" ref={bodyRef}><TocView deck={deck} computed={computed} onSlideJump={onSlideJump} /></div>
       </>
@@ -224,19 +234,23 @@ export const SlideView = memo(function SlideView({
         <div className="cover-stage">
           <div className="cover-card end-card">
             <h1
+              data-cover-field="title"
               className={'cover-title end-title' + (mode === 'edit' && sl ? ' cv-edit' : '')}
               onClick={mode === 'edit' && sl ? () => { if (!endEditing) setEditing({ slideId: sl.id, field: 'title' }); } : undefined}
             >
-              {endEditing && sl ? <TitleEditor slide={sl} /> : <InlineText text={t} computed={computed} lang={lang} palette={config.palette} />}
+              {endEditing && sl ? <CoverFieldEditor slideId={sl.id} math value={t} rawValue={sl.title || ''} label="结尾页标题"
+                preview={<InlineText text={t} computed={computed} lang={lang} palette={config.palette} />}
+                onCommit={(value) => useStore.getState().updateSlide(sl.id, { title: value || undefined })} /> : <InlineText text={t} computed={computed} lang={lang} palette={config.palette} />}
             </h1>
             <div className="cover-bar center" />
             {/* 尾页副标题（front-matter shortTitle），点击可改 */}
             <div
+              data-cover-field="coverSub"
               className={'cover-end-sub' + (mode === 'edit' && sl ? ' cv-edit' : '')}
               onClick={mode === 'edit' && sl ? () => { if (!subEditing) setEditing({ slideId: sl.id, field: 'coverSub' }); } : undefined}
             >
               {subEditing
-                ? <CoverFieldEditor slideId={sl!.id} value={config.shortTitle} onCommit={(v) => setConfig({ shortTitle: v })} />
+                ? <CoverFieldEditor slideId={sl!.id} value={config.shortTitle} label="结尾页副标题" preview={config.shortTitle || <span className="cover-affs-ph">＋ 副标题</span>} onCommit={(v) => setConfig({ shortTitle: v })} />
                 : config.shortTitle || (mode === 'edit' ? <span className="cover-affs-ph">＋ 副标题</span> : null)}
             </div>
             {config.logoPos == null && <CoverLogo config={config} folder={folder} mode={mode} />}
@@ -257,11 +271,13 @@ export const SlideView = memo(function SlideView({
       <>
         <div className="s-header">
           <div className="s-title" onClick={() => { if (mode === 'edit' && slide && !titleEditing) setEditing({ slideId: slide.id, field: 'title' }); }}>
+            <div className="s-title-content">
             {titleEditing && slide
               ? <TitleEditor slide={slide} />
               : slide?.title
                 ? <InlineText text={slide.title} computed={computed} lang={lang} palette={config.palette} />
                 : <span className="s-title-ph">{mode === 'edit' ? '点击输入标题' : ''}</span>}
+            </div>
           </div>
           {mode === 'edit' && slide
             ? <SectionBreadcrumb slide={slide} path={page.sectionPath} computed={computed} />
@@ -355,11 +371,13 @@ export const SlideView = memo(function SlideView({
 
   return (
     <div
+      ref={rootRef}
       id={mode === 'print' ? `page-${page.no}` : undefined}
       className={`sv mode-${mode}`}
       data-fen={config.fontEn}
       data-fzh={config.fontZh}
       data-layout-ready={layoutReady}
+      data-media-wait={!mediaReady ? '' : undefined}
       data-layout-wait={!layoutReady && !(editingThisSlide && layoutState) ? '' : undefined}
       style={style}
     >

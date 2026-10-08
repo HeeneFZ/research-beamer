@@ -17,9 +17,11 @@ import { InlineBlockEditor } from '../InlineEditor';
 import { useStore } from '../../state/store';
 import { AnchorRect, OrderPicker } from '../OrderPicker';
 import { SlideMode } from './types';
+import { defaultAnnoState } from '../../model/anno';
+import { MediaPreparation } from '../../model/mediaResources';
 
 export function FlowBlock({
-  block, slide, deck, folder, computed, mode, revealed, onRef, highlight, onZoom,
+  block, slide, deck, folder, computed, mode, revealed, onRef, highlight, onZoom, resourceSnapshot,
 }: {
   block: Block;
   slide: Slide | undefined;
@@ -31,6 +33,7 @@ export function FlowBlock({
   onRef?: (label: string) => void;
   highlight?: boolean;
   onZoom?: (abs: string, ext: string, caption?: string) => void;
+  resourceSnapshot?: MediaPreparation;
 }) {
   const { config } = deck;
   const lang = config.language;
@@ -66,6 +69,7 @@ export function FlowBlock({
       : undefined;
 
   const common = { computed, lang, palette: config.palette, onRef };
+  const onScaleChange = mode === 'edit' && slide ? (scale: number) => updateBlock(slide.id, block.id, { anno: { ...(block.anno ?? defaultAnnoState()), scale } }) : undefined;
   let inner: JSX.Element | null = null;
   let panel: JSX.Element | null = null;
   if (isEditing && slide) {
@@ -83,11 +87,11 @@ export function FlowBlock({
         panel = <EquationEditor slide={slide} block={block} computed={computed} />;
         break;
       case 'annoeq':
-        inner = <AnnoEquationView block={block} computed={computed} highlight={highlight} />;
+        inner = <AnnoEquationView block={block} computed={computed} highlight={highlight} onScaleChange={onScaleChange} />;
         panel = <AnnoEqEditor slide={slide} block={block} />;
         break;
       case 'figure':
-        inner = <FigureView block={block} folder={folder} onZoom={onZoom} {...common} onWidthChange={onWidthChange} />;
+        inner = <FigureView block={block} folder={folder} onZoom={onZoom} {...common} onWidthChange={onWidthChange} preparation={resourceSnapshot} />;
         panel = <MediaPanel slide={slide} block={block} kind="figure" />;
         break;
       case 'video':
@@ -135,7 +139,7 @@ export function FlowBlock({
                         setOrdPick((p) => (p?.item === i ? null : { rect, item: i }));
                       }}
                     >
-                      {io != null ? io : '⏱'}
+                      {io != null ? `*${io}` : '⏱'}
                     </button>
                   )}
                 </li>
@@ -148,10 +152,10 @@ export function FlowBlock({
         inner = <EquationView block={block} computed={computed} palette={config.palette} lang={lang} onRef={onRef} highlight={highlight} />;
         break;
       case 'annoeq':
-        inner = <AnnoEquationView block={block} computed={computed} highlight={highlight} />;
+        inner = <AnnoEquationView block={block} computed={computed} highlight={highlight} onScaleChange={onScaleChange} />;
         break;
       case 'figure':
-        inner = <FigureView block={block} folder={folder} onZoom={onZoom} {...common} onWidthChange={onWidthChange} still={mode === 'thumb'} />;
+        inner = <FigureView block={block} folder={folder} onZoom={onZoom} {...common} onWidthChange={onWidthChange} still={mode === 'thumb'} preparation={resourceSnapshot} />;
         break;
       case 'video':
         inner = <VideoView block={block} folder={folder} onWidthChange={onWidthChange} mode={mode} />;
@@ -175,7 +179,7 @@ export function FlowBlock({
       style={anim}
       onClick={(e) => {
         const t = e.target as HTMLElement;
-        if (t.closest('.ref-chip, .xref, .fig-zoom-btn, .edge-rz, video, .inline-math, a, .btools-float, .btools-menu-float, .ord-badge, .ord-picker, .li-ord')) {
+        if (t.closest('.ref-chip, .xref, .fig-zoom-btn, .edge-rz, .scale-handle, video, .inline-math, a, .btools-float, .btools-menu-float, .ord-badge, .ord-picker, .li-ord')) {
           const chip = t.closest('.ref-chip') as HTMLAnchorElement | null;
           if (chip) {
             e.preventDefault();
@@ -203,7 +207,7 @@ export function FlowBlock({
           setOrdPick((p) => (p?.item === null ? null : { rect, item: null }));
         }}
       >
-        {block.order != null ? block.order : '⏱'}
+        {block.order != null ? `*${block.order}` : '⏱'}
       </button>
       {ordPick && (
         <OrderPicker

@@ -3,6 +3,8 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { writeFileAtomic, readFileAfterWrites, readProjectFromFolder, importMedia } = require('./files.cjs');
+const { createRasterCache } = require('./raster-cache.cjs');
+const rasterCache = createRasterCache();
 
 // E2E 模式用独立 userData：不与用户正开着的实例抢单实例锁，也不碰用户示例副本
 if (process.env.E2E_SCREENSHOT || process.env.E2E_PDF || process.env.E2E_EVAL) {
@@ -175,6 +177,22 @@ if (!gotLock) {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+let closingCache = false;
+app.on('before-quit', (event) => {
+  if (closingCache) return;
+  event.preventDefault(); closingCache = true;
+  void rasterCache.close().finally(() => app.quit());
+});
+
+ipcMain.handle('raster:begin', async (event, session) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Only the editor can prepare a project');
+  await rasterCache.begin(session);
+});
+ipcMain.handle('raster:put', async (event, payload) => {
+  if (event.sender !== mainWindow?.webContents && event.sender !== presentWin?.webContents) throw new Error('Unknown renderer');
+  return rasterCache.put(payload);
+});
+ipcMain.handle('raster:read', async (_event, { session, id }) => rasterCache.read(session, id));
 
 // ---------- helpers ----------
 
@@ -254,6 +272,9 @@ ipcMain.handle('project:save', async (_e, { folder, md }) => {
     const mediaDir = path.join(folder, 'media');
     await fs.promises.mkdir(mediaDir, { recursive: true });
     await writeFileAtomic(path.join(folder, 'deck.md'), md);
+    // Leave an existing project-owned Skill untouched; new projects describe their format.
+    await fs.promises.copyFile(path.join(__dirname, '..', 'skills', 'research-beamer-deck', 'SKILL.md'), path.join(folder, 'SKILL.md'), fs.constants.COPYFILE_EXCL)
+      .catch((error) => { if (error.code !== 'EEXIST') throw error; });
     return { folder };
   } catch (e) {
     return { error: String(e) };
@@ -318,8 +339,11 @@ ipcMain.handle('media:ensureEpsPdf', async (_e, { absPath }) => {
 // 异步读（大 PDF/视频可达几十 MB；readFileSync 会卡主进程消息循环）
 ipcMain.handle('file:read', async (_e, absPath) => {
   try {
+    const before = await fs.promises.stat(absPath);
     const data = await readFileAfterWrites(absPath);
-    return { data: new Uint8Array(data) };
+    const stats = await fs.promises.stat(absPath);
+    if (before.size !== stats.size || before.mtimeMs !== stats.mtimeMs) throw new Error('素材在读取过程中发生变化，请重试');
+    return { data: new Uint8Array(data), stamp: `${stats.size}:${stats.mtimeMs}` };
   } catch (e) {
     return { error: String(e) };
   }

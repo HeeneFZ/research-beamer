@@ -23,16 +23,19 @@
     "electronDist": "node_modules/electron/dist",
     "files": [
       "dist/**",
-      "electron/**"
+      "electron/**",
+      "skills/research-beamer-deck/**"
     ],
     "extraResources": [
       {
         "from": "examples/zh_talk",
-        "to": "examples/zh_talk"
+        "to": "examples/zh_talk",
+        "filter": ["**/*", "!.beamer-history.json"]
       },
       {
         "from": "examples/en_talk",
-        "to": "examples/en_talk"
+        "to": "examples/en_talk",
+        "filter": ["**/*", "!.beamer-history.json"]
       },
       {
         "from": "icon.png",

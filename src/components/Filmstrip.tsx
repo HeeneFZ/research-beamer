@@ -5,8 +5,11 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { promptText } from './prompt';
+import { Popover, elementAnchor } from './Popover';
+import type { AnchorRect } from './OrderPicker';
 import { SlideView, referenceSignature } from './SlideView';
-import { Deck, PAGE_SIZE, Page } from '../model/types';
+import { Deck, PAGE_SIZE } from '../model/types';
+import { OutlineAnchor, OutlineRow, OutlineSource, outlineRows, planOutlineMove } from '../model/outline';
 
 const THUMB_W = 152; // px
 
@@ -36,24 +39,6 @@ const ThumbnailSlide = memo(SlideView, (a, b) => {
   return true;
 });
 
-/** 拖拽落点换算：page → 作为 moveSlide 目标的 slide（divider→其后首个内容 slide；
- *  title/toc/end 特殊页 → null（不可作落点） */
-function dropTargetSlideOf(p: Page, pages: Page[]): string | null {
-  if (p.kind === 'slide' && p.slide) {
-    const l = p.slide.layout;
-    if (l === 'title' || l === 'toc' || l === 'end') return null;
-    return p.slide.id;
-  }
-  // divider：其后第一个内容 slide；相邻节标题/特殊页 → null（不可作落点）
-  for (let i = p.index + 1; i < pages.length; i++) {
-    const q = pages[i];
-    if (q.kind === 'divider') return null;
-    if (q.kind === 'slide' && q.slide && !['title', 'toc', 'end'].includes(q.slide.layout)) return q.slide.id;
-  }
-  return null;
-}
-
-
 export const Filmstrip = memo(function Filmstrip() {
   const deck = useStore((s) => s.deck);
   const computed = useStore((s) => s.computed);
@@ -65,16 +50,39 @@ export const Filmstrip = memo(function Filmstrip() {
   const duplicateSlide = useStore((s) => s.duplicateSlide);
   const renameSection = useStore((s) => s.renameSection);
   const [menu, setMenu] = useState<{ x: number; y: number; pageIndex: number } | null>(null);
-  const [stripMenu, setStripMenu] = useState<{ x: number; y: number; afterIndex: number } | null>(null);
-  // 拖拽换序：dragPage=拖动源页 index；dropHint=当前悬停落点页 index（null=无有效落点）
-  const [dragPage, setDragPage] = useState<number | null>(null);
-  const [dropHint, setDropHint] = useState<number | null>(null);
-  const dragSrcRef = useRef<string | null>(null); // 拖动源 slideId（dataTransfer 在部分场景读不到）
+  const [stripMenu, setStripMenu] = useState<{ anchor: AnchorRect; afterIndex: number } | null>(null);
+  const [dragSource, setDragSource] = useState<OutlineSource | null>(null);
+  const dragRef = useRef<OutlineSource | null>(null);
+  const [dropHint, setDropHint] = useState<{ key: string; anchor: OutlineAnchor; label: string } | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const rows = outlineRows(deck, computed);
+  const endDrag = () => { dragRef.current = null; setDragSource(null); setDropHint(null); };
+  const anchorOf = (row: OutlineRow, after: boolean): OutlineAnchor | null => {
+    const source = dragRef.current;
+    if (!source) return null;
+    if (source.kind === 'slide') {
+      if (row.section) return { kind: 'section', id: row.section.id, position: 'inside' };
+      if (row.page?.slide) return { kind: 'slide', id: row.page.slide.id, position: after ? 'after' : 'before' };
+      return null;
+    }
+    const section = deck.items.find((item) => item.kind === 'section' && item.section.id === source.id);
+    if (section?.kind !== 'section') return null;
+    const peer = row.path.find((item) => item.level === section.section.level);
+    if (peer) return { kind: 'section', id: peer.id, position: after ? 'after' : 'before' };
+    const parent = row.path.find((item) => item.level === section.section.level - 1);
+    return parent ? { kind: 'section', id: parent.id, position: 'inside' } : null;
+  };
+  useEffect(() => {
+    if (!dragSource) return;
+    const cancel = (event: KeyboardEvent) => { if (event.key === 'Escape') endDrag(); };
+    window.addEventListener('keydown', cancel);
+    window.addEventListener('blur', endDrag);
+    return () => { window.removeEventListener('keydown', cancel); window.removeEventListener('blur', endDrag); };
+  }, [dragSource]);
   const size = PAGE_SIZE[deck.config.aspect];
   const pxW = (size.w * 96) / 25.4;
   const pxH = (size.h * 96) / 25.4;
-  const scale = THUMB_W / pxW;
-  const thumbH = Math.round(pxH * scale);
+
 
   const closeAll = () => {
     setMenu(null);
@@ -87,7 +95,7 @@ export const Filmstrip = memo(function Filmstrip() {
     if (!menu && !stripMenu) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t?.closest?.('.menu-drop.ctx, .strip-menu')) return;
+      if (t?.closest?.('.menu-drop.ctx, .strip-menu, [data-popover-trigger]')) return;
       closeAll();
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeAll(); };
@@ -100,112 +108,80 @@ export const Filmstrip = memo(function Filmstrip() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [menu != null, stripMenu != null]);
 
-  // 插入菜单打开期间：指针离开菜单区域（含容差）200ms 后自动关闭
-  useEffect(() => {
-    if (!stripMenu) return;
-    let t: number | undefined;
-    const onMove = (e: MouseEvent) => {
-      const el = document.querySelector('.strip-menu') as HTMLElement | null;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      const inside =
-        e.clientX >= r.left - 8 && e.clientX <= r.right + 8 &&
-        e.clientY >= r.top - 8 && e.clientY <= r.bottom + 8;
-      if (inside) {
-        clearTimeout(t);
-        t = undefined;
-      } else if (t === undefined) {
-        t = window.setTimeout(() => setStripMenu(null), 200);
-      }
-    };
-    document.addEventListener('mousemove', onMove);
-    return () => {
-      document.removeEventListener('mousemove', onMove);
-      clearTimeout(t);
-    };
-  }, [stripMenu]);
-
   return (
     <div className="filmstrip" onClick={closeAll}>
       <div className="filmstrip-title">页面大纲</div>
-      {computed.pages.map((p, i) => (
-        <div key={p.index}>
-          <div
-            className={'thumb' + (p.index === current ? ' sel' : '') + (dragPage === p.index ? ' dragging' : '') + (dropHint === p.index ? ' drop-hint' : '')}
-            draggable={p.kind === 'slide' && p.slide != null && !['title', 'toc', 'end'].includes(p.slide.layout)}
-            onDragStart={(e) => {
-              if (!p.slide) return;
-              dragSrcRef.current = p.slide.id;
-              setDragPage(p.index);
-              e.dataTransfer.effectAllowed = 'move';
-              e.dataTransfer.setData('text/plain', p.slide.id);
+      {rows.map((row) => {
+        const page = row.page;
+        const hidden = row.path.some((section) => section.id !== row.section?.id && (collapsed.has(section.id) || dragSource?.kind === 'section' && dragSource.id === section.id));
+        const width = THUMB_W - row.depth * 9;
+        const scale = width / pxW;
+        const height = Math.round(pxH * scale);
+        const draggable = !!row.section || !!page?.slide && ['content', 'twoCol'].includes(page.slide.layout);
+        return (
+          <div key={row.key} className={'outline-row' + (hidden ? ' folded' : '')}
+            data-outline-id={row.key} data-depth={row.depth} style={{ marginLeft: row.depth * 9 }}
+            draggable={draggable}
+            onDragStart={(event) => {
+              const source: OutlineSource = { kind: row.section ? 'section' : 'slide', id: row.key };
+              dragRef.current = source; setDragSource(source); setDropHint(null);
+              event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', row.key);
             }}
-            onDragEnd={() => { setDragPage(null); setDropHint(null); dragSrcRef.current = null; }}
-            onDragOver={(e) => {
-              if (dragSrcRef.current == null) return;
-              const target = dropTargetSlideOf(p, computed.pages);
-              if (target == null || target === dragSrcRef.current) { setDropHint(null); return; }
-              e.preventDefault();
-              e.dataTransfer.dropEffect = 'move';
-              setDropHint(p.index);
+            onDragEnd={endDrag}
+            onDragOver={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              const anchor = anchorOf(row, event.clientY > rect.top + rect.height / 2);
+              const source = dragRef.current;
+              const plan = source && anchor ? planOutlineMove(deck.items, source, anchor) : null;
+              if (!plan || !anchor) { setDropHint(null); return; }
+              event.preventDefault(); event.dataTransfer.dropEffect = 'move';
+              const path = plan.path.map((section) => section.title).join(' › ');
+              const label = source?.kind === 'section' ? `整组移动${anchor.position === 'after' ? '到此章节之后' : anchor.position === 'inside' ? '到此章节内' : '到此章节之前'}` : `移入：${path || '未分组'}`;
+              setDropHint({ key: row.key, anchor, label });
             }}
-            onDrop={(e) => {
-              e.preventDefault();
-              const src = dragSrcRef.current ?? e.dataTransfer.getData('text/plain');
-              const target = dropTargetSlideOf(p, computed.pages);
-              if (src && target && target !== src) useStore.getState().moveSlide(src, target);
-              setDragPage(null); setDropHint(null); dragSrcRef.current = null;
-            }}
-            onClick={() => gotoPage(p.index)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              closeAll();
-              setMenu({ x: e.clientX, y: e.clientY, pageIndex: p.index });
-            }}
-          >
-            <div className="thumb-page" style={{ width: THUMB_W, height: thumbH }}>
-              <div style={{ transform: `scale(${scale})`, transformOrigin: 'top left' }}>
-                <ThumbnailSlide page={p} deck={deck} computed={computed} folder={folder ?? ''} mode="thumb" layoutAuthority />
+            onDrop={(event) => {
+              event.preventDefault();
+              if (dragRef.current && dropHint?.key === row.key) useStore.getState().moveOutline(dragRef.current, dropHint.anchor);
+              endDrag();
+            }}>
+            {row.section && <div className="outline-heading" title="拖动可连同本节所有内容一起移动">
+              <button className="outline-toggle" aria-expanded={!collapsed.has(row.section.id)} onClick={(event) => {
+                event.stopPropagation(); const id = row.section!.id;
+                setCollapsed((old) => { const next = new Set(old); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+              }}>{collapsed.has(row.section.id) ? '▸' : '▾'}</button>
+              <button className="outline-heading-name" onClick={() => {
+                const index = computed.sectionPageIndex.get(row.section!.id);
+                if (index != null) gotoPage(index);
+              }}>{computed.sectionNum.get(row.section.id)} {row.section.title}</button>
+              <span className="outline-grip" aria-hidden="true">⠿</span>
+            </div>}
+            {page && <div className={'thumb' + (page.index === current ? ' sel' : '') + (dragSource?.id === row.key ? ' dragging' : '')}
+              onClick={() => gotoPage(page.index)} onContextMenu={(event) => {
+                event.preventDefault(); closeAll(); setMenu({ x: event.clientX, y: event.clientY, pageIndex: page.index });
+              }}>
+              <div className="thumb-page" style={{ width, height }}>
+                <div style={{ transform: `scale(${scale})`, transformOrigin: 'top left' }}>
+                  <ThumbnailSlide page={page} deck={deck} computed={computed} folder={folder ?? ''} mode="thumb" layoutAuthority />
+                </div>
               </div>
-            </div>
-            <div className="thumb-no">
-              {p.kind === 'divider' ? <span className="thumb-mark">§</span> : null}
-              {p.no}
-            </div>
+              <div className="thumb-no">{page.kind === 'divider' ? <span className="thumb-mark">§</span> : null}{page.no}</div>
+            </div>}
+            {dropHint?.key === row.key && <div className={`outline-drop-hint drop-${dropHint.anchor.position}`}>{dropHint.label}</div>}
+            {page && <div className="strip-insert"><button className="strip-plus" data-popover-trigger aria-haspopup="menu" title="在此页后插入"
+              onClick={(event) => { event.stopPropagation(); const anchor = elementAnchor(event.currentTarget);
+                setStripMenu((old) => old?.afterIndex === page.index ? null : { anchor, afterIndex: page.index }); }}>＋</button></div>}
           </div>
-          {i < computed.pages.length - 1 && (
-            <div className="strip-insert">
-              <button
-                className="strip-plus"
-                title="在此页后插入"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const r = e.currentTarget.getBoundingClientRect();
-                  // 再次点击同一 ＝ 关闭；点击其他 ＝ 切换目标
-                  setStripMenu((m) =>
-                    m && m.afterIndex === p.index ? null : { x: r.left, y: r.bottom + 4, afterIndex: p.index },
-                  );
-                }}
-              >＋</button>
-            </div>
-          )}
-        </div>
-      ))}
+        );
+      })}
       <div className="filmstrip-add">
-        <button className="tb-btn" onClick={() => { closeAll(); addSlide('content', computed.pages.length - 1); }}>＋ 新建页</button>
+        <button className="tb-btn" data-popover-trigger aria-haspopup="menu" onClick={(e) => { const anchor = elementAnchor(e.currentTarget); setStripMenu((old) => old ? null : { anchor, afterIndex: computed.pages.length - 1 }); }}>＋ 新建页面 ▾</button>
       </div>
       {stripMenu && (
-        <div
-          className="strip-menu"
-          style={{ left: stripMenu.x, top: stripMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="bmi" onClick={() => { addSlide('content', stripMenu.afterIndex); setStripMenu(null); }}>内容页</div>
-          <div className="bmi" onClick={() => { addSlide('twoCol', stripMenu.afterIndex); setStripMenu(null); }}>双栏页</div>
-          <div className="bmi" onClick={() => { addSlide('title', stripMenu.afterIndex); setStripMenu(null); }}>标题页</div>
-          <div className="bmi" onClick={() => { addSlide('toc', stripMenu.afterIndex); setStripMenu(null); }}>目录页</div>
-          <div className="bmi" onClick={() => { addSlide('end', stripMenu.afterIndex); setStripMenu(null); }}>结尾页</div>
-        </div>
+        <Popover anchor={stripMenu.anchor} className="strip-menu" role="menu" onClose={() => setStripMenu(null)}>
+          {([['content', '内容页'], ['twoCol', '双栏页'], ['title', '封面页'], ['toc', '目录页'], ['end', '结尾页']] as const).map(([layout, name]) => (
+            <button key={layout} className="bmi" role="menuitem" onClick={() => { addSlide(layout, stripMenu.afterIndex); setStripMenu(null); }}>{name}</button>
+          ))}
+        </Popover>
       )}
       {menu && (
         <div className="menu-drop ctx" style={{ left: menu.x, top: menu.y }}>

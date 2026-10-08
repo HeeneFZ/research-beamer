@@ -8,10 +8,13 @@ import { NotesPane } from './components/NotesPane';
 import { PresenterView } from './components/PresenterView';
 import { useBackNav } from './hooks/useBackNav';
 import { useAutoSave } from './hooks/useAutoSave';
+import { useMediaPreparation, useWarmAdjacentPages } from './hooks/useMediaPreparation';
 import { exportPDF } from './exportPdf';
 import { useStore, pageOrders } from './state/store';
 
 export default function App() {
+  useMediaPreparation();
+  useWarmAdjacentPages();
   const darkMode = useStore((s) => s.darkMode);
   const flashMsg = useStore((s) => s.flashMsg);
   const setFlashMsg = useStore((s) => s.setFlashMsg);
@@ -97,8 +100,9 @@ export default function App() {
   const folder = useStore((s) => s.folder);
   const pageLayout = useStore((s) => s.pageLayout);
   const mediaRevision = useStore((s) => s.mediaRevision);
+  const mediaPreparation = useStore((s) => s.mediaPreparation);
   const [presentNonce, setPresentNonce] = useState(0);
-  const lastPresentState = useRef<{ deck: typeof deck; pageLayout: typeof pageLayout; ready: number } | null>(null);
+  const lastPresentState = useRef<{ deck: typeof deck; pageLayout: typeof pageLayout; mediaPreparation: typeof mediaPreparation; ready: number } | null>(null);
 
   useEffect(() => {
     if (!presenting) { lastPresentState.current = null; return; }
@@ -110,14 +114,15 @@ export default function App() {
       ...(full ? { deck } : {}),
       folder: folder ?? '',
       mediaRevision,
+      ...(full || previous?.mediaPreparation !== mediaPreparation ? { mediaPreparation } : {}),
       current,
       revealed: orders.slice(0, revealStep),
       flashLabel: flash?.page === current ? flash.label : undefined,
       ...(full || previous?.pageLayout !== pageLayout ? { pageLayout } : {}),
       nonce: Date.now(),
     });
-    lastPresentState.current = { deck, pageLayout, ready: presentNonce };
-  }, [presenting, deck, computed, current, revealStep, flash, folder, pageLayout, presentNonce, mediaRevision]);
+    lastPresentState.current = { deck, pageLayout, mediaPreparation, ready: presentNonce };
+  }, [presenting, deck, computed, current, revealStep, flash, folder, pageLayout, presentNonce, mediaRevision, mediaPreparation]);
 
   // 放映事件监听注册一次（handler 全部经 getState 取即时态，无闭包依赖）：
   // 结束放映后仍需收尾事件——recSaved 的「录像已保存」提示在落盘完成时才到，
@@ -147,6 +152,7 @@ export default function App() {
       <MenuBar />
       <Toolbar />
       <div className="main">
+        {mediaPreparation.phase !== 'ready' && <div className="project-loading" role="status">正在准备汇报资源 {mediaPreparation.completed}/{mediaPreparation.total}</div>}
         <Filmstrip />
         {presenting ? (
           <PresenterView />

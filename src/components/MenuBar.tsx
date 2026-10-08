@@ -33,9 +33,9 @@ export function MenuBar() {
     return () => window.removeEventListener('mousedown', close);
   }, []);
 
-  const promptSection = async (level: 1 | 2 | 3) => {
+  const promptSection = async (level: 1 | 2) => {
     if (!editableSlide) return;
-    const t = await promptText(level === 1 ? '节标题' : level === 2 ? '小节标题' : '子小节标题', '');
+    const t = await promptText(level === 1 ? '章节标题' : '小节标题', '');
     if (t && t.trim()) useStore.getState().addSectionBefore(editableSlide.id, t.trim(), level);
   };
 
@@ -70,8 +70,7 @@ export function MenuBar() {
         { kind: 'item', label: '删除当前页', disabled: !editableSlide, on: () => editableSlide && useStore.getState().deleteSlide(editableSlide.id) },
         { kind: 'sep' },
         { kind: 'item', label: '添加节标题', disabled: !editableSlide, on: () => { void promptSection(1); } },
-        { kind: 'item', label: '添加小节标题', disabled: !editableSlide, on: () => { void promptSection(2); } },
-        { kind: 'item', label: '添加子小节标题', disabled: !editableSlide, on: () => { void promptSection(3); } },
+        { kind: 'item', label: '添加小节标题', disabled: !editableSlide || !page?.sectionPath.some((section) => section.level === 1), on: () => { void promptSection(2); } },
       ],
     },
     {

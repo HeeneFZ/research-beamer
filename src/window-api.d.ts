@@ -11,7 +11,10 @@ declare global {
       pickMedia(): Promise<{ path: string } | null>;
       importMedia(p: { srcPath: string; folder: string | null }): Promise<{ fileName: string; error?: string } | null>;
       ensureEpsPdf(p: { absPath: string }): Promise<{ pdf?: string; error?: string }>;
-      readFile(absPath: string): Promise<{ data: Uint8Array } | { error: string }>;
+      readFile(absPath: string): Promise<{ data: Uint8Array; stamp?: string } | { error: string }>;
+      beginRasterSession(session: string): Promise<void>;
+      putRasterResource(payload: { session: string; abs: string; data: ArrayBuffer; width: number; height: number; aspect: number; stamp?: string }): Promise<import('./model/mediaResources').RasterResource>;
+      readRasterResource(payload: { session: string; id: string }): Promise<import('./model/mediaResources').RasterResource & { data: Uint8Array }>;
       exportPDF(p: { suggestedName?: string }): Promise<{ path: string } | null>;
       showItem(absPath: string): Promise<void>;
       winMin(): void;

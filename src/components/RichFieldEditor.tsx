@@ -8,7 +8,7 @@
 //   close 模式卸载时补交；live 模式已逐键提交，不重复写入已切换的工程。
 // - Enter 结束并提交；Esc 取消（live 模式回滚初值）；失焦结束（math-float 等 portal 豁免）
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useEditor, EditorContent, Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Placeholder } from '@tiptap/extensions';
@@ -21,7 +21,7 @@ function oneLine(s: string): string {
   return s.replace(/\r?\n/g, ' ');
 }
 
-export function RichFieldEditor({ value, onCommit, onDone, onCancel, placeholder, cls, live }: {
+export function RichFieldEditor({ value, onCommit, onDone, onCancel, placeholder, cls, live, multiline }: {
   value: string;
   onCommit: (v: string) => void;
   /** 结束编辑（Enter / 失焦）——提交已按 live 语义处理完毕 */
@@ -33,9 +33,12 @@ export function RichFieldEditor({ value, onCommit, onDone, onCancel, placeholder
   cls?: string;
   /** 逐键即时提交（块编辑器同款）；false = 仅结束时提交一次 */
   live?: boolean;
+  multiline?: boolean;
 }) {
+  const normalize = (text: string) => multiline ? text : oneLine(text);
   const editorRef = useRef<Editor | null>(null);
-  const initialRef = useRef(oneLine(value));
+  const initialRef = useRef(normalize(value));
+  const initialContent = useMemo(() => textToDoc(initialRef.current), []);
   // 回调与最新文本经 ref 取值（useEditor 选项创建时定型，闭包防陈旧）
   const commitRef = useRef(onCommit);
   commitRef.current = onCommit;
@@ -57,7 +60,7 @@ export function RichFieldEditor({ value, onCommit, onDone, onCancel, placeholder
   const finish = () => {
     if (closedRef.current || cancelledRef.current) return;
     closedRef.current = true;
-    commitNow(textRef.current);
+    if (!liveRef.current || textRef.current !== initialRef.current) commitNow(textRef.current);
     doneRef.current();
   };
   const cancel = () => {
@@ -73,7 +76,7 @@ export function RichFieldEditor({ value, onCommit, onDone, onCancel, placeholder
         heading: false, blockquote: false, codeBlock: false, code: false,
         strike: false, horizontalRule: false, orderedList: false,
         bulletList: false, listItem: false, link: false, trailingNode: false,
-        hardBreak: false, // 单行字段：Shift+Enter 不产生换行（md 存不下）
+        hardBreak: multiline ? {} : false,
       }),
       Placeholder.configure({ placeholder: placeholder ?? '' }),
       InlineMath, RefChip, ColorSpan, BgSpan,
@@ -84,7 +87,8 @@ export function RichFieldEditor({ value, onCommit, onDone, onCancel, placeholder
         keydown: (_view, ev) => {
           // 与原 <input> 字段一致：键入不外泄（全局快捷键不穿透字段）
           ev.stopPropagation();
-          if (ev.key === 'Enter') {
+          if (ev.isComposing || ev.keyCode === 229) return false;
+          if (ev.key === 'Enter' && !(multiline && ev.shiftKey)) {
             ev.preventDefault();
             finish();
             return true;
@@ -98,12 +102,12 @@ export function RichFieldEditor({ value, onCommit, onDone, onCancel, placeholder
         },
       },
       // 粘贴三态（与 InlineBlockEditor 同族 makePasteHandler；单行差异：多行拍平空格）
-      handlePaste: makePasteHandler({ flattenNewlines: true }),
+      handlePaste: makePasteHandler({ flattenNewlines: !multiline }),
     },
-    content: textToDoc(initialRef.current),
+    content: initialContent,
     autofocus: 'end',
     onUpdate: ({ editor: e }) => {
-      textRef.current = oneLine(docToText(e.getJSON()));
+      textRef.current = normalize(docToText(e.getJSON()));
       if (liveRef.current) commitRef.current(textRef.current);
     },
     onBlur: () => {
@@ -129,8 +133,8 @@ export function RichFieldEditor({ value, onCommit, onDone, onCancel, placeholder
   // 外部变更（撤销等）同步进编辑器（仅未聚焦时；聚焦期间 live 提交已保证一致）
   useEffect(() => {
     if (!editor || editor.isFocused) return;
-    const cur = oneLine(value);
-    if (cur !== oneLine(docToText(editor.getJSON()))) {
+    const cur = normalize(value);
+    if (cur !== normalize(docToText(editor.getJSON()))) {
       editor.commands.setContent(textToDoc(cur), { emitUpdate: false });
       textRef.current = cur;
     }

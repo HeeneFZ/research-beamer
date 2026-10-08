@@ -3,6 +3,7 @@
 import { Deck, Page } from '../../model/types';
 import { Computed } from '../../model/numbering';
 import { PageLayout } from '../../model/layoutSpec';
+import { MediaPreparation } from '../../model/mediaResources';
 
 export type SlideMode = 'edit' | 'thumb' | 'preview' | 'present' | 'print';
 
@@ -17,6 +18,7 @@ export interface SlideViewProps {
   /** PDF captures content and its finalized layout together, even if editing continues. */
   layoutSnapshot?: Record<string, PageLayout>;
   mediaSnapshot?: number;
+  resourceSnapshot?: MediaPreparation;
   revealed?: Set<number>;
   onRef?: (label: string) => void;
   onSlideJump?: (pageIndex: number) => void;
