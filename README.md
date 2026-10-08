@@ -133,7 +133,7 @@ palette:
 ### 其他
 
 - 三线表可视化编辑（单元格直改、增删行列、题注与引用）；
-- 图片：JPG / PNG / SVG / PDF（600 DPI 矢量）/ EPS（Ghostscript 无损转矢量）；视频 mp4 / webm
+- 图片：JPG / PNG / SVG / PDF（编辑、放映、导出 600 DPI 矢量，缩略图按显示像素绘制）/ EPS（Ghostscript 无损转矢量）；视频 mp4 / webm
   （PDF 导出替换为首帧）；图片放大镜全屏无限缩放预览；
 - KaTeX 公式（行内 `$..$` / 块级 `$$..$$`），LaTeX 编辑器带命令联想与实时预览；
   大标题 / 节 / 小节 / 页标题同样支持 `$..$` 行内公式与符号——键入 `$$` 即生成公式芯片，
@@ -173,15 +173,20 @@ EPS 矢量图需要本机安装 Ghostscript（默认查找 `C:\Program Files\gs`
 ## 目录结构
 
 ```
-electron/     主进程 (main.cjs) + preload
+electron/     主进程 (main.cjs)、preload 与异步文件服务 (files.cjs)
 src/
   model/      md 合约：parse/serialize、编号、行内语法、排版规格
-  state/      zustand store + 撤销栈
+  state/      zustand store（编辑时仅复制变更分支）+ 撤销栈与工程会话隔离
+  hooks/      自动保存防抖、引用返回导航
   components/ 页面渲染、行内编辑器、公式/标注引擎、放映控件
   Present.tsx 放映窗口
 scripts/      e2e 验证脚本（E2E_EVAL 注入渲染进程断言）
 examples/     zh_talk / en_talk 示例工程（随 exe 打包）
 ```
+
+工程与历史文件采用同路径串行的异步原子替换，读取等待此前在途写入。
+PDF.js 与 Worker 按需加载，文档缓存保留正在使用的条目，绘制在离屏画布完成后一次性贴回。
+排版缓存按实际内容、列比例、字体、素材与引用编号更新；缩略图继续承担全工程后台排版。
 
 ## 已知限制
 

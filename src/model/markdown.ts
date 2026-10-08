@@ -18,7 +18,7 @@
 
 import yaml from 'js-yaml';
 import {
-  Block, Deck, DeckConfig, DeckItem, Layout, Palette, Pos, Slide, defaultConfig, newId,
+  Block, Deck, DeckConfig, DeckItem, Layout, Palette, Pos, Slide, defaultConfig, createDefaultConfig, newId,
 } from './types';
 import { annoFromJson, annoToJson, defaultAnnoState } from './anno';
 import { reseedColPlaceholders } from './segments';
@@ -152,13 +152,8 @@ function parseFrontMatter(md: string): { config: DeckConfig; body: string } {
   // 整个前言落入正文成垃圾页且配置全部回落默认
   const src = md.replace(/^\uFEFF/, '');
   const fm = src.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if (!fm) return { config: { ...defaultConfig }, body: src };
-  let loaded: unknown = {};
-  try {
-    loaded = yaml.load(fm[1]) || {};
-  } catch {
-    loaded = {};
-  }
+  if (!fm) return { config: createDefaultConfig(), body: src };
+  const loaded: unknown = yaml.load(fm[1]) || {};
   const raw = (typeof loaded === 'object' && loaded !== null ? loaded : {}) as Record<string, unknown>;
   const str = (v: unknown, d: string): string => (typeof v === 'string' ? v : d);
   const pRaw = raw.palette;
@@ -176,20 +171,20 @@ function parseFrontMatter(md: string): { config: DeckConfig; body: string } {
       const tone = { base: str(o.base, d.base), deep: str(o.deep, d.deep) };
       // 预设迁移：落盘值与旧预设该档完全一致 → 视为预设引用，升级到当前预设值
       const legacy = legacyTones?.[name];
-      if (legacy && tone.base === legacy.base && tone.deep === legacy.deep && presetTones) return presetTones[name];
+      if (legacy && tone.base === legacy.base && tone.deep === legacy.deep && presetTones) return { ...presetTones[name] };
       return tone;
     }
-    return d;
+    return { ...d };
   };
   const palette: Palette = {
     preset: typeof p.preset === 'string' ? p.preset : undefined,
     primary: mergeTone('primary'),
     accent: mergeTone('accent'),
     emphasis: mergeTone('emphasis'),
-    text: str(p.text, defaultConfig.palette.text),
-    textMuted: str(p.textMuted, defaultConfig.palette.textMuted),
-    bg: str(p.bg, defaultConfig.palette.bg),
-    bgAlt: str(p.bgAlt, defaultConfig.palette.bgAlt),
+    text: str(p.text, (presetTones ?? defaultConfig.palette).text),
+    textMuted: str(p.textMuted, (presetTones ?? defaultConfig.palette).textMuted),
+    bg: str(p.bg, (presetTones ?? defaultConfig.palette).bg),
+    bgAlt: str(p.bgAlt, (presetTones ?? defaultConfig.palette).bgAlt),
   };
   const config: DeckConfig = {
     ...defaultConfig,
@@ -424,6 +419,7 @@ export function parseMarkdown(md: string): Deck {
           }
           if (kind === 'table') {
             const rows: string[][] = [];
+            let separatorSeen = false;
             while (i < lines.length && !isBlockClose(lines[i]) && !isSlideFence(lines[i])) {
               const rl = lines[i].trim();
               // 行首外管道可省：含 | 的非空行都按表格行解析（无 | 的行忽略）
@@ -435,7 +431,8 @@ export function parseMarkdown(md: string): Deck {
                 const cells = body.split('|').map((c) => c.trim());
                 const sepCell = (c: string) => /^:?-{2,}:?$/.test(c);
                 const isSep = cells.some(sepCell) && cells.every((c) => c === '' || sepCell(c));
-                if (!isSep) rows.push(parseTableRow(body));
+                if (rows.length === 1 && !separatorSeen && isSep) separatorSeen = true;
+                else rows.push(parseTableRow(body));
               }
               i++;
             }
@@ -462,11 +459,11 @@ export function parseMarkdown(md: string): Deck {
             buf = buf.trim();
             i++;
             const cl: string[] = [];
-            while (i < lines.length && !lines[i].includes('$$')) {
+            while (i < lines.length && !lines[i].includes('$$') && !BLOCK_OPEN.test(lines[i].trim())) {
               cl.push(lines[i]);
               i++;
             }
-            if (i < lines.length) {
+            if (i < lines.length && lines[i].includes('$$')) {
               cl.push(lines[i].split('$$')[0]);
               i++;
             }
@@ -545,10 +542,10 @@ function serializeSlide(slide: Slide): string {
   } else {
     head = `:::: slide layout=${q(slide.layout)}`;
     if (slide.title != null) head += ` title=${q(slide.title)}`;
-    if (slide.ratio != null) head += ` ratio="${slide.ratio}"`;
-    if (slide.fontScale != null) head += ` fontScale="${slide.fontScale}"`;
-    if (slide.footNote != null) head += ` foot=${q(slide.footNote)}`;
   }
+  if (slide.ratio != null) head += ` ratio="${slide.ratio}"`;
+  if (slide.fontScale != null) head += ` fontScale="${slide.fontScale}"`;
+  if (slide.footNote != null) head += ` foot=${q(slide.footNote)}`;
   out.push(head);
 
   for (const b of slide.blocks) {

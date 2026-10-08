@@ -21,3 +21,7 @@ scripts/e2e-rule-present-dbg.js
 scripts/e2e-rule-present-open.js
 scripts/e2e-rule-present-probe.js
 scripts/e2e-fonts-probe.js
+
+# 本机代码图谱索引
+.gitnexus/
+.codegraph/

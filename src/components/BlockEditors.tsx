@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useStore } from '../state/store';
+import { slideOf, useStore } from '../state/store';
 import { Block, Slide } from '../model/types';
 import { Computed } from '../model/numbering';
 import { normLabel } from '../model/markdown';
@@ -256,23 +256,24 @@ export function TitleEditor({ slide }: { slide: Slide }) {
 /** 封面/尾页字段行内编辑（渐变卡白字，与页眉 title-edit 同款视觉；blur/Enter/Esc 提交）。
  *  math=true（大标题）为 TipTap 富文本字段：$$ / $x$ 键入行内公式芯片，
  *  与正文行内公式同款交互；其余字段（作者/单位/日期/副标题）保持纯文本 */
-export function CoverFieldEditor({ value, onCommit, placeholder, math }: {
-  value: string; onCommit: (v: string) => void; placeholder?: string; math?: boolean;
+export function CoverFieldEditor({ slideId, value, onCommit, placeholder, math }: {
+  slideId: string; value: string; onCommit: (v: string) => void; placeholder?: string; math?: boolean;
 }) {
+  const commit = (v: string) => { if (slideOf(useStore.getState().deck, slideId)) onCommit(v); };
   // math 字段与纯文本字段分体（各自持 hooks，math 切换不破坏 hook 序）
-  if (math) return <CoverTitleEditor value={value} onCommit={onCommit} placeholder={placeholder} />;
-  return <CoverPlainFieldEditor value={value} onCommit={onCommit} placeholder={placeholder} />;
+  if (math) return <CoverTitleEditor slideId={slideId} value={value} onCommit={commit} placeholder={placeholder} />;
+  return <CoverPlainFieldEditor slideId={slideId} value={value} onCommit={commit} placeholder={placeholder} />;
 }
 
 /** 封面大标题（math）：TipTap 富文本字段，$$ / $x$ 键入行内公式芯片 */
-function CoverTitleEditor({ value, onCommit, placeholder }: {
-  value: string; onCommit: (v: string) => void; placeholder?: string;
+function CoverTitleEditor({ slideId, value, onCommit, placeholder }: {
+  slideId: string; value: string; onCommit: (v: string) => void; placeholder?: string;
 }) {
   // 结束编辑仅在编辑态仍指向本字段时收起（失焦判定延迟 150ms，期间用户可能
   // 直接点开另一字段——InlineBlockEditor 同款守卫）
   const done = () => {
     const e = useStore.getState().editing;
-    if (e && e.field === 'coverTitle') closeEditing();
+    if (e?.slideId === slideId && e.field === 'coverTitle') closeEditing();
   };
   return (
     <RichFieldEditor
@@ -288,13 +289,17 @@ function CoverTitleEditor({ value, onCommit, placeholder }: {
 }
 
 /** 封面/尾页其余字段（作者/单位/日期/副标题）：纯文本 input（渐变卡白字） */
-function CoverPlainFieldEditor({ value, onCommit, placeholder }: {
-  value: string; onCommit: (v: string) => void; placeholder?: string;
+function CoverPlainFieldEditor({ slideId, value, onCommit, placeholder }: {
+  slideId: string; value: string; onCommit: (v: string) => void; placeholder?: string;
 }) {
   const ref = useRef<HTMLInputElement>(null);
+  const editingAtMount = useRef(useStore.getState().editing).current;
   const [val, setVal] = useState(value);
   useEffect(() => { ref.current?.focus(); ref.current?.select(); }, []);
-  const done = () => { onCommit(val); closeEditing(); };
+  const done = () => {
+    onCommit(val);
+    if (useStore.getState().editing === editingAtMount) closeEditing();
+  };
   return (
     <input
       ref={ref}
@@ -322,6 +327,7 @@ export function FooterEditor({ slide }: { slide: Slide }) {
   const updateSlide = useStore((s) => s.updateSlide);
   const [val, setVal] = useState(slide.footNote ?? '');
   const ref = useRef<HTMLInputElement>(null);
+  const editingAtMount = useRef(useStore.getState().editing).current;
   // 最新值/已终态标记进 ref：cleanup 闭包拿到的是挂载时的 val（闭包陷阱）
   const valRef = useRef(val);
   valRef.current = val;
@@ -334,7 +340,10 @@ export function FooterEditor({ slide }: { slide: Slide }) {
   };
   useEffect(() => {
     ref.current?.focus();
-    return () => { commit(); closeEditing(); }; // 外部关闭（含空白点击）兜底提交
+    return () => {
+      commit();
+      if (useStore.getState().editing === editingAtMount) closeEditing();
+    };
   }, []);
   return (
     <input

@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { useStore } from './state/store';
 import { SlideView } from './components/SlideView';
 import { restyleRulesForPrint, VINCULUM_RE } from './components/katexRuleSnap';
-import { Deck, PAGE_SIZE } from './model/types';
+import { PAGE_SIZE } from './model/types';
 
 /** PDF 建议文件名：标题可含 $..$ 行内公式（含 \ 等源码字符，Windows 文件名非法）——
  *  剥定界符取 LaTeX 源文本，再剔除文件系统非法字符 */
@@ -13,29 +13,39 @@ function pdfName(title: string): string {
   return t.replace(/[\\/:*?"<>|]/g, '').trim() || 'deck';
 }
 
-function countMedia(deck: Deck): number {
-  let n = 0;
-  for (const it of deck.items) {
-    if (it.kind === 'slide') {
-      for (const b of it.slide.blocks) {
-        if (b.type === 'figure' || b.type === 'video') n++;
-      }
-    }
+async function waitForPrintContent(host: HTMLElement, pageCount: number): Promise<void> {
+  const deadline = Date.now() + 45000;
+  while (Date.now() < deadline) {
+    const failed = host.querySelector<HTMLElement>('[data-media-error]');
+    if (failed) throw new Error(failed.dataset.mediaError || '媒体加载失败');
+    const images = [...host.querySelectorAll('img')];
+    if (images.some((image) => image.complete && image.naturalWidth === 0)) throw new Error('图片加载失败');
+    const canvases = [...host.querySelectorAll('canvas')];
+    const ready = host.querySelectorAll('.print-page').length === pageCount
+      && images.every((image) => image.complete && image.naturalWidth > 0)
+      && canvases.every((canvas) => canvas.width > 0 && canvas.height > 0 && !canvas.dataset.mediaPending)
+      && !host.querySelector('[data-eps-pending]')
+      && (!document.fonts || document.fonts.status === 'loaded');
+    if (ready) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  return n;
+  throw new Error('媒体或字体加载超时，请检查素材后重试');
 }
 
+let exporting = false;
 export async function exportPDF(): Promise<void> {
+  if (exporting) return;
+  exporting = true;
   const s = useStore.getState();
-  const r = await window.api.exportPDF({ suggestedName: pdfName(s.deck.config.title) + '.pdf' });
-  if (!r?.path) return;
-
   const host = document.createElement('div');
   host.id = 'print-root';
-  document.body.appendChild(host);
-  const root = createRoot(host);
+  let root: ReturnType<typeof createRoot> | null = null;
   const style = document.createElement('style');
   try {
+    const r = await window.api.exportPDF({ suggestedName: pdfName(s.deck.config.title) + '.pdf' });
+    if (!r?.path) return;
+    document.body.appendChild(host);
+    root = createRoot(host);
     const c = s.computed;
     root.render(
       c.pages.map((p) => (
@@ -45,20 +55,7 @@ export async function exportPDF(): Promise<void> {
       )),
     );
 
-    // 等图片/矢量画布就绪（轮询，最长 15s）
-    await new Promise<void>((resolve) => {
-      const t0 = Date.now();
-      const poll = () => {
-        const imgs = [...host.querySelectorAll('img')];
-        const canvases = [...host.querySelectorAll('canvas')];
-        const imgsOk = imgs.every((i) => i.complete && i.naturalWidth > 0);
-        const cvsOk = canvases.every((cv) => cv.width > 0);
-        if (imgsOk && cvsOk && imgs.length + canvases.length >= countMedia(s.deck)) resolve();
-        else if (Date.now() - t0 > 15000) resolve();
-        else setTimeout(poll, 200);
-      };
-      poll();
-    });
+    await waitForPrintContent(host, c.pages.length);
     await new Promise((r2) => setTimeout(r2, 300)); // 字体/布局稳定
     // 规则线（分数线等）按打印矢量口径重算：屏幕态的 1 设备行下限在矢量输出中
     // 会让规则线比字形笔画粗 ~2×，PDF 需要纯 0.04em 设计值
@@ -85,7 +82,8 @@ export async function exportPDF(): Promise<void> {
     s.setFlashMsg('PDF 导出失败：' + String(e));
   } finally {
     style.remove();
-    root.unmount();
+    root?.unmount();
     host.remove();
+    exporting = false;
   }
 }

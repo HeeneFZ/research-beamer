@@ -5,7 +5,7 @@
 //   多行拍平为空格（单行字段合约：md 属性与节标题行都存不下换行）
 // - 提交时机两种：live=true 逐键即时提交（块编辑器同款，标题类用）；
 //  live=false 仅在结束时提交一次（节名「新建」类一次性行动用——逐键提交会重复建节）。
-//   任何未取消的卸载路径（点画布空白被外部 setEditing(null) 等）兜底补一次提交，杜绝丢字。
+//   close 模式卸载时补交；live 模式已逐键提交，不重复写入已切换的工程。
 // - Enter 结束并提交；Esc 取消（live 模式回滚初值）；失焦结束（math-float 等 portal 豁免）
 
 import { useEffect, useRef } from 'react';
@@ -120,10 +120,10 @@ export function RichFieldEditor({ value, onCommit, onDone, onCancel, placeholder
   }, []);
   editorRef.current = editor;
 
-  // 卸载兜底：外部直接 setEditing(null)（点画布空白/切字段）不经过 Enter/blur 通道，
-  // 未取消的会话在此补一次提交（live 模式 textRef 已是最新提交值，重复提交幂等）
+  // close 模式外部退出时补交；结束会话可阻止迟到的 blur 定时回调再次提交。
   useEffect(() => () => {
-    if (!closedRef.current && !cancelledRef.current) commitRef.current(textRef.current);
+    if (!liveRef.current && !closedRef.current && !cancelledRef.current) commitRef.current(textRef.current);
+    closedRef.current = true;
   }, []);
 
   // 外部变更（撤销等）同步进编辑器（仅未聚焦时；聚焦期间 live 提交已保证一致）

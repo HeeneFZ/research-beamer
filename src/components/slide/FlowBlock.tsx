@@ -34,7 +34,7 @@ export function FlowBlock({
 }) {
   const { config } = deck;
   const lang = config.language;
-  const editing = useStore((s) => s.editing);
+  const editing = useStore((s) => mode === 'edit' ? s.editing : null);
   const setEditing = useStore((s) => s.setEditing);
   const jumpToRef = useStore((s) => s.jumpToRef);
   const updateBlock = useStore((s) => s.updateBlock);
@@ -116,7 +116,7 @@ export function FlowBlock({
         panel = <MediaPanel slide={slide} block={block} kind="figure" />;
         break;
       case 'video':
-        inner = <VideoView block={block} folder={folder} onWidthChange={onWidthChange} />;
+        inner = <VideoView block={block} folder={folder} onWidthChange={onWidthChange} mode={mode} />;
         panel = <MediaPanel slide={slide} block={block} kind="video" />;
         break;
       case 'table':
@@ -179,7 +179,7 @@ export function FlowBlock({
         inner = <FigureView block={block} folder={folder} onZoom={onZoom} {...common} onWidthChange={onWidthChange} still={mode === 'thumb'} />;
         break;
       case 'video':
-        inner = <VideoView block={block} folder={folder} onWidthChange={onWidthChange} />;
+        inner = <VideoView block={block} folder={folder} onWidthChange={onWidthChange} mode={mode} />;
         break;
       case 'table':
         inner = <TableView block={block} {...common} onWidthChange={onWidthChange} />;

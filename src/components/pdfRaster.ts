@@ -1,168 +1,181 @@
-// PDF 矢量图渲染（移植自 EditorApp）：
-// - 真 Web Worker：Vite `?worker&inline` 生成 blob URL Worker，绕过 file:// 页面对
-//   `new Worker(file://…)` 的封锁。
-// - 直接渲染进 DOM <canvas>：按 CSS 尺寸×pixelScale 出像素，无位图缓存；
-//   缩放变化由上层防抖后按新分辨率重渲，期间旧位图由 CSS 拉伸显示。
-// - 渲染队列：串行；同画布新任务自动取消旧任务。
-import * as pdfjs from 'pdfjs-dist';
-import type { PDFDocumentProxy } from 'pdfjs-dist';
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline';
+// PDF 服务：惰性 Worker、正在使用的文档保护、串行离屏绘制与位图复用。
+import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
 
-type FileReadResult = { data?: Uint8Array; error?: string };
-type PdfDoc = PDFDocumentProxy & { destroy?: () => Promise<void> };
+type PdfRuntime = typeof import('pdfjs-dist');
+let runtime: Promise<PdfRuntime> | null = null;
 
-// 共享 Worker 惰性单例：workerPort 模式下 doc.destroy() 只释放 worker 侧文档
-let workerReady = false;
-function ensureWorker(): void {
-  if (workerReady) return;
-  pdfjs.GlobalWorkerOptions.workerPort = new PdfWorker();
-  workerReady = true;
+function loadRuntime(): Promise<PdfRuntime> {
+  if (!runtime) {
+    runtime = Promise.all([
+      import('pdfjs-dist'),
+      import('pdfjs-dist/build/pdf.worker.min.mjs?worker&inline'),
+    ]).then(([pdfjs, worker]) => {
+      pdfjs.GlobalWorkerOptions.workerPort = new worker.default();
+      return pdfjs;
+    }).catch((error) => { runtime = null; throw error; });
+  }
+  return runtime;
 }
 
-/** 绝对路径 -> file:// URL：三斜杠 + 逐段编码（盘符冒号合法，不编码） */
 export function fileUrl(absPath: string): string {
   const norm = absPath.replace(/\\/g, '/');
   return 'file:///' + norm.split('/').map(encodeURIComponent).join('/');
 }
 
-const pdfDocCache = new Map<string, Promise<PdfDoc>>();
-const aspectCache = new Map<string, number>(); // abs -> 宽/高
+interface PdfEntry {
+  promise: Promise<PDFDocumentProxy>;
+  users: number;
+  ready: boolean;
+}
+const pdfDocCache = new Map<string, PdfEntry>();
+const aspectCache = new Map<string, number>();
+
+function trimDocuments(): void {
+  for (const [abs, entry] of pdfDocCache) {
+    if (pdfDocCache.size <= 8) break;
+    if (!entry.ready || entry.users > 0) continue;
+    pdfDocCache.delete(abs);
+    void entry.promise.then((doc) => doc.destroy()).catch((error) => console.warn('PDF 文档释放失败：', error));
+  }
+}
+
+async function withPdfDoc<T>(abs: string, use: (doc: PDFDocumentProxy) => Promise<T>): Promise<T> {
+  let entry = pdfDocCache.get(abs);
+  if (!entry) {
+    const promise = (async () => {
+      const pdfjs = await loadRuntime();
+      const result = await window.api.readFile(abs);
+      if ('error' in result) throw new Error(result.error);
+      // PDF.js 把数据转交 Worker；复制以保留 IPC 返回数据的所有权。
+      return pdfjs.getDocument({ data: result.data.slice(0) }).promise;
+    })();
+    const created: PdfEntry = { promise, users: 0, ready: false };
+    created.promise = promise.then((doc) => {
+      created.ready = true;
+      return doc;
+    }, (error) => {
+      if (pdfDocCache.get(abs) === created) pdfDocCache.delete(abs);
+      throw error;
+    });
+    entry = created;
+  }
+  pdfDocCache.delete(abs);
+  pdfDocCache.set(abs, entry);
+  entry.users++;
+  try {
+    return await use(await entry.promise);
+  } finally {
+    entry.users--;
+    trimDocuments();
+  }
+}
 
 export function pdfAspectSync(abs: string): number | undefined {
   return aspectCache.get(abs);
 }
 
-async function getPdfDoc(abs: string): Promise<PdfDoc> {
-  ensureWorker();
-  let p = pdfDocCache.get(abs);
-  if (!p) {
-    p = (async () => {
-      const r: FileReadResult = await window.api.readFile(abs);
-      if (r.error || !r.data) throw new Error(r.error || 'read fail');
-      return await pdfjs.getDocument({ data: r.data.slice(0) }).promise;
-    })();
-    pdfDocCache.set(abs, p);
-    // LRU：最多 8 份文档，超量淘汰最旧（不在途）
-    if (pdfDocCache.size > 8) {
-      const first = pdfDocCache.keys().next().value;
-      if (first !== undefined && first !== abs) {
-        const old = pdfDocCache.get(first);
-        pdfDocCache.delete(first);
-        void old?.then((d) => d.destroy?.()).catch(() => undefined);
-      }
-    }
-  }
-  return p;
-}
-
-/** PDF 首页纵横比（结果缓存） */
 export async function ensurePdfAspect(abs: string): Promise<number> {
   const hit = aspectCache.get(abs);
   if (hit) return hit;
-  const doc = await getPdfDoc(abs);
-  const page = await doc.getPage(1);
-  const vp = page.getViewport({ scale: 1 });
-  const aspect = vp.width / vp.height;
-  aspectCache.set(abs, aspect);
-  return aspect;
+  return withPdfDoc(abs, async (doc) => {
+    const page = await doc.getPage(1);
+    const viewport = page.getViewport({ scale: 1 });
+    const aspect = viewport.width / viewport.height;
+    aspectCache.set(abs, aspect);
+    return aspect;
+  });
 }
-
-// ---------- canvas 渲染队列（串行；同画布新任务取消旧任务） ----------
 
 interface CanvasTask {
   canvas: HTMLCanvasElement;
-  run(): Promise<void>;
+  key: string;
   cancelled: boolean;
+  render?: RenderTask;
+  run(): Promise<void>;
 }
-
 const taskQueue: CanvasTask[] = [];
 let running = false;
-const canvasTasks = new Map<HTMLCanvasElement, CanvasTask>();
-
-/** 每画布最近一次成功渲染的 (abs@像素宽)——RO 初次回调与 effect 首绘同尺寸时跳过，
- *  避免同尺寸重置 canvas（width 赋值即使同值也清位图→600DPI 大画布白闪） */
+const canvasTasks = new WeakMap<HTMLCanvasElement, CanvasTask>();
 const canvasDone = new WeakMap<HTMLCanvasElement, string>();
-
-/** 已渲位图缓存：键 abs@像素宽（同一文档在编辑画布/放映窗/放大镜是不同宽度，各自缓存；
- *  LRU≤6，600DPI 位图约 14MB/张）。值为脱离 DOM 的 canvas——永不挂载即永不上屏，
- *  渲染中间态（pdf.js 分块绘制）对外不可见，彻底消除首渲多帧部分重绘的「闪很多次」。 */
 const bitmapCache = new Map<string, HTMLCanvasElement>();
 
-function cachePut(key: string, buf: HTMLCanvasElement): void {
-  bitmapCache.delete(key); // Map 末位=最新
-  bitmapCache.set(key, buf);
-  if (bitmapCache.size > 6) {
-    const oldest = bitmapCache.keys().next().value;
-    if (oldest !== undefined) bitmapCache.delete(oldest);
-  }
+function cachePut(key: string, bitmap: HTMLCanvasElement): void {
+  bitmapCache.delete(key);
+  bitmapCache.set(key, bitmap);
+  if (bitmapCache.size > 6) bitmapCache.delete(bitmapCache.keys().next().value!);
+}
+
+function pasteBitmap(canvas: HTMLCanvasElement, bitmap: HTMLCanvasElement, key: string): void {
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas 2D 不可用');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  context.drawImage(bitmap, 0, 0);
+  canvasDone.set(canvas, key);
+  delete canvas.dataset.mediaPending;
+  delete canvas.dataset.mediaError;
 }
 
 function pumpQueue(): void {
   if (running) return;
-  const t = taskQueue.shift();
-  if (!t) return;
+  const task = taskQueue.shift();
+  if (!task) return;
+  if (task.cancelled) { pumpQueue(); return; }
   running = true;
-  t.run().catch(() => undefined).finally(() => {
+  void task.run().catch((error) => {
+    if (task.cancelled) return;
+    task.canvas.dataset.mediaError = String(error);
+    delete task.canvas.dataset.mediaPending;
+    task.canvas.dispatchEvent(new Event('error'));
+  }).finally(() => {
+    if (canvasTasks.get(task.canvas) === task) canvasTasks.delete(task.canvas);
     running = false;
     pumpQueue();
   });
 }
 
-/** 把 PDF 首页按 cssWidth * pixelScale 像素宽渲染进 canvas。
- *  曾经两个可见缺陷：① 页面重挂/RO 同尺寸重复触发 → canvas.width 重复重置
- *  （width 赋值即使同值也清位图）→ 白闪；② 首次渲染直接画在可见 canvas 上，
- *  pdf.js 分块渐进绘制 → 多帧部分重绘（用户看到的「闪很多次」）。
- *  现在：① 同画布同尺寸已绘成 → 跳过；② 命中位图缓存 → 入口同步贴回（不进
- *  异步队列，挂载帧内出图）；③ 未命中 → 渲进离屏缓冲，完成后一次性贴回
- *  （单一原子帧），缓冲入缓存。目标像素宽统一 floor(cssWidth×pixelScale)，
- *  与渲染任务同口径保证缓存键两侧一致。 */
+/** CSS 几何与栅格精度分离：同尺寸复用，在离屏画布完成后一次性贴回。 */
 export function renderPdfToCanvas(abs: string, canvas: HTMLCanvasElement, cssWidth: number, pixelScale: number): void {
-  const w = Math.max(1, Math.floor(cssWidth * pixelScale));
-  const key = `${abs}@${w}`;
-  if (canvasDone.get(canvas) === key && canvas.width === w) return; // RO 初次回调与首绘重复
+  const width = Math.max(1, Math.floor(cssWidth * pixelScale));
+  const key = `${abs}@${width}`;
+  const previous = canvasTasks.get(canvas);
+  if (previous?.key === key && !previous.cancelled) return;
+  // 快路径也必须取消旧目标，否则它完成时会覆盖刚贴回的缓存图。
+  cancelCanvasRender(canvas);
+  if (canvasDone.get(canvas) === key && canvas.width === width) {
+    delete canvas.dataset.mediaPending;
+    delete canvas.dataset.mediaError;
+    return;
+  }
   const cached = bitmapCache.get(key);
   if (cached) {
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      canvas.width = w;
-      canvas.height = cached.height;
-      ctx.drawImage(cached, 0, 0);
-      canvasDone.set(canvas, key);
-      return;
-    }
+    cachePut(key, cached);
+    pasteBitmap(canvas, cached, key);
+    return;
   }
-  const prev = canvasTasks.get(canvas);
-  if (prev) prev.cancelled = true;
+  canvas.dataset.mediaPending = 'true';
+  delete canvas.dataset.mediaError;
   const task: CanvasTask = {
-    canvas,
-    cancelled: false,
+    canvas, key, cancelled: false,
     run: async () => {
-      if (task.cancelled) return;
-      const doc = await getPdfDoc(abs);
-      if (task.cancelled) return;
-      const page = await doc.getPage(1);
-      if (task.cancelled) return;
-      const base = page.getViewport({ scale: 1 });
-      const h = Math.max(1, Math.round(w * base.height / base.width));
-      // 离屏缓冲：脱离 DOM 的 canvas，渐进中间态不上屏
-      const buf = document.createElement('canvas');
-      buf.width = w;
-      buf.height = h;
-      const bctx = buf.getContext('2d');
-      if (!bctx) return;
-      bctx.fillStyle = '#ffffff';
-      bctx.fillRect(0, 0, w, h);
-      const viewport = page.getViewport({ scale: w / base.width });
-      await page.render({ canvasContext: bctx, viewport }).promise;
-      if (task.cancelled) return;
-      // 原子贴回：width 重置 + 位图绘制在同一同步段，浏览器整段后才合成——单帧完整出图
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      canvas.width = w;
-      canvas.height = h;
-      ctx.drawImage(buf, 0, 0);
-      canvasDone.set(canvas, key);
-      cachePut(key, buf);
+      await withPdfDoc(abs, async (doc) => {
+        if (task.cancelled) return;
+        const page = await doc.getPage(1);
+        if (task.cancelled) return;
+        const base = page.getViewport({ scale: 1 });
+        const bitmap = document.createElement('canvas');
+        bitmap.width = width;
+        bitmap.height = Math.max(1, Math.round(width * base.height / base.width));
+        const context = bitmap.getContext('2d');
+        if (!context) throw new Error('Canvas 2D 不可用');
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, bitmap.width, bitmap.height);
+        task.render = page.render({ canvasContext: context, viewport: page.getViewport({ scale: width / base.width }) });
+        await task.render.promise;
+        if (task.cancelled) return;
+        pasteBitmap(canvas, bitmap, key);
+        cachePut(key, bitmap);
+      });
     },
   };
   canvasTasks.set(canvas, task);
@@ -170,9 +183,12 @@ export function renderPdfToCanvas(abs: string, canvas: HTMLCanvasElement, cssWid
   pumpQueue();
 }
 
-/** 取消某画布的进行中/排队任务（组件卸载时调用） */
 export function cancelCanvasRender(canvas: HTMLCanvasElement): void {
-  const t = canvasTasks.get(canvas);
-  if (t) t.cancelled = true;
+  const task = canvasTasks.get(canvas);
+  if (!task) return;
+  task.cancelled = true;
+  task.render?.cancel();
+  const queued = taskQueue.indexOf(task);
+  if (queued >= 0) taskQueue.splice(queued, 1);
   canvasTasks.delete(canvas);
 }

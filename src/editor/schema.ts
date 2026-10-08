@@ -123,6 +123,7 @@ export const BgSpan = Mark.create({
 
 interface PmNode {
   type: string;
+  content?: PmNode[];
   text?: string;
   attrs?: Record<string, string>;
   marks?: { type: string; attrs?: Record<string, string> }[];
@@ -254,24 +255,17 @@ export function docToText(doc: { content?: unknown[] }): string {
   return paras.map((p) => inlineNodesToText(p.content)).join('\n');
 }
 
-/** PM doc JSON -> itemize items。
- *  与 docToText 同族防线：粘贴闭合段落/列表级切片会产生多个顶层节点
- *  （bulletList + paragraph 混排），只读首个会静默丢项——
- *  全顶层节点遍历：bulletList 展开各项，paragraph 追加为独立项 */
+/** Markdown 列表为扁平数组；粘贴的嵌套列表及多段项按阅读顺序展开，保全内容。 */
 export function docToItems(doc: { content?: unknown[] }): string[] {
   const out: string[] = [];
-  for (const top of (doc?.content ?? []) as { type?: string; content?: unknown[] }[]) {
-    if (top.type === 'bulletList') {
-      for (const li of top.content ?? []) {
-        const l = li as { content?: { type?: string; content?: PmNode[] }[] };
-        const p = l.content?.[0];
-        out.push(p ? inlineNodesToText(p.content) : '');
-      }
-    } else if (top.type === 'paragraph') {
-      const p = top as { content?: PmNode[] };
-      out.push(inlineNodesToText(p.content));
+  const visit = (nodes: PmNode[]) => {
+    for (const node of nodes) {
+      if (node.type === 'paragraph') out.push(inlineNodesToText(node.content));
+      else if (node.type === 'listItem' && !node.content?.length) out.push('');
+      else if (node.content) visit(node.content);
     }
-  }
+  };
+  visit((doc?.content ?? []) as PmNode[]);
   return out;
 }
 
@@ -284,6 +278,7 @@ export interface BlockKeyHandlers {
 
 export const BlockKeys = Extension.create<{ handlers: BlockKeyHandlers }>({
   name: 'blockKeys',
+  priority: 1000,
   addOptions() {
     return { handlers: {
       onSplit: () => false,
@@ -295,6 +290,8 @@ export const BlockKeys = Extension.create<{ handlers: BlockKeyHandlers }>({
   addKeyboardShortcuts() {
     const h = () => this.options.handlers;
     return {
+      Tab: () => this.editor.isActive('listItem'),
+      'Shift-Tab': () => this.editor.isActive('listItem'),
       Enter: () => {
         const { empty, $from } = this.editor.state.selection;
         if (!empty) return false;

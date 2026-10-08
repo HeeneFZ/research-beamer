@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import {
-  Block, BlockType, Deck, DeckConfig, DeckItem, Layout, Page, Slide, defaultConfig, newId,
+  Block, BlockType, Deck, DeckConfig, DeckItem, Layout, Page, Slide, createDefaultConfig, newId,
 } from '../model/types';
 import { SpacingState } from '../model/layoutSpec';
 import { computeDeck, Computed, refPageIndex, refParts } from '../model/numbering';
@@ -104,7 +104,7 @@ interface StoreState {
 
 function freshDeck(): Deck {
   return {
-    config: { ...defaultConfig, palette: JSON.parse(JSON.stringify(defaultConfig.palette)) },
+    config: createDefaultConfig(),
     items: [
       { kind: 'slide', slide: { id: newId(), layout: 'title', blocks: [] } },
       { kind: 'slide', slide: { id: newId(), layout: 'toc', blocks: [] } },
@@ -120,14 +120,40 @@ export function slideOf(deck: Deck, slideId: string): Slide | null {
   return it && it.kind === 'slide' ? it.slide : null;
 }
 
+function patchChanges<T extends object>(value: T, patch: Partial<T>): boolean {
+  return (Object.keys(patch) as (keyof T)[]).some((key) => !Object.is(value[key], patch[key]));
+}
+
+const projectViewDefaults = {
+  current: 0, editing: null, focusId: null, lightbox: null,
+  jumpStack: [], flash: null, revealStep: 0, pageLayout: {},
+};
+
 export const useStore = create<StoreState>((set, get) => {
-  /** 变更 deck 的统一入口：克隆 → 变更 → 重算编号/页 */
-  const mutate = (fn: (d: Deck) => void, debounce = true) => {
+  let projectSession = 0;
+  let loadRequest = 0;
+  let saveTask: Promise<void> | null = null;
+
+  /** 结构变更只复制根与 items；各内容操作负责复制被修改的分支。 */
+  const mutate = (fn: (d: Deck) => void | false, debounce = true) => {
     const s = get();
-    const d: Deck = JSON.parse(JSON.stringify(s.deck));
-    fn(d);
-    recordHistory(s.deck, debounce);
-    set({ deck: d, computed: computeDeck(d), dirty: true });
+    const d: Deck = { ...s.deck, items: s.deck.items.slice() };
+    if (fn(d) === false) return;
+    recordHistory(s.deck, debounce, d);
+    const computed = computeDeck(d);
+    set({ deck: d, computed, dirty: true, current: Math.max(0, Math.min(s.current, computed.pages.length - 1)) });
+  };
+
+  const mutateSlide = (slideId: string, fn: (slide: Slide) => void | false, debounce = true) => {
+    const at = d_indexOf(get().deck, slideId);
+    if (at < 0) return;
+    mutate((d) => {
+      const item = d.items[at];
+      if (item.kind !== 'slide') return false;
+      const slide = { ...item.slide, blocks: item.slide.blocks.slice() };
+      if (fn(slide) === false) return false;
+      d.items[at] = { kind: 'slide', slide };
+    }, debounce);
   };
 
   const initial = freshDeck();
@@ -167,13 +193,11 @@ export const useStore = create<StoreState>((set, get) => {
      *  剥除 pos（自由定位块粘贴会与原件完全重叠，回流式更可预期）。 */
     pasteBlockAfter: (slideId, afterId) => {
       const s = get();
-      if (!s.clipBlock) return null;
+      if (!s.clipBlock || !slideOf(s.deck, slideId)) return null;
       const id = newId();
       const { label: _l, pos: _p, ...rest } = s.clipBlock;
       const copy: Block = { ...JSON.parse(JSON.stringify(rest)), id };
-      mutate((d) => {
-        const sl = slideOf(d, slideId);
-        if (!sl) return;
+      mutateSlide(slideId, (sl) => {
         const at = afterId ? sl.blocks.findIndex((x) => x.id === afterId) : -1;
         if (at >= 0) sl.blocks.splice(at + 1, 0, copy);
         else sl.blocks.push(copy);
@@ -181,21 +205,21 @@ export const useStore = create<StoreState>((set, get) => {
       return id;
     },
 
-    setConfig: (patch) => mutate((d) => { d.config = { ...d.config, ...patch }; }),
+    setConfig: (patch) => mutate((d) => {
+      if (!patchChanges(d.config, patch)) return false;
+      d.config = { ...d.config, ...patch };
+    }),
 
     updateSlide: (slideId, patch) =>
-      mutate((d) => {
-        const i = d_indexOf(d, slideId);
-        const it = i >= 0 ? d.items[i] : null;
-        if (it && it.kind === 'slide') it.slide = { ...it.slide, ...patch };
+      mutateSlide(slideId, (slide) => {
+        if (!patchChanges(slide, patch)) return false;
+        Object.assign(slide, patch);
       }),
 
     updateBlock: (slideId, blockId, patch) =>
-      mutate((d) => {
-        const sl = slideOf(d, slideId);
-        if (!sl) return;
+      mutateSlide(slideId, (sl) => {
         const i = sl.blocks.findIndex((b) => b.id === blockId);
-        if (i < 0) return;
+        if (i < 0) return false;
         const prev = sl.blocks[i];
         // LaTeX 源内 \label{..} 自愈（弹窗粘贴整段 LaTeX 的自然写法）：提取为块标签
         // 并从 latex 剥除——否则 KaTeX 不识别 \label 渲染成红色错误文本、标签也永不注册
@@ -221,7 +245,7 @@ export const useStore = create<StoreState>((set, get) => {
         // items 变更后 itemOrders 重对齐：公共前缀 + 公共后缀对齐（中部增删/改写段
         // 置 undefined）——纯按下标前缀对齐会在「删首项/中部插入」时把后续项顺序
         // 整体错一档；编辑器每次提交全量 items，无法携带对齐信息
-        if (patch.items && prev.itemOrders) {
+        if (patch.items && prev.itemOrders && !('itemOrders' in patch)) {
           const oldItems = prev.items || [];
           const neu = patch.items;
           let p = 0;
@@ -232,20 +256,19 @@ export const useStore = create<StoreState>((set, get) => {
             oldItems[oldItems.length - 1 - sfx] === neu[neu.length - 1 - sfx]
           ) sfx++;
           const norm = neu.map((_, k) => (
-            k < p ? prev.itemOrders![k]
+            neu.length === oldItems.length || k < p ? prev.itemOrders![k]
               : k >= neu.length - sfx ? prev.itemOrders![oldItems.length - (neu.length - k)]
                 : undefined
           ));
           patch = { ...patch, itemOrders: norm.some((o) => o != null) ? norm : undefined };
         }
+        if (!patchChanges(prev, patch)) return false;
         sl.blocks[i] = { ...prev, ...patch };
       }),
 
     insertBlock: (slideId, afterId, type, init) => {
       const id = newId();
-      mutate((d) => {
-        const sl = slideOf(d, slideId);
-        if (!sl) return;
+      mutateSlide(slideId, (sl) => {
         const b: Block = { id, type, ...init };
         const at = afterId ? sl.blocks.findIndex((x) => x.id === afterId) : -1;
         if (at >= 0) sl.blocks.splice(at + 1, 0, b);
@@ -255,9 +278,8 @@ export const useStore = create<StoreState>((set, get) => {
     },
 
     deleteBlock: (slideId, blockId) =>
-      mutate((d) => {
-        const sl = slideOf(d, slideId);
-        if (!sl) return;
+      mutateSlide(slideId, (sl) => {
+        if (!sl.blocks.some((b) => b.id === blockId)) return false;
         // 删块后顺手收回空栏区：删光栏内最后一块时自动移除残留的 colmark/colend
         //（否则双栏分割线与栏容器永远渲染——「删光元素意图退出双栏」的用户路径）。
         // 单侧删空的栏区保留并补种占位段：空侧没有可点击目标则无处落新内容
@@ -271,12 +293,10 @@ export const useStore = create<StoreState>((set, get) => {
     /** 拖拽调序：把 blockId 移动到 beforeId 之前（beforeId=null 移到所在栏末尾）。
      *  栏安全：beforeId 必须与 blockId 同栏（colmark/colend 之间），否则忽略。 */
     moveBlockBefore: (slideId, blockId, beforeId) =>
-      mutate((d) => {
-        const sl = slideOf(d, slideId);
-        if (!sl) return;
+      mutateSlide(slideId, (sl) => {
         const blocks = sl.blocks;
         const at = moveTargetOf(blocks, blockId, beforeId);
-        if (at == null) return;
+        if (at == null) return false;
         const from = blocks.findIndex((b) => b.id === blockId);
         const [b] = blocks.splice(from, 1);
         blocks.splice(at, 0, b);
@@ -392,18 +412,18 @@ export const useStore = create<StoreState>((set, get) => {
 
     renameSection: (sectionId, title) =>
       mutate((d) => {
-        const it = d.items.find((x) => x.kind === 'section' && x.section.id === sectionId);
-        if (it && it.kind === 'section') it.section.title = title;
+        const i = d.items.findIndex((x) => x.kind === 'section' && x.section.id === sectionId);
+        const it = d.items[i];
+        if (!it || it.kind !== 'section' || it.section.title === title) return false;
+        d.items[i] = { kind: 'section', section: { ...it.section, title } };
       }),
     /** 结束双栏区：点击块逃出栏区成为首个单栏块（语义与开始双栏区对称）。
      *  落点/清理由 colEndPlan 纯函数决定——colend 插在点击块之前，
      *  旧 colend / 切栏标记按需删除，栏区清空则连开栏标记一起移除。 */
     insertColEnd: (slideId, blockId) => {
-      mutate((d) => {
-        const sl = slideOf(d, slideId);
-        if (!sl) return;
+      mutateSlide(slideId, (sl) => {
         const plan = colEndPlan(sl.blocks, blockId);
-        if (!plan) return;
+        if (!plan) return false;
         // 删除下标全部大于插入点（开栏标记只在「栏区清空不插入」分支删除），先删后插无需换算
         for (const i of [...plan.deleteIdx].sort((a, b) => b - a)) sl.blocks.splice(i, 1);
         if (plan.insertAt >= 0) sl.blocks.splice(plan.insertAt, 0, { id: newId(), type: 'colend' });
@@ -418,9 +438,7 @@ export const useStore = create<StoreState>((set, get) => {
      *  （下一个 colmark/colend）之前或页尾。 */
     insertColRegion: (slideId, afterId) => {
       const leftId = newId();
-      mutate((d) => {
-        const sl = slideOf(d, slideId);
-        if (!sl) return;
+      mutateSlide(slideId, (sl) => {
         const blocks = sl.blocks;
         const at = afterId ? blocks.findIndex((b) => b.id === afterId) : -1;
         const reg = at >= 0 && afterId ? colRegionAt(blocks, afterId) : null;
@@ -449,7 +467,7 @@ export const useStore = create<StoreState>((set, get) => {
     gotoPage: (index, pushJump) => {
       const s = get();
       const n = s.computed.pages.length;
-      const i = Math.max(0, Math.min(index, n - 1));
+      const i = Math.max(0, Math.min(Number.isFinite(index) ? Math.trunc(index) : 0, n - 1));
       set({
         current: i,
         jumpStack: pushJump ? [...s.jumpStack, s.current] : s.jumpStack,
@@ -532,7 +550,8 @@ export const useStore = create<StoreState>((set, get) => {
       const stack = [...s.jumpStack];
       const back = stack.pop()!;
       // 返回原处同理：若返回页不是高亮目标页，flash 一并失效
-      set({ current: back, jumpStack: stack, flash: s.flash && s.flash.page !== back ? null : s.flash });
+      const current = Math.max(0, Math.min(back, s.computed.pages.length - 1));
+      set({ current, jumpStack: stack, revealStep: 0, flash: s.flash && s.flash.page !== current ? null : s.flash });
     },
 
     setFlash: (f) => set({ flash: f }),
@@ -555,51 +574,79 @@ export const useStore = create<StoreState>((set, get) => {
       }),
 
     newProject: () => {
+      projectSession++;
+      loadRequest++;
       clearHistory();
       attachHistoryFolder(null, '');
       const d = freshDeck();
-      set({ deck: d, computed: computeDeck(d), folder: null, current: 0, dirty: false, pageLayout: {} });
+      set({ deck: d, computed: computeDeck(d), folder: null, dirty: false, ...projectViewDefaults });
     },
 
     openProject: async () => {
-      const r = await window.api.openProject();
-      if (!r || r.md == null) return;
-      get().loadProjectData({ md: r.md, folder: r.folder });
+      const request = ++loadRequest;
+      try {
+        const r = await window.api.openProject();
+        if (request !== loadRequest || !r) return;
+        if (r.error) { set({ flashMsg: '打开失败：' + r.error }); return; }
+        if (r.md == null) { set({ flashMsg: '工程中未找到 deck.md' }); return; }
+        get().loadProjectData({ md: r.md, folder: r.folder });
+      } catch (e) {
+        if (request === loadRequest) set({ flashMsg: '打开失败：' + String(e) });
+      }
     },
 
     loadProjectData: ({ md, folder }) => {
-      clearHistory();
       try {
         const deck = parseMarkdown(md);
-        recordHistory(deck);
+        const computed = computeDeck(deck);
+        projectSession++;
+        loadRequest++;
+        clearHistory();
         // 历史 adopt：读回该工程目录下的 .beamer-history.json 恢复撤销栈
         attachHistoryFolder(folder, JSON.stringify(deck));
-        set({ deck, computed: computeDeck(deck), folder, current: 0, dirty: false, pageLayout: {} });
+        set({ deck, computed, folder, dirty: false, ...projectViewDefaults });
       } catch (e) {
         set({ flashMsg: '工程解析失败：' + String(e) });
       }
     },
 
     loadExample: async (relPath) => {
-      const r = await window.api.loadExample(relPath);
-      if (!r || r.md == null) {
-        set({ flashMsg: '示例不存在：' + relPath });
-        return;
+      const request = ++loadRequest;
+      try {
+        const r = await window.api.loadExample(relPath);
+        if (request !== loadRequest) return;
+        if (!r || r.md == null) {
+          set({ flashMsg: r?.error ? '打开失败：' + r.error : '示例不存在：' + relPath });
+          return;
+        }
+        get().loadProjectData({ md: r.md, folder: r.folder });
+      } catch (e) {
+        if (request === loadRequest) set({ flashMsg: '打开失败：' + String(e) });
       }
-      get().loadProjectData({ md: r.md, folder: r.folder });
     },
 
     saveProject: async () => {
-      const s = get();
-      const md = serializeMarkdown(s.deck);
-      const r = await window.api.saveProject({ folder: s.folder, md });
-      if (r && r.folder) {
-        // 首次另存到新文件夹：历史只改写入目标，不 adopt（防吃到别的工程的旧历史文件）
-        if (s.folder !== r.folder) attachHistoryFolder(r.folder, JSON.stringify(s.deck), false);
-        set({ folder: r.folder, dirty: false, flashMsg: '已保存 → ' + r.folder });
-      } else if (r && r.error) {
-        set({ flashMsg: '保存失败：' + r.error });
+      const session = projectSession;
+      while (saveTask) {
+        await saveTask;
+        if (session !== projectSession || (!get().dirty && get().folder)) return;
       }
+      const task = (async () => {
+        const s = get();
+        try {
+          const r = await window.api.saveProject({ folder: s.folder, md: serializeMarkdown(s.deck) });
+          if (session !== projectSession) return;
+          if (r?.error) { set({ flashMsg: '保存失败：' + r.error }); return; }
+          if (!r?.folder) return;
+          if (s.folder !== r.folder) attachHistoryFolder(r.folder, JSON.stringify(s.deck), false);
+          set({ folder: r.folder, dirty: get().deck !== s.deck, flashMsg: '已保存 → ' + r.folder });
+        } catch (e) {
+          if (session === projectSession) set({ flashMsg: '保存失败：' + String(e) });
+        }
+      })();
+      saveTask = task;
+      try { await task; }
+      finally { if (saveTask === task) saveTask = null; }
     },
 
     undo: () => {
@@ -672,6 +719,8 @@ function d_indexOfSection(deck: Deck, sectionId: string): number {
 
 /** 当前页对应的可编辑 slide（divider 页取其后第一张 slide；无则取其前；均无 null） */
 export function editableSlideOf(page: Page | undefined, pages: Page[]): Slide | null {
+  if (!page) return null;
+  if (page.kind === 'slide' && page.slide) return page.slide;
   for (let i = (page?.index ?? 0) + 1; i < pages.length; i++) {
     const pg = pages[i];
     if (pg.kind === 'slide' && pg.slide) return pg.slide;

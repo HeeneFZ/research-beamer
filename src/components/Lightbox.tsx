@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
-import { fileUrl, renderPdfToCanvas } from './pdfRaster';
+import { cancelCanvasRender, fileUrl, renderPdfToCanvas } from './pdfRaster';
 import { IcoZoomIn, IcoZoomOut, IcoReset, IcoClose } from './icons';
 import { Computed } from '../model/numbering';
 import { Palette } from '../model/types';
@@ -74,7 +74,7 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
       const w = Math.min(6000, wrapW * zoom);
       renderPdfToCanvas(pdfTarget, canvas, w, window.devicePixelRatio || 1);
     }, 120);
-    return () => clearTimeout(t);
+    return () => { clearTimeout(t); cancelCanvasRender(canvas); };
   }, [isPdf, pdfTarget, zoom]);
 
 

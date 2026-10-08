@@ -171,6 +171,20 @@ export const defaultConfig: DeckConfig = {
   },
 };
 
+/** 每份工程独立持有可编辑配色，避免默认值在工程之间共享可变对象。 */
+export function createDefaultConfig(): DeckConfig {
+  const palette = defaultConfig.palette;
+  return {
+    ...defaultConfig,
+    palette: {
+      ...palette,
+      primary: { ...palette.primary },
+      accent: { ...palette.accent },
+      emphasis: { ...palette.emphasis },
+    },
+  };
+}
+
 export const PAGE_SIZE: Record<Aspect, { w: number; h: number }> = {
   '16:9': { w: 160, h: 90 },
   '4:3': { w: 128, h: 96 },

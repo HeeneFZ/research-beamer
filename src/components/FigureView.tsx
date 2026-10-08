@@ -73,16 +73,27 @@ export function EdgeResizeHandles({ hostRef, block, onWidthChange }: {
 }
 
 /** PDF 首页矢量渲染（含 eps 转出的 pdf）；媒体弹窗预览复用 */
-export function PdfCanvas({ abs }: { abs: string }) {
+export function PdfCanvas({ abs, thumbnail = false }: { abs: string; thumbnail?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [aspect, setAspect] = useState<number | undefined>(pdfAspectSync(abs));
+  const [error, setError] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.width = canvas.height = 0;
+      canvas.dataset.mediaPending = 'true';
+      delete canvas.dataset.mediaError;
+    }
+    setError(null);
+  }, [abs]);
 
   useEffect(() => {
     let alive = true;
     setAspect(pdfAspectSync(abs));
     ensurePdfAspect(abs)
       .then((a) => { if (alive) setAspect(a); })
-      .catch(() => undefined);
+      .catch((e) => { if (alive) setError(String(e)); });
     return () => { alive = false; };
   }, [abs]);
 
@@ -94,28 +105,35 @@ export function PdfCanvas({ abs }: { abs: string }) {
     if (!canvas || !box || !aspect) return;
     const draw = () => {
       const w = box.clientWidth;
-      if (w > 0) renderPdfToCanvas(abs, canvas, w, PDF_DPI_SCALE);
+      if (w > 0) {
+        const precision = thumbnail ? (box.getBoundingClientRect().width / w) * (window.devicePixelRatio || 1) : PDF_DPI_SCALE;
+        renderPdfToCanvas(abs, canvas, w, precision);
+      }
     };
+    const onError = () => setError(canvas.dataset.mediaError || 'PDF 绘制失败');
+    canvas.addEventListener('error', onError);
     draw();
     const ro = new ResizeObserver(draw);
     ro.observe(box);
     return () => {
       ro.disconnect();
+      canvas.removeEventListener('error', onError);
       cancelCanvasRender(canvas);
     };
-  }, [abs, aspect]);
+  }, [abs, aspect, thumbnail]);
 
   return (
     // maxWidth 由宽高比反推：限制高度不超过 --img-max-h（与位图 max-height 对等，随页面密度），
     // 防止竖长矢量图撑出版心被 overflow:hidden 裁切
-    <div className="pdf-fig" style={aspect ? { aspectRatio: String(aspect), maxWidth: `calc(var(--img-max-h, 42cqh) * ${aspect})` } : undefined}>
-      <canvas ref={canvasRef} />
+    <div className="pdf-fig" data-media-error={error || undefined} style={aspect ? { aspectRatio: String(aspect), maxWidth: `calc(var(--img-max-h, 42cqh) * ${aspect})` } : undefined}>
+      <canvas ref={canvasRef} width={0} height={0} />
+      {error && <div className="fig-note">PDF 加载失败：{error}</div>}
     </div>
   );
 }
 
 /** EPS：主进程 Ghostscript 转矢量 PDF 后渲染；媒体弹窗预览复用 */
-export function EpsFigure({ abs }: { abs: string }) {
+export function EpsFigure({ abs, thumbnail = false }: { abs: string; thumbnail?: boolean }) {
   const [pdf, setPdf] = useState<string | null>(null);
   const [err, setErr] = useState(false);
   useEffect(() => {
@@ -126,11 +144,11 @@ export function EpsFigure({ abs }: { abs: string }) {
       if (!alive) return;
       if (r.pdf) setPdf(r.pdf);
       else setErr(true);
-    });
+    }).catch(() => { if (alive) setErr(true); });
     return () => { alive = false; };
   }, [abs]);
-  if (pdf) return <PdfCanvas abs={pdf} />;
-  if (err) return <div className="fig-note">EPS 需要 Ghostscript（C:\Program Files\gs）</div>;
+  if (pdf) return <PdfCanvas abs={pdf} thumbnail={thumbnail} />;
+  if (err) return <div className="fig-note" data-media-error="EPS 转换失败">EPS 需要 Ghostscript（C:\Program Files\gs）</div>;
   // 转换期占位：data-eps-pending 让溢出扫描等待（否则扫描提前收工，图后撑出版心）
   return <div className="fig-note eps-pending" data-eps-pending>EPS 转换中…</div>;
 }
@@ -155,9 +173,10 @@ export function GifStillFrame({ abs, onAspect }: { abs: string; onAspect: (a: nu
       c.getContext('2d')?.drawImage(im, 0, 0);
     };
     im.src = fileUrl(abs);
-    return () => { alive = false; im.onload = null; };
+    im.onerror = () => { if (ref.current && alive) ref.current.dataset.mediaError = 'GIF 加载失败'; };
+    return () => { alive = false; im.onload = null; im.onerror = null; };
   }, [abs, onAspect]);
-  return <canvas ref={ref} className="gif-still" />;
+  return <canvas ref={ref} className="gif-still" width={0} height={0} />;
 }
 export function FigureView({
   block, folder, computed, lang, palette, onRef, onZoom, onWidthChange, still,
@@ -185,8 +204,8 @@ export function FigureView({
   const ext = (block.src.split('.').pop() || '').toLowerCase();
 
   let inner: JSX.Element;
-  if (lower.endsWith('.pdf')) inner = <PdfCanvas abs={abs} />;
-  else if (lower.endsWith('.eps')) inner = <EpsFigure abs={abs} />;
+  if (lower.endsWith('.pdf')) inner = <PdfCanvas abs={abs} thumbnail={still} />;
+  else if (lower.endsWith('.eps')) inner = <EpsFigure abs={abs} thumbnail={still} />;
   else if (still && lower.endsWith('.gif')) {
     inner = <GifStillFrame abs={abs} onAspect={setNatAspect} />;
   }
@@ -233,12 +252,17 @@ export function FigureView({
 
 /** 视频：编辑/放映用 <video>；导出 PDF 用首帧画布占位（loadeddata 时截取）。
  *  宽度与图片同款：显式 width 优先，未设置走排版规格自动宽（修复曾硬编码 100% 致压缩失效） */
-export function VideoView({ block, folder, onWidthChange }: { block: Block; folder: string; onWidthChange?: (w: number) => void }) {
+export function VideoView({ block, folder, onWidthChange, mode = 'edit' }: { block: Block; folder: string; onWidthChange?: (w: number) => void; mode?: 'edit' | 'thumb' | 'present' | 'print' }) {
   const vidRef = useRef<HTMLVideoElement>(null);
   const frameRef = useRef<HTMLCanvasElement>(null);
   const figRef = useRef<HTMLElement | null>(null);
   // 与位图同款交集语义：限高钳住时按固有宽高比收盒子（否则黑底元素撑满栏宽，两侧露黑边）
   const [vidAspect, setVidAspect] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    const canvas = frameRef.current;
+    if (canvas) { canvas.width = canvas.height = 0; delete canvas.dataset.mediaError; }
+    setVidAspect(undefined);
+  }, [block.src, folder]);
   if (!block.src) return null;
   const abs = absPath(folder, block.src);
   const w = block.width != null ? `${Math.round(block.width * 100)}%` : 'var(--img-auto-w, 62%)';
@@ -252,8 +276,10 @@ export function VideoView({ block, folder, onWidthChange }: { block: Block; fold
         ref={vidRef}
         src={fileUrl(abs)}
         controls={!block.autoplay}
+        autoPlay={mode === 'present' && !!block.autoplay}
         preload="auto"
         muted
+        onError={() => { if (frameRef.current) frameRef.current.dataset.mediaError = '视频加载失败'; }}
         onLoadedMetadata={() => {
           const v = vidRef.current;
           if (v && v.videoHeight > 0) setVidAspect(v.videoWidth / v.videoHeight);
@@ -267,7 +293,7 @@ export function VideoView({ block, folder, onWidthChange }: { block: Block; fold
           cv.getContext('2d')?.drawImage(v, 0, 0);
         }}
       />
-      <canvas ref={frameRef} className="vid-firstframe" />
+      <canvas ref={frameRef} className="vid-firstframe" width={0} height={0} />
       {onWidthChange && <EdgeResizeHandles hostRef={figRef} block={block} onWidthChange={onWidthChange} />}
     </figure>
   );

@@ -30,6 +30,7 @@ export function useLayoutScan(
   enabled: boolean,
   aspect: Aspect,
   sig: string,
+  refs = '',
 ): void {
   useEffect(() => {
     if (!enabled || !slideId) return;
@@ -78,9 +79,9 @@ export function useLayoutScan(
       }
       const imgs = [...el.querySelectorAll('img')];
       const canvases = [...el.querySelectorAll('canvas')];
-      const imgsPending = imgs.some((i) => !(i.complete && i.naturalWidth > 0));
+      const imgsPending = imgs.some((i) => !i.complete);
       // 画布（pdf/eps 矢量）异步渲染：宽度未就绪视为未稳定
-      const cvsPending = canvases.some((c) => c.width === 0);
+      const cvsPending = canvases.some((c) => !c.dataset.mediaError && (c.width === 0 || !!c.dataset.mediaPending));
       // KaTeX 异步渲染：.eq-disp 未出 .katex 前测高会假溢出（raw latex 文本更长）
       const katexPending = [...el.querySelectorAll('.eq-disp')].some((d) => !d.querySelector('.katex'));
       // KaTeX woff2 字体异步装载（首次打开）：HTML 同步但字形度量未定，
@@ -106,5 +107,5 @@ export function useLayoutScan(
     };
     timer = window.setTimeout(tick, 300);
     return () => clearTimeout(timer);
-  }, [ref, slideId, enabled, aspect, sig]);
+  }, [ref, slideId, enabled, aspect, sig, refs]);
 }

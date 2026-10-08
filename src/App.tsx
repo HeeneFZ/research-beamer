@@ -7,6 +7,7 @@ import { Lightbox } from './components/Lightbox';
 import { NotesPane } from './components/NotesPane';
 import { PresenterView } from './components/PresenterView';
 import { useBackNav } from './hooks/useBackNav';
+import { useAutoSave } from './hooks/useAutoSave';
 import { exportPDF } from './exportPdf';
 import { useStore, pageOrders } from './state/store';
 
@@ -77,16 +78,7 @@ export default function App() {
   // 返回引用跳转原处（Alt+← / Backspace / 鼠标后退侧键，统一输入层）
   useBackNav(() => useStore.getState().backJump());
 
-  // 自动保存：dirty 且已有 folder，2s 防抖；可用右上角胶囊关闭（应用级偏好）
-  useEffect(() => {
-    const s = useStore.getState();
-    if (window.api.isE2E || !s.autoSave || !s.dirty || !s.folder) return;
-    const t = setTimeout(() => {
-      const st = useStore.getState();
-      if (st.dirty && st.folder) void st.saveProject();
-    }, 2000);
-    return () => clearTimeout(t);
-  });
+  useAutoSave();
 
   // flashMsg 自动消失
   useEffect(() => {

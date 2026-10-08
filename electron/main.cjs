@@ -1,8 +1,8 @@
 // Electron main process (plain CJS, no build step needed)
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const fs = require('fs');
-const crypto = require('crypto');
 const path = require('path');
+const { writeFileAtomic, readFileAfterWrites, readProjectFromFolder, importMedia } = require('./files.cjs');
 
 // E2E 模式用独立 userData：不与用户正开着的实例抢单实例锁，也不碰用户示例副本
 if (process.env.E2E_SCREENSHOT || process.env.E2E_PDF || process.env.E2E_EVAL) {
@@ -191,25 +191,6 @@ function findGhostscript() {
   return candidates[0] || null;
 }
 
-// 两文件是否字节级一致：先比大小（快速路径）再比 SHA-256（大 GIF/PDF 也可承受）
-function sameFileContent(a, b) {
-  try {
-    const sa = fs.statSync(a);
-    const sb = fs.statSync(b);
-    if (!sa.isFile() || !sb.isFile() || sa.size !== sb.size) return false;
-    const hash = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
-    return hash(a) === hash(b);
-  } catch (_) {
-    return false;
-  }
-}
-
-function readProjectFromFolder(folder) {
-  const mdPath = path.join(folder, 'deck.md');
-  const md = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, 'utf8') : null;
-  return { md, folder };
-}
-
 // ---------- IPC ----------
 
 // 解析示例/相对工程路径：开发时在应用目录；打包后在 resources，首次访问复制到 userData（可写，自动保存才能工作）
@@ -239,8 +220,8 @@ function resolveProjectFolder(relPath) {
 ipcMain.handle('project:loadPath', async (_e, relPath) => {
   try {
     const folder = resolveProjectFolder(relPath);
-    if (!fs.existsSync(path.join(folder, 'deck.md'))) return null;
-    return readProjectFromFolder(folder);
+    const project = await readProjectFromFolder(folder);
+    return project.md == null ? null : project;
   } catch (e) {
     return { error: String(e) };
   }
@@ -254,7 +235,7 @@ ipcMain.handle('project:open', async () => {
   if (r.canceled || !r.filePaths[0]) return null;
   const folder = r.filePaths[0];
   try {
-    return readProjectFromFolder(folder);
+    return await readProjectFromFolder(folder);
   } catch (e) {
     return { error: String(e) };
   }
@@ -271,8 +252,8 @@ ipcMain.handle('project:save', async (_e, { folder, md }) => {
       folder = r.filePaths[0];
     }
     const mediaDir = path.join(folder, 'media');
-    if (!fs.existsSync(mediaDir)) fs.mkdirSync(mediaDir, { recursive: true });
-    fs.writeFileSync(path.join(folder, 'deck.md'), md, 'utf8');
+    await fs.promises.mkdir(mediaDir, { recursive: true });
+    await writeFileAtomic(path.join(folder, 'deck.md'), md);
     return { folder };
   } catch (e) {
     return { error: String(e) };
@@ -287,17 +268,7 @@ ipcMain.handle('project:save', async (_e, { folder, md }) => {
 ipcMain.handle('media:import', async (_e, { srcPath, folder }) => {
   try {
     if (!folder) return { error: 'no folder' };
-    const mediaDir = path.join(folder, 'media');
-    if (!fs.existsSync(mediaDir)) fs.mkdirSync(mediaDir, { recursive: true });
-    const name = path.basename(srcPath);
-    let dest = path.join(mediaDir, name);
-    for (let i = 1; fs.existsSync(dest); i++) {
-      if (sameFileContent(srcPath, dest)) return { fileName: path.basename(dest) };
-      const ext = path.extname(name);
-      dest = path.join(mediaDir, path.basename(name, ext) + '-' + i + ext);
-    }
-    fs.copyFileSync(srcPath, dest);
-    return { fileName: path.basename(dest) };
+    return await importMedia(srcPath, folder);
   } catch (e) {
     return { error: String(e) };
   }
@@ -347,7 +318,7 @@ ipcMain.handle('media:ensureEpsPdf', async (_e, { absPath }) => {
 // 异步读（大 PDF/视频可达几十 MB；readFileSync 会卡主进程消息循环）
 ipcMain.handle('file:read', async (_e, absPath) => {
   try {
-    const data = await fs.promises.readFile(absPath);
+    const data = await readFileAfterWrites(absPath);
     return { data: new Uint8Array(data) };
   } catch (e) {
     return { error: String(e) };
@@ -559,7 +530,7 @@ ipcMain.handle('media:saveAs', async (_e, { srcPath }) => {
   });
   if (r.canceled || !r.filePath) return null;
   try {
-    fs.copyFileSync(srcPath, r.filePath);
+    await fs.promises.copyFile(srcPath, r.filePath);
     return { path: r.filePath };
   } catch (e) {
     // 与其他 handler 一致的 {error} 契约（如目标被 PDF 阅读器占用 EBUSY）
@@ -575,7 +546,7 @@ ipcMain.handle('pdf:print', async (_e, { savePath }) => {
       margins: { marginType: 'none' },
       preferCSSPageSize: true,
     });
-    fs.writeFileSync(savePath, data);
+    await writeFileAtomic(savePath, data);
     return { path: savePath, bytes: data.length };
   } catch (e) {
     return { error: String(e) };
@@ -583,21 +554,21 @@ ipcMain.handle('pdf:print', async (_e, { savePath }) => {
 });
 
 // ---------- 撤销历史持久化（工程目录 .beamer-history.json 隐藏文件） ----------
-ipcMain.handle('history:read', (_e, folder) => {
+ipcMain.handle('history:read', async (_e, folder) => {
   try {
     if (!folder || typeof folder !== 'string') return null;
     const p = path.join(folder, '.beamer-history.json');
-    if (!fs.existsSync(p)) return null;
-    return { json: fs.readFileSync(p, 'utf8') };
+    return { json: await readFileAfterWrites(p, 'utf8') };
   } catch (e) {
+    if (e.code === 'ENOENT') return null;
     return { error: String(e) };
   }
 });
 
-ipcMain.handle('history:write', (_e, { folder, json }) => {
+ipcMain.handle('history:write', async (_e, { folder, json }) => {
   try {
     if (!folder || typeof folder !== 'string' || typeof json !== 'string') return { error: 'bad args' };
-    fs.writeFileSync(path.join(folder, '.beamer-history.json'), json, 'utf8');
+    await writeFileAtomic(path.join(folder, '.beamer-history.json'), json);
     return { ok: true };
   } catch (e) {
     return { error: String(e) };
@@ -635,14 +606,14 @@ function setupRecordingHandlers() {
 }
 
 // 录像落盘：默认工程根目录（无工程文件夹时退回「文档」）
-ipcMain.handle('rec:save', (_e, { folder, name, data }) => {
+ipcMain.handle('rec:save', async (_e, { folder, name, data }) => {
   try {
     const dir = folder && typeof folder === 'string' && fs.existsSync(folder)
       ? folder
       : app.getPath('documents');
     const safe = String(name || 'recording.webm').replace(/[^\w.-]/g, '_');
     const p = path.join(dir, safe);
-    fs.writeFileSync(p, Buffer.from(data));
+    await writeFileAtomic(p, Buffer.from(data));
     return { path: p };
   } catch (e) {
     return { error: String(e) };

@@ -30,6 +30,19 @@ import { AuthorsLine, AffiliationsView, DividerView, TocView } from './slide/Sta
 
 import { INSERT_ITEMS, insertBlockByKey } from './insertItems';
 
+const referenceSignatures = new WeakMap<SlideViewProps['computed'], string>();
+function referenceSignature(computed: SlideViewProps['computed']): string {
+  let signature = referenceSignatures.get(computed);
+  if (signature == null) {
+    signature = JSON.stringify([
+      [...computed.sectionNumByLabel], [...computed.equationNum], [...computed.equationNumByLabel],
+      [...computed.figureNum], [...computed.figureNumByLabel], [...computed.tableNum], [...computed.tableNumByLabel],
+    ]);
+    referenceSignatures.set(computed, signature);
+  }
+  return signature;
+}
+
 export function SlideView({
   page, deck, computed, folder, mode = 'edit', revealed, onRef, onSlideJump, onZoom, highlightLabel,
 }: SlideViewProps) {
@@ -77,19 +90,16 @@ export function SlideView({
     ...paletteVars(config.palette),
     ...(spec ? (layoutCssVars(spec, layoutState ?? defaultSpacing(spec)) as unknown as CSSProperties) : {}),
   };
-  // 重扫签名：块结构+文本量+字号配置（fontSize/fontScale 变化也须重算）；
-  // 目录页内容来自节标题（块为空），节增删/改名并入签名。
-  // 注意：表格单元格文本（cells）必须计入——否则表格编辑后不重扫，溢出不定稿
-  const blockSig = slide0
-    ? slide0.blocks.map((b) => b.id + (b.width != null ? `@${b.width}` : '')).join(',') + ':' + slide0.blocks.reduce(
-        (n, b) => n + (b.text || '').length + (b.latex || '').length + (b.caption || '').length + (b.items?.join('').length ?? 0) + (b.cells ? b.cells.flat().join('').length : 0) + (b.anno ? JSON.stringify(b.anno).length : 0),
-        0,
-      ) + `|fs${config.fontSize}|sc${slide0.fontScale ?? 1}`
-    : '';
+  // 精确内容签名：等字数替换、字体/双栏比例/素材变化同样会影响真实 DOM 高度。
+  // 结构共享让未修改页复用序列化结果；引用编号指纹全 deck 只计算一次。
+  const blockSig = useMemo(() => JSON.stringify({
+    slide: slide0, layout, folder, fontSize: config.fontSize,
+    fontZh: config.fontZh, fontEn: config.fontEn, language: config.language, palette: config.palette,
+  }), [slide0, layout, folder, config.fontSize, config.fontZh, config.fontEn, config.language, config.palette]);
   const tocSig = layout === 'toc'
     ? '|toc:' + deck.items.filter((it) => it.kind === 'section').map((it) => (it.kind === 'section' ? it.section.title : '')).join('|')
     : '';
-  const editing = useStore((s) => s.editing);
+  const editing = useStore((s) => mode === 'edit' ? s.editing : null);
   // 静默探测扫描：胶片缩略图恒运行（与画布同 mm 尺寸排版，打开工程即把全部页
   // 后台算完，进页即是终态）；画布扫描在本页无编辑时运行、present/print 只读 store。
   // 画布扫描在本页编辑期间让位：TipTap 编辑态行盒比静态渲染高 ~1.3px，画布/胶片
@@ -97,7 +107,7 @@ export function SlideView({
   // 页脚近满页肉眼可见持续抽动）。胶片扫描器测的是静态 DOM——本来就是权威值，
   // 编辑期间只留它一个，退出编辑后画布扫描恢复并复核（相同值 no-op）。
   const editingThisSlide = mode === 'edit' && editing != null && editing.slideId === slide0?.id;
-  useLayoutScan(bodyRef, slide0?.id, scannable && (mode === 'thumb' || (mode === 'edit' && !editingThisSlide)), config.aspect, blockSig + tocSig);
+  useLayoutScan(bodyRef, slide0?.id, scannable && (mode === 'thumb' || (mode === 'edit' && !editingThisSlide)), config.aspect, blockSig + tocSig, referenceSignature(computed));
 
   const setEditing = useStore((s) => s.setEditing);
 
@@ -142,13 +152,13 @@ export function SlideView({
           <div className="cover-card title-card">
             <h1 className={'cover-title' + editCls} onClick={startEdit('coverTitle')}>
               {ef === 'coverTitle'
-                ? <CoverFieldEditor math value={config.title} onCommit={(v) => setConfig({ title: v || config.title })} />
+                ? <CoverFieldEditor slideId={sl!.id} math value={config.title} onCommit={(v) => setConfig({ title: v || config.title })} />
                 : <InlineText text={config.title} computed={computed} lang={lang} palette={config.palette} />}
             </h1>
             <div className="cover-bar" />
             <div className={'cover-authors' + editCls} onClick={startEdit('coverAuthors')}>
               {ef === 'coverAuthors'
-                ? <CoverFieldEditor value={config.authors} onCommit={(v) => setConfig({ authors: v })} />
+                ? <CoverFieldEditor slideId={sl!.id} value={config.authors} onCommit={(v) => setConfig({ authors: v })} />
                 : config.authors
                   ? <AuthorsLine authors={config.authors} lang={lang} />
                   : mode === 'edit' ? <span className="cover-affs-ph">＋ 作者（张三^1; 李四^2）</span> : null}
@@ -157,6 +167,7 @@ export function SlideView({
             <div className={'cover-affs-wrap' + editCls} onClick={startEdit('coverAff')}>
               {ef === 'coverAff' ? (
                 <CoverFieldEditor
+                  slideId={sl!.id}
                   value={config.affiliations}
                   placeholder="单位（多个用 ; 分隔，对应作者上标 1,2…）"
                   onCommit={(v) => setConfig({ affiliations: v })}
@@ -170,7 +181,7 @@ export function SlideView({
             </div>
             <div className={'cover-date' + editCls} onClick={startEdit('coverDate')}>
               {ef === 'coverDate'
-                ? <CoverFieldEditor value={config.date} onCommit={(v) => setConfig({ date: v })} />
+                ? <CoverFieldEditor slideId={sl!.id} value={config.date} onCommit={(v) => setConfig({ date: v })} />
                 : config.date || (mode === 'edit' ? <span className="cover-affs-ph">＋ 日期</span> : null)}
             </div>
             {/* Logo：锚定态（无 logoPos）渲染在卡内右下角；浮动态在页面级（见下方）。
@@ -223,7 +234,7 @@ export function SlideView({
               onClick={mode === 'edit' && sl ? () => { if (!subEditing) setEditing({ slideId: sl.id, field: 'coverSub' }); } : undefined}
             >
               {subEditing
-                ? <CoverFieldEditor value={config.shortTitle} onCommit={(v) => setConfig({ shortTitle: v })} />
+                ? <CoverFieldEditor slideId={sl!.id} value={config.shortTitle} onCommit={(v) => setConfig({ shortTitle: v })} />
                 : config.shortTitle || (mode === 'edit' ? <span className="cover-affs-ph">＋ 副标题</span> : null)}
             </div>
             {config.logoPos == null && <CoverLogo config={config} folder={folder} mode={mode} />}

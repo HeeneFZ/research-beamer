@@ -1,64 +1,51 @@
-// 撤销/重做：deck 的 JSON 快照栈。
-// - 深度上限 HISTORY_MAX（默认 100 轮，超出丢最旧）
-// - 输入防抖 500ms 合并连续击键
-// - 持久化：快照写入工程目录 .beamer-history.json（隐藏文件），重开工程可继续撤销；
-//   持久化自带 800ms 防抖，E2E 模式禁用（不污染示例副本）
-// 旧快照（关窗未保存）在重开时按「deck.md 基态在栈中最深出现位」截断——
-// 撤销方向恒为时间回退，不会跳到未保存的更新状态。
-
+// Deck 快照撤销：100 轮上限，输入 500ms 防抖，工程历史 800ms 防抖落盘。
 import { Deck } from '../model/types';
+import { parseMarkdown, serializeMarkdown } from '../model/markdown';
 
 const HISTORY_MAX = 100;
 const PERSIST_DELAY = 800;
-
 let undoStack: string[] = [];
 let redoStack: string[] = [];
-let snapshotTimer: number | undefined;
-// 防抖挂起的快照（500ms 窗口内未落栈）。undo/redo/clear 必须先同步冲刷：
-// 否则窗口期内的撤销会弹出更早的快照（一次回跳两步），且挂起快照随后
-// 落栈时清空 redoStack，把刚压入的重做状态销毁（竞态已实测复现）。
-// 序列化惰性：窗口内只存 deck 引用（deck 不可变，克隆前从不原地改），
-// 落栈/冲刷时才 stringify——连续击键每键一次全量序列化是打字卡顿主源之一
-let pendingJson: string | null = null;
 let pendingDeck: Deck | null = null;
-// 历史持久化目录（当前工程文件夹）；null = 未绑定（新工程未保存），只在内存
-let histFolder: string | null = null;
+let currentDeck: Deck | null = null;
+let snapshotTimer: number | undefined;
 let persistTimer: number | undefined;
-// 工程切换时异步读回历史文件的窗口期标记：期间不落盘（防旧工程文件被覆盖）
+let histFolder: string | null = null;
 let loadingFile = false;
+let attachment = 0;
+let edits = 0;
 
 function pushStack(json: string): void {
-  if (undoStack[undoStack.length - 1] !== json) {
-    undoStack.push(json);
-    if (undoStack.length > HISTORY_MAX) undoStack.shift();
-    redoStack = [];
-  }
+  if (undoStack[undoStack.length - 1] === json) return;
+  undoStack.push(json);
+  if (undoStack.length > HISTORY_MAX) undoStack.shift();
 }
 
-/** 挂起快照的惰性序列化（deck 引用 → json 串），冲刷/落栈共用 */
-function materializePending(): string | null {
-  if (pendingJson == null && pendingDeck != null) {
-    pendingJson = JSON.stringify(pendingDeck);
-    pendingDeck = null;
-  }
-  return pendingJson;
-}
-
-/** 挂起的防抖快照立即落栈 */
 function flushPending(): void {
-  const json = materializePending();
-  if (json == null) return;
   clearTimeout(snapshotTimer);
-  pendingJson = null;
-  pushStack(json);
+  snapshotTimer = undefined;
+  if (!pendingDeck) return;
+  pushStack(JSON.stringify(pendingDeck));
+  pendingDeck = null;
+}
+
+function reportFailure(error: unknown): void {
+  console.warn('撤销历史保存/恢复失败：', error);
 }
 
 function persistNow(): void {
   clearTimeout(persistTimer);
   persistTimer = undefined;
-  const api = (window as unknown as { api?: { writeHistory(p: { folder: string; json: string }): Promise<unknown>; isE2E: boolean } }).api;
+  const api = window.api;
   if (!histFolder || loadingFile || !api || api.isE2E) return;
-  void api.writeHistory({ folder: histFolder, json: JSON.stringify({ undo: undoStack, redo: redoStack }) }).catch(() => { /* 磁盘失败不阻塞编辑 */ });
+  flushPending();
+  const json = JSON.stringify({
+    current: currentDeck ? JSON.stringify(currentDeck) : null,
+    undo: undoStack, redo: redoStack,
+  });
+  void api.writeHistory({ folder: histFolder, json }).then((r) => {
+    if (r?.error) reportFailure(r.error);
+  }).catch(reportFailure);
 }
 
 function schedulePersist(): void {
@@ -67,101 +54,124 @@ function schedulePersist(): void {
   persistTimer = window.setTimeout(persistNow, PERSIST_DELAY);
 }
 
-export function recordHistory(deck: Deck, debounce = false): void {
-  clearTimeout(snapshotTimer);
-  // 任何真实编辑都立即使重做失效（不能等防抖落栈——窗口期内的 redo 会恢复
-  // 已被编辑作废的状态；且快照去重（与栈顶相同不入栈）不能跳过该清理）
+/** deck 必须不可变；防抖窗口内只挂最新 pre-state，落栈时再序列化。 */
+export function recordHistory(deck: Deck, debounce = false, after: Deck = deck): void {
+  edits++;
+  currentDeck = after;
   redoStack = [];
+  clearTimeout(snapshotTimer);
   if (debounce) {
-    // 惰性：防抖窗口内只挂 deck 引用（每键一次全量 stringify 是打字卡顿源），
-    // 落栈（500ms 后）或冲刷（undo/redo 抢占）时才序列化。
-    // 语义（第廿一轮测试钉死）：挂【最新】pre-state——窗口内撤销精确回退到
-    // 最后一次变更前一刻（一字一格）；曾试改挂首态（burst 整段合并撤销）与
-    // 既有合约冲突，弃用（详见 DECISIONS 第五十四轮）
     pendingDeck = deck;
-    pendingJson = null;
     snapshotTimer = window.setTimeout(() => {
-      const json = materializePending();
-      pendingJson = null;
-      pendingDeck = null;
-      if (json != null) {
-        pushStack(json);
-        schedulePersist();
-      }
+      flushPending();
+      schedulePersist();
     }, 500);
   } else {
-    const json = JSON.stringify(deck);
-    pendingJson = null;
-    pendingDeck = null;
-    pushStack(json);
+    // 结构操作紧跟输入时保留输入的撤销点，随后再记录结构操作前态。
+    flushPending();
+    pushStack(JSON.stringify(deck));
   }
   schedulePersist();
 }
 
 export function clearHistory(): void {
-  clearTimeout(snapshotTimer);
-  pendingJson = null;
-  pendingDeck = null;
+  flushPending();
+  persistNow();
+  attachment++;
+  edits++;
+  loadingFile = false;
   undoStack = [];
   redoStack = [];
+  currentDeck = null;
 }
 
-/** 绑定/切换历史持久化目录。adopt=true（打开工程）时异步读回快照恢复撤销栈；
- *  adopt=false（首次另存到新文件夹）只设写入目标不读回（防止吃到别的工程的旧文件）。
- *  baseJson = 本次加载的 deck 序列化（截断锚点，见文件头注释）。 */
+/** 用 Markdown 内容比较快照，忽略每次解析重新生成的 slide/block/section IDs。
+ *  再解析一遍同时对齐旧配色等兼容迁移；损坏快照不能进入可执行的撤销栈。 */
+function snapshotContent(json: unknown): string | null {
+  if (typeof json !== 'string') return null;
+  try {
+    const deck = JSON.parse(json) as Deck;
+    if (!deck.config || !Array.isArray(deck.items)) return null;
+    if (deck.config.aspect !== '16:9' && deck.config.aspect !== '4:3') return null;
+    return serializeMarkdown(parseMarkdown(serializeMarkdown(deck)));
+  } catch {
+    return null;
+  }
+}
+
 export function attachHistoryFolder(folder: string | null, baseJson: string, adopt = true): void {
   clearTimeout(persistTimer);
   persistTimer = undefined;
+  const generation = ++attachment;
+  const version = edits;
   histFolder = folder;
+  loadingFile = false;
   if (!folder) return;
-  const api = (window as unknown as { api?: { readHistory(f: string): Promise<{ json?: string } | { error: string } | null>; isE2E: boolean } }).api;
-  if (!api || api.isE2E || !adopt) return;
+  if (!currentDeck) currentDeck = JSON.parse(baseJson) as Deck;
+  const api = window.api;
+  if (!api || api.isE2E) return;
+  if (!adopt) { schedulePersist(); return; }
   loadingFile = true;
   void api.readHistory(folder).then((r) => {
+    if (generation !== attachment) return;
     loadingFile = false;
-    if (!r || !('json' in r) || !r.json) { schedulePersist(); return; }
-    // 竞态守卫：读回完成前用户已产生新编辑（栈不再只有加载基态）→ 文件已过期，内存为准
-    if (undoStack.length > 1 || (undoStack.length === 1 && undoStack[0] !== baseJson)) { schedulePersist(); return; }
-    try {
-      const parsed = JSON.parse(r.json) as { undo?: unknown[]; redo?: unknown[] };
-      if (Array.isArray(parsed.undo) && Array.isArray(parsed.redo)) {
-        const file = parsed.undo.filter((x): x is string => typeof x === 'string');
-        // 截断：deck.md 基态在栈中最深出现位之后的快照是「关窗时未保存的更新状态」，
-        // 保留会让撤销跳向未来；找不到（外部手改/正常保存关闭）则全量保留
-        let cut = -1;
-        for (let i = file.length - 1; i >= 0; i--) if (file[i] === baseJson) { cut = i; break; }
-        undoStack = (cut >= 0 ? file.slice(0, cut + 1) : file).slice(-HISTORY_MAX);
-        redoStack = parsed.redo.filter((x): x is string => typeof x === 'string').slice(-HISTORY_MAX);
-        if (undoStack[undoStack.length - 1] !== baseJson) undoStack.push(baseJson);
-      }
-    } catch { /* 历史文件损坏：弃用，保持内存态 */ }
+    if (edits !== version) { schedulePersist(); return; }
+    if (r?.error) reportFailure(r.error);
+    if (r?.json) {
+      try {
+        const parsed = JSON.parse(r.json) as { current?: unknown; undo?: unknown[]; redo?: unknown[] };
+        if (Array.isArray(parsed.undo) && Array.isArray(parsed.redo)) {
+          const contents = new Map<string, string>();
+          const valid = (value: unknown): value is string => {
+            const content = snapshotContent(value);
+            if (typeof value !== 'string' || content == null) return false;
+            contents.set(value, content);
+            return true;
+          };
+          const file = parsed.undo.slice(-HISTORY_MAX).filter(valid);
+          const base = snapshotContent(baseJson);
+          const matchesSaved = snapshotContent(parsed.current) === base;
+          // deck.md 已保存态之后的快照属于未保存的未来，不能在重开时作为撤销点。
+          let cut = -1;
+          for (let i = file.length - 1; i >= 0; i--) {
+            if (contents.get(file[i]) === base) { cut = i; break; }
+          }
+          undoStack = matchesSaved ? file : cut >= 0 ? file.slice(0, cut) : file;
+          redoStack = matchesSaved
+            ? parsed.redo.slice(-HISTORY_MAX).filter(valid) : [];
+        }
+      } catch (error) { reportFailure(error); }
+    }
     schedulePersist();
-  }).catch(() => { loadingFile = false; });
+  }).catch((error) => {
+    if (generation !== attachment) return;
+    loadingFile = false;
+    reportFailure(error);
+    schedulePersist();
+  });
 }
 
-/** 弹出上一快照；current 压入重做栈。无快照返回 null */
 export function takeUndo(current: Deck): Deck | null {
   flushPending();
   if (!undoStack.length) return null;
-  const snap = undoStack.pop()!;
+  edits++;
   redoStack.push(JSON.stringify(current));
   if (redoStack.length > HISTORY_MAX) redoStack.shift();
+  currentDeck = JSON.parse(undoStack.pop()!) as Deck;
   schedulePersist();
-  return JSON.parse(snap) as Deck;
+  return currentDeck;
 }
 
-/** 弹出下一快照；current 压入撤销栈。无快照返回 null */
 export function takeRedo(current: Deck): Deck | null {
   flushPending();
   if (!redoStack.length) return null;
-  const snap = redoStack.pop()!;
-  undoStack.push(JSON.stringify(current));
-  if (undoStack.length > HISTORY_MAX) undoStack.shift();
+  edits++;
+  pushStack(JSON.stringify(current));
+  currentDeck = JSON.parse(redoStack.pop()!) as Deck;
   schedulePersist();
-  return JSON.parse(snap) as Deck;
+  return currentDeck;
 }
 
-/** 测试钩子：当前栈深（undo+redo） */
 export function historyDepth(): number {
   return undoStack.length + redoStack.length;
 }
