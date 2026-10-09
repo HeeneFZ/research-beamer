@@ -6,12 +6,41 @@
 
 import { Node, InputRule, Extension, Mark } from '@tiptap/core';
 import type { EditorView } from '@tiptap/pm/view';
+import { Plugin } from '@tiptap/pm/state';
 import { ReactNodeViewRenderer } from '@tiptap/react';
 import { Fragment, Slice, Node as PMNode } from '@tiptap/pm/model';
 import { InlineToken, tokenizeInline } from '../model/inline';
 import { InlineMathView, RefChipView } from '../components/ChipViews';
 
 // ---------- custom nodes ----------
+
+// Preserve animation through native item splitting/lifting without copying it to a new item.
+export const ListAnimationOrder = Extension.create({
+  name: 'listAnimationOrder',
+  addGlobalAttributes: () => [{
+    types: ['listItem', 'paragraph'],
+    attributes: {
+      animationOrder: { default: null, keepOnSplit: false, rendered: false, parseHTML: () => null },
+    },
+  }],
+  // splitListItem can copy paragraph attributes after resetting the item itself.
+  // Keep both in sync so a later native lift also retains the right order.
+  addProseMirrorPlugins: () => [new Plugin({
+    appendTransaction(transactions, _previous, state) {
+      if (!transactions.some((transaction) => transaction.docChanged)) return null;
+      const transaction = state.tr;
+      state.doc.descendants((node, position) => {
+        if (node.type.name !== 'listItem') return;
+        node.forEach((child, offset) => {
+          if (child.type.name === 'paragraph' && child.attrs.animationOrder !== node.attrs.animationOrder) {
+            transaction.setNodeMarkup(position + 1 + offset, undefined, { ...child.attrs, animationOrder: node.attrs.animationOrder });
+          }
+        });
+      });
+      return transaction.docChanged ? transaction.setMeta('addToHistory', false) : null;
+    },
+  })],
+});
 
 export const InlineMath = Node.create({
   name: 'inlineMath',
@@ -125,7 +154,7 @@ interface PmNode {
   type: string;
   content?: PmNode[];
   text?: string;
-  attrs?: Record<string, string>;
+  attrs?: { latex?: string; kind?: string; label?: string; animationOrder?: number | null };
   marks?: { type: string; attrs?: Record<string, string> }[];
 }
 type PmMark = NonNullable<PmNode['marks']>[number];
@@ -189,14 +218,15 @@ export function textToDoc(text: string): object {
   return { type: 'doc', content: [{ type: 'paragraph', content: text ? textToInlineNodes(text) : undefined }] };
 }
 
-export function itemsToDoc(items: string[]): object {
+export function itemsToDoc(items: string[], itemOrders?: (number | undefined)[]): object {
   return {
     type: 'doc',
     content: [{
       type: 'bulletList',
-      content: (items.length ? items : ['']).map((t) => ({
+      content: (items.length ? items : ['']).map((t, i) => ({
         type: 'listItem',
-        content: [{ type: 'paragraph', content: t ? textToInlineNodes(t) : undefined }],
+        attrs: { animationOrder: itemOrders?.[i] ?? null },
+        content: [{ type: 'paragraph', attrs: { animationOrder: itemOrders?.[i] ?? null }, content: t ? textToInlineNodes(t) : undefined }],
       })),
     }],
   };
@@ -256,17 +286,25 @@ export function docToText(doc: { content?: unknown[] }): string {
 }
 
 /** Markdown 列表为扁平数组；粘贴的嵌套列表及多段项按阅读顺序展开，保全内容。 */
-export function docToItems(doc: { content?: unknown[] }): string[] {
-  const out: string[] = [];
-  const visit = (nodes: PmNode[]) => {
+export function docToList(doc: { content?: unknown[] }): { items: string[]; itemOrders?: (number | undefined)[] } {
+  const items: string[] = [], orders: (number | undefined)[] = [];
+  const push = (text: string, order?: number) => { items.push(text); orders.push(order); };
+  const visit = (nodes: PmNode[], order?: number) => {
     for (const node of nodes) {
-      if (node.type === 'paragraph') out.push(inlineNodesToText(node.content));
-      else if (node.type === 'listItem' && !node.content?.length) out.push('');
-      else if (node.content) visit(node.content);
+      if (node.type === 'paragraph') push(inlineNodesToText(node.content), node.attrs?.animationOrder ?? order);
+      else if (node.type === 'listItem') {
+        const itemOrder = node.attrs?.animationOrder ?? undefined;
+        if (node.content?.length) visit(node.content, itemOrder);
+        else push('', itemOrder);
+      } else if (node.content) visit(node.content, order);
     }
   };
   visit((doc?.content ?? []) as PmNode[]);
-  return out;
+  return { items, itemOrders: orders.some((order) => order != null) ? orders : undefined };
+}
+
+export function docToItems(doc: { content?: unknown[] }): string[] {
+  return docToList(doc).items;
 }
 
 export interface BlockKeyHandlers {

@@ -48,6 +48,7 @@ async function capturePrintSnapshot(mediaRevision: number): Promise<ReturnType<t
     await new Promise((resolve) => setTimeout(resolve, 20));
     const state = useStore.getState();
     checkPrintProject(mediaRevision);
+    if (state.mediaPreparation.errors.__prepare__) throw new Error('资源准备失败：' + state.mediaPreparation.errors.__prepare__);
     const pages = document.querySelectorAll('.filmstrip .sv');
     if (pages.length === state.computed.pages.length
       && state.mediaPreparation.phase === 'ready'

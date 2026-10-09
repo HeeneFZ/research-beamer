@@ -1,6 +1,6 @@
 // 单个流式块：编辑态/展示态分发 + 块点击进编辑 + BlockToolbar 挂载
 
-import { CSSProperties, memo, useState } from 'react';
+import { CSSProperties, memo, useEffect, useState } from 'react';
 import { Block, Deck, Slide } from '../../model/types';
 import { Computed } from '../../model/numbering';
 import { InlineText } from '../InlineText';
@@ -38,7 +38,7 @@ export const FlowBlock = memo(function FlowBlock({
 }) {
   const { config } = deck;
   const lang = config.language;
-  const isEditing = useStore((s) => mode === 'edit' && s.editing?.blockId === block.id && s.editing?.slideId === slide?.id);
+  const isEditing = useStore((s) => mode === 'edit' && !s.presenting && s.computed.pages[s.current]?.slide?.id === slide?.id && s.editing?.blockId === block.id && s.editing?.slideId === slide?.id);
   const setEditing = useStore((s) => s.setEditing);
   const jumpToRef = useStore((s) => s.jumpToRef);
   const updateBlock = useStore((s) => s.updateBlock);
@@ -49,6 +49,8 @@ export const FlowBlock = memo(function FlowBlock({
     : undefined;
   // 出现顺序快捷选择器状态：item=null=块级，否则为列表项下标；rect=徽章屏幕锚点
   const [ordPick, setOrdPick] = useState<{ rect: AnchorRect; item: number | null } | null>(null);
+  const activeEditor = useStore((s) => mode === 'edit' && !s.presenting && s.computed.pages[s.current]?.slide?.id === slide?.id);
+  useEffect(() => { if (!activeEditor) setOrdPick(null); }, [activeEditor]);
   const rectOf = (el: HTMLElement): AnchorRect => {
     const r = el.getBoundingClientRect();
     return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
@@ -62,7 +64,7 @@ export const FlowBlock = memo(function FlowBlock({
     updateBlock(slide.id, block.id, { itemOrders: next.some((x) => x != null) ? next : undefined });
   };
   const anim: CSSProperties | undefined =
-    block.order != null && revealed
+    block.type !== 'itemize' && block.order != null && revealed
       ? revealed.has(block.order)
         ? { animation: 'rb-fade .4s ease' }
         : { visibility: 'hidden' }
@@ -119,9 +121,10 @@ export const FlowBlock = memo(function FlowBlock({
           <ul className="items">
             {(block.items || []).map((it, i) => {
               const io = block.itemOrders?.[i];
+              const order = io ?? block.order;
               const liAnim: CSSProperties | undefined =
-                io != null && revealed
-                  ? revealed.has(io)
+                order != null && revealed
+                  ? revealed.has(order)
                     ? { animation: 'rb-fade .4s ease' }
                     : { visibility: 'hidden' }
                   : undefined;
@@ -210,7 +213,7 @@ export const FlowBlock = memo(function FlowBlock({
       >
         {block.order != null ? `*${block.order}` : '⏱'}
       </button>
-      {ordPick && (
+      {activeEditor && ordPick && (
         <OrderPicker
           rect={ordPick.rect}
           current={ordPick.item != null ? block.itemOrders?.[ordPick.item] : block.order}

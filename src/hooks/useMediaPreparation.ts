@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useStore } from '../state/store';
 import { MediaPreparation, mediaAssetSignature } from '../model/mediaResources';
-import { epsTarget, mediaFailure, rememberMediaAspect, rememberMediaFailure } from '../model/mediaGeometry';
+import { epsTarget, mediaFailure, rememberEpsTarget, rememberMediaAspect, rememberMediaFailure } from '../model/mediaGeometry';
 import { absMediaPath } from '../components/paths';
 import { fileUrl, preparePdfRaster, releaseUnusedPdfDocuments } from '../components/pdfRaster';
 import { clearDecodedRasters } from '../components/resourceRaster';
@@ -36,13 +36,14 @@ export function useMediaPreparation(): void {
   useEffect(() => { clearDecodedRasters(); clearGifAnimations(revision); releaseUnusedPdfDocuments(); }, [revision]);
   useEffect(() => {
     let cancelled = false;
-    const session = String(revision);
+    const session = `${performance.timeOrigin}:${revision}`;
     const run = async () => {
       await window.api.beginRasterSession(session);
       const displayPixels = await displayPagePixels();
       // Media may be replaced while editing; old ready records stay useful within a session.
       const initial = useStore.getState().mediaPreparation;
       const resources = initial.session === session ? { ...initial.resources } : {};
+      const convertedTargets = initial.session === session ? { ...initial.epsTargets } : {};
       const errors: Record<string, string> = {};
       while (!cancelled) {
         const state = useStore.getState();
@@ -60,10 +61,12 @@ export function useMediaPreparation(): void {
       };
       collectGifWidths();
       const assets = new Map<string, string>();
+      const figureGifs = new Set<string>();
       if (deck.config.logo) assets.set(absMediaPath(folder ?? '', deck.config.logo), 'image');
       for (const item of deck.items) if (item.kind === 'slide' && ['content', 'twoCol'].includes(item.slide.layout)) for (const block of item.slide.blocks) {
         if (!block.src || !['figure', 'video'].includes(block.type)) continue;
         const abs = absMediaPath(folder ?? '', block.src);
+        if (block.type === 'figure' && /\.gif$/i.test(abs)) figureGifs.add(abs);
         assets.set(abs, block.type === 'video' ? 'video' : block.src.toLowerCase().endsWith('.pdf') ? 'pdf' : block.src.toLowerCase().endsWith('.eps') ? 'eps' : 'image');
       }
       let completed = 0;
@@ -74,8 +77,12 @@ export function useMediaPreparation(): void {
       const foregroundReady = () => [...first].every((abs) => !assets.has(abs) || done.has(abs));
       const publish = (_phase: MediaPreparation['phase']) => {
         collectGifWidths();
+        for (const [abs, kind] of assets) if (kind === 'eps') {
+          const target = epsTarget(abs);
+          if (target !== undefined) convertedTargets[abs] = target;
+        }
         const phase = foregroundReady() ? 'ready' : 'preparing';
-        if (!cancelled && useStore.getState().mediaRevision === revision) useStore.getState().setMediaPreparation({ session, phase, completed, total: assets.size, resources: { ...resources }, errors: { ...errors }, assetSignature, gifWidths: { ...gifWidths } });
+        if (!cancelled && useStore.getState().mediaRevision === revision) useStore.getState().setMediaPreparation({ session, phase, completed, total: assets.size, resources: { ...resources }, epsTargets: { ...convertedTargets }, errors: { ...errors }, assetSignature, gifWidths: { ...gifWidths } });
       };
       const needed = [...assets].some(([abs, kind]) => (kind === 'pdf' || kind === 'eps') && !resources[kind === 'eps' ? epsTarget(abs) ?? abs : abs]);
       if (!needed && initial.phase === 'ready' && initial.assetSignature === assetSignature) return;
@@ -100,7 +107,7 @@ export function useMediaPreparation(): void {
           try {
             if (native) {
               if (mediaFailure(abs)) throw new Error(mediaFailure(abs));
-              if (/\.gif$/i.test(abs)) {
+              if (figureGifs.has(abs)) {
                 while (!cancelled && !gifWidths[abs] && !mediaFailure(abs)) {
                   collectGifWidths();
                   if (!gifWidths[abs]) await new Promise((resolve) => setTimeout(resolve, 40));
@@ -108,7 +115,14 @@ export function useMediaPreparation(): void {
                 if (mediaFailure(abs)) throw new Error(mediaFailure(abs));
               } else await preloadImage(abs, revision);
             } else if (kind !== 'video') {
-              const target = kind === 'eps' ? epsTarget(abs) : abs;
+              let target = kind === 'eps' ? epsTarget(abs) : abs;
+              if (kind === 'eps' && target === undefined) {
+                const converted = await window.api.ensureEpsPdf({ absPath: abs });
+                if (cancelled) return;
+                target = converted.pdf ?? null;
+                rememberEpsTarget(abs, target, revision);
+                if (converted.error) throw new Error(converted.error);
+              }
               if (!target) throw new Error('EPS 转换失败');
               if (mediaFailure(target)) throw new Error(mediaFailure(target));
               resources[target] = await preparePdfRaster(target, session, displayPixels * SCREEN_SAMPLING, 1);

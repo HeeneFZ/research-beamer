@@ -4,13 +4,23 @@ import {
 } from '../model/types';
 import { PageLayout } from '../model/layoutSpec';
 import { setMediaRevision } from '../model/mediaGeometry';
+import { absMediaPath } from '../model/mediaPaths';
 import { OutlineAnchor, OutlineSource, planOutlineMove, stripOrphanSections } from '../model/outline';
 import { MediaPreparation, emptyMediaPreparation } from '../model/mediaResources';
 export { stripOrphanSections } from '../model/outline';
 import { computeDeck, Computed, patchComputedSlide, refPageIndex, refParts } from '../model/numbering';
 import { colEndPlan, colRegionAt, reseedColPlaceholders, stripEmptyColRegions } from '../model/segments';
 import { serializeMarkdown, parseMarkdown, normLabel, LABEL_PREFIX, dedupeRefLabel } from '../model/markdown';
-import { attachHistoryFolder, clearHistory, recordHistory, takeRedo, takeUndo } from './history';
+import { attachHistoryFolder, clearHistory, flushHistory, recordHistory, takeRedo, takeUndo } from './history';
+
+export const PROJECT_DRAFT_FLUSH = 'beamer:flush-project-drafts';
+
+/** UI editors commit synchronously before a persistence or project boundary. */
+export function flushProjectDrafts(): void {
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new Event(PROJECT_DRAFT_FLUSH));
+  }
+}
 
 export interface FlashState {
   page: number;
@@ -43,6 +53,8 @@ interface StoreState {
   mediaPreparation: MediaPreparation;
   current: number; // 当前页 index（computed.pages）
   dirty: boolean;
+  /** Exit commits drafts first, then holds the saved project stable through apply/close. */
+  projectExiting: boolean;
   darkMode: boolean;
   zoom: number; // 画布缩放系数；显示百分比 = zoom×100，zoom=1 恒为适页
   flash: FlashState | null;
@@ -57,6 +69,7 @@ interface StoreState {
   revealStep: number;
   presentStart: number;
   presenting: boolean;
+  presentSession: string | null;
   /** 放映窗录制态（放映窗 recState 事件回传；驱动放映台按钮） */
   presentRecording: boolean;
   /** 页级排版状态（key = slideId|aspect；内存态，不入 md/历史；全模式共享，
@@ -64,6 +77,7 @@ interface StoreState {
   pageLayout: Record<string, PageLayout>;
   /** 块剪贴板（复制/粘贴按钮；内存态跨页跨工程有效，不入 md/历史） */
   clipBlock: Block | null;
+  clipBlockFolder: string | null;
   copyBlock(slideId: string, blockId: string): void;
   pasteBlockAfter(slideId: string, afterId: string | null): string | null;
 
@@ -71,6 +85,8 @@ interface StoreState {
   updateSlide(slideId: string, patch: Partial<Slide>): void;
   updateBlock(slideId: string, blockId: string, patch: Partial<Block>): void;
   insertBlock(slideId: string, afterId: string | null, type: BlockType, init?: Partial<Block>): string;
+  splitParagraph(slideId: string, blockId: string, before: string, after: string): string | null;
+  mergeParagraph(slideId: string, blockId: string, text: string): string | null;
   deleteBlock(slideId: string, blockId: string): void;
   moveBlockBefore(slideId: string, blockId: string, beforeId: string | null): void;
   addSlide(layout: Layout, afterPage?: number): void;
@@ -101,11 +117,13 @@ interface StoreState {
   setFlashMsg(m: string | null): void;
   toggleAutoSave(): void;
 
-  newProject(): void;
+  prepareProjectExit(reason?: 'switch' | 'close'): boolean | Promise<boolean>;
+  finishProjectExit(): void;
+  newProject(): void | Promise<void>;
   openProject(): Promise<void>;
-  loadProjectData(p: { md: string; folder: string }): void;
+  loadProjectData(p: { md: string; folder: string }, refreshFromDisk?: boolean): void | Promise<void>;
   loadExample(relPath: string): Promise<void>;
-  saveProject(): Promise<void>;
+  saveProject(flushDrafts?: boolean): Promise<boolean>;
   undo(): void;
   redo(): void;
 }
@@ -140,11 +158,14 @@ const projectViewDefaults = {
 export const useStore = create<StoreState>((set, get) => {
   let projectSession = 0;
   let loadRequest = 0;
-  let saveTask: Promise<void> | null = null;
+  let saveTask: Promise<boolean> | null = null;
+  let leaveTask: Promise<boolean> | null = null;
+  let presentRequest = 0;
 
   /** 结构变更只复制根与 items；各内容操作负责复制被修改的分支。 */
   const mutate = (fn: (d: Deck) => void | false, debounce = true, compute?: (deck: Deck, previous: Computed) => Computed) => {
     const s = get();
+    if (s.projectExiting) return;
     const d: Deck = { ...s.deck, items: s.deck.items.slice() };
     if (fn(d) === false) return;
     recordHistory(s.deck, debounce, d);
@@ -175,6 +196,7 @@ export const useStore = create<StoreState>((set, get) => {
     folder: null,
     current: 0,
     dirty: false,
+    projectExiting: false,
     darkMode: false,
     zoom: 1,
     flash: null,
@@ -188,18 +210,20 @@ export const useStore = create<StoreState>((set, get) => {
     revealStep: 0,
     presentStart: 0,
     presenting: false,
+    presentSession: null,
     presentRecording: false,
     pageLayout: {},
     mediaRevision: 0,
     mediaPreparation: emptyMediaPreparation(),
     clipBlock: null,
+    clipBlockFolder: null,
 
     /** 复制块到剪贴板（内存态；粘贴时重新生成 id/剥除全局唯一字段） */
     copyBlock: (slideId, blockId) => {
       const s = get();
       const sl = slideOf(s.deck, slideId);
       const b = sl ? sl.blocks.find((x) => x.id === blockId) : undefined;
-      if (b) set({ clipBlock: JSON.parse(JSON.stringify(b)) });
+      if (b) set({ clipBlock: JSON.parse(JSON.stringify(b)), clipBlockFolder: s.folder });
     },
 
     /** 粘贴块：插到 afterId 之后（与 insertBlock 同锚点语义）。
@@ -211,6 +235,7 @@ export const useStore = create<StoreState>((set, get) => {
       const id = newId();
       const { label: _l, pos: _p, ...rest } = s.clipBlock;
       const copy: Block = { ...JSON.parse(JSON.stringify(rest)), id };
+      if (copy.src && s.clipBlockFolder !== s.folder) copy.src = absMediaPath(s.clipBlockFolder ?? '', copy.src);
       mutateSlide(slideId, (sl) => {
         const at = afterId ? sl.blocks.findIndex((x) => x.id === afterId) : -1;
         if (at >= 0) sl.blocks.splice(at + 1, 0, copy);
@@ -263,7 +288,7 @@ export const useStore = create<StoreState>((set, get) => {
         // items 变更后 itemOrders 重对齐：公共前缀 + 公共后缀对齐（中部增删/改写段
         // 置 undefined）——纯按下标前缀对齐会在「删首项/中部插入」时把后续项顺序
         // 整体错一档；编辑器每次提交全量 items，无法携带对齐信息
-        if (patch.items && prev.itemOrders && !('itemOrders' in patch)) {
+        if (patch.items && prev.itemOrders && !Object.prototype.hasOwnProperty.call(patch, 'itemOrders')) {
           const oldItems = prev.items || [];
           const neu = patch.items;
           let p = 0;
@@ -307,6 +332,32 @@ export const useStore = create<StoreState>((set, get) => {
           newId,
         );
       }, false),
+
+    // Text and structure form one undoable action. Never merge across column/media boundaries.
+    splitParagraph: (slideId, blockId, before, after) => {
+      const id = newId();
+      let inserted = false;
+      mutateSlide(slideId, (slide) => {
+        const at = slide.blocks.findIndex((block) => block.id === blockId && block.type === 'paragraph');
+        if (at < 0) return false;
+        slide.blocks[at] = { ...slide.blocks[at], text: before };
+        slide.blocks.splice(at + 1, 0, { id, type: 'paragraph', text: after });
+        inserted = true;
+      }, false);
+      return inserted ? id : null;
+    },
+    mergeParagraph: (slideId, blockId, text) => {
+      let target: string | null = null;
+      mutateSlide(slideId, (slide) => {
+        const at = slide.blocks.findIndex((block) => block.id === blockId);
+        const previous = slide.blocks[at - 1];
+        if (at < 1 || previous.type !== 'paragraph' || slide.blocks[at].type !== 'paragraph') return false;
+        slide.blocks[at - 1] = { ...previous, text: (previous.text ?? '') + text };
+        slide.blocks.splice(at, 1);
+        target = previous.id;
+      }, false);
+      return target;
+    },
 
     /** 拖拽调序：把 blockId 移动到 beforeId 之前（beforeId=null 移到所在栏末尾）。
      *  栏安全：beforeId 必须与 blockId 同栏（colmark/colend 之间），否则忽略。 */
@@ -355,15 +406,20 @@ export const useStore = create<StoreState>((set, get) => {
       const s = get();
       const idx = d_indexOf(s.deck, slideId);
       if (idx < 0) return;
+      const selected = s.computed.pages[s.current];
       mutate((d) => {
         d.items.splice(idx, 1);
         // 删页可能留下无页面归属的孤儿节标题（含链式），一并清理——
         // 否则残留小节会抢占其后新建章节的归属（用户实测报障）
         d.items = stripOrphanSections(d.items);
       }, false);
+      const pages = get().computed.pages;
+      const selectedIndex = selected ? pages.findIndex((page) => selected.kind === 'slide'
+        ? page.slide?.id === selected.slide?.id : page.section?.id === selected.section?.id) : -1;
       // 清理该页的排版缓存孤儿键（防长会话「建页-删页」单调增长；undo 后重新扫描即可）
       set((st) => ({
-        current: Math.min(st.current, Math.max(0, get().computed.pages.length - 1)),
+        current: selectedIndex >= 0 ? selectedIndex : Math.min(s.current, Math.max(0, pages.length - 1)),
+        ...(selected?.slide?.id === slideId ? { editing: null, focusId: null, revealStep: 0 } : {}),
         pageLayout: Object.fromEntries(Object.entries(st.pageLayout).filter(([k]) => !k.startsWith(slideId + '|'))),
       }));
     },
@@ -472,6 +528,7 @@ export const useStore = create<StoreState>((set, get) => {
       const i = Math.max(0, Math.min(Number.isFinite(index) ? Math.trunc(index) : 0, n - 1));
       set({
         current: i,
+        ...(i !== s.current ? { editing: null, focusId: null } : {}),
         jumpStack: pushJump ? [...s.jumpStack, s.current] : s.jumpStack,
         revealStep: 0,
         // 跳转高亮是「到达即提示」的一次性事件：离开目标页即失效（防返回时动画重放）
@@ -490,14 +547,23 @@ export const useStore = create<StoreState>((set, get) => {
 
     startPresent: async () => {
       // Buffered modal fields must be explicitly committed before changing mode.
-      if (document.querySelector('.modal-mask, .field-popover') || get().lightbox) return;
+      if (document.querySelector('.modal-mask, .field-popover, .math-float') || get().lightbox) return;
       if (get().mediaPreparation.phase !== 'ready') return;
-      set({ presenting: true, revealStep: 0, presentStart: 0, editing: null, lightbox: null });
-      await window.api.openPresent();
+      if (get().presenting) return;
+      const request = ++presentRequest;
+      const presentSession = `${performance.timeOrigin}:${request}`;
+      set({ presenting: true, presentSession, revealStep: 0, presentStart: 0, editing: null, lightbox: null });
+      try {
+        const result = await window.api.openPresent({ session: presentSession });
+        if (!result.ok) throw new Error(result.error ?? '投影窗口打开失败');
+      } catch (error) {
+        if (request === presentRequest) set({ presenting: false, presentSession: null, presentRecording: false, flashMsg: '放映启动失败：' + String(error) });
+      }
     },
 
     endPresent: () => {
-      set({ presenting: false, presentRecording: false });
+      presentRequest++;
+      set({ presenting: false, presentSession: null, presentRecording: false });
       void window.api.closePresent();
     },
 
@@ -554,9 +620,8 @@ export const useStore = create<StoreState>((set, get) => {
       if (!s.jumpStack.length) return;
       const stack = [...s.jumpStack];
       const back = stack.pop()!;
-      // 返回原处同理：若返回页不是高亮目标页，flash 一并失效
-      const current = Math.max(0, Math.min(back, s.computed.pages.length - 1));
-      set({ current, jumpStack: stack, revealStep: 0, flash: s.flash && s.flash.page !== current ? null : s.flash });
+      get().gotoPage(back);
+      set({ jumpStack: stack });
     },
 
     setFlash: (f) => set({ flash: f }),
@@ -579,50 +644,136 @@ export const useStore = create<StoreState>((set, get) => {
       }),
     setMediaPreparation: (mediaPreparation) => set({ mediaPreparation }),
 
+    prepareProjectExit: (reason = 'switch') => {
+      if (leaveTask) return leaveTask;
+      if (get().projectExiting) return true;
+      flushProjectDrafts();
+      const state = get();
+      // Pure model tests and E2E never save or ask about their fixture projects.
+      if (!window.api || window.api.isE2E) return true;
+      set({ projectExiting: true });
+      const session = projectSession;
+      const historyReady = () => {
+        const report = (ok: boolean) => {
+          if (!ok && session === projectSession) set({ flashMsg: '撤销历史未保存，操作已取消' });
+          return ok;
+        };
+        const result = flushHistory();
+        return typeof result === 'boolean' ? report(result) : result.then(report);
+      };
+      const work = !state.dirty && !saveTask ? historyReady() : (async () => {
+        if (saveTask && (!await saveTask || session !== projectSession)) return false;
+        const current = get();
+        if (!current.dirty) return historyReady();
+        if (!(current.autoSave && current.folder)) {
+          const choice = await window.api.confirmProjectExit({ title: current.deck.config.title, language: current.deck.config.language, reason });
+          if (session !== projectSession || choice === 'cancel') return false;
+          if (choice === 'discard') return historyReady();
+        }
+        if (!await get().saveProject(false) || session !== projectSession) return false;
+        return historyReady();
+      })();
+      if (typeof work === 'boolean') {
+        if (!work) set({ projectExiting: false });
+        return work;
+      }
+      const task = work.catch((error) => {
+        if (session === projectSession) set({ flashMsg: '操作未完成：' + String(error) });
+        return false;
+      });
+      leaveTask = task;
+      void task.then((ok) => {
+        if (leaveTask === task) leaveTask = null;
+        if (!ok && session === projectSession) set({ projectExiting: false });
+      });
+      return task;
+    },
+
+    finishProjectExit: () => { if (get().projectExiting) set({ projectExiting: false }); },
+
     newProject: () => {
-      if (get().presenting) get().endPresent();
-      projectSession++;
-      loadRequest++;
-      clearHistory();
-      attachHistoryFolder(null, '');
-      const d = freshDeck();
-      const mediaRevision = get().mediaRevision + 1;
-      setMediaRevision(mediaRevision);
-      set({ deck: d, computed: computeDeck(d), folder: null, dirty: false, ...projectViewDefaults, mediaRevision, mediaPreparation: emptyMediaPreparation() });
+      if (get().projectExiting) return;
+      const request = ++loadRequest;
+      const apply = () => {
+        if (request !== loadRequest) return;
+        if (get().presenting) get().endPresent();
+        projectSession++;
+        loadRequest++;
+        clearHistory();
+        attachHistoryFolder(null, '');
+        const d = freshDeck();
+        const mediaRevision = get().mediaRevision + 1;
+        setMediaRevision(mediaRevision);
+        set({ deck: d, computed: computeDeck(d), folder: null, dirty: false, projectExiting: false, ...projectViewDefaults, mediaRevision, mediaPreparation: emptyMediaPreparation() });
+      };
+      const allowed = get().prepareProjectExit();
+      if (typeof allowed === 'boolean') {
+        try { if (allowed) apply(); } finally { get().finishProjectExit(); }
+        return;
+      }
+      return allowed.then((ok) => { if (ok) apply(); }).finally(() => get().finishProjectExit());
     },
 
     openProject: async () => {
+      if (get().projectExiting) return;
       const request = ++loadRequest;
       try {
         const r = await window.api.openProject();
         if (request !== loadRequest || !r) return;
         if (r.error) { set({ flashMsg: '打开失败：' + r.error }); return; }
         if (r.md == null) { set({ flashMsg: '工程中未找到 deck.md' }); return; }
-        get().loadProjectData({ md: r.md, folder: r.folder });
+        await get().loadProjectData({ md: r.md, folder: r.folder }, true);
       } catch (e) {
         if (request === loadRequest) set({ flashMsg: '打开失败：' + String(e) });
       }
     },
 
-    loadProjectData: ({ md, folder }) => {
+    loadProjectData: ({ md, folder }, refreshFromDisk = false) => {
+      if (get().projectExiting) return;
       try {
-        const deck = parseMarkdown(md);
-        const computed = computeDeck(deck);
-        if (get().presenting) get().endPresent();
-        projectSession++;
-        loadRequest++;
-        clearHistory();
-        // 历史 adopt：读回该工程目录下的 .beamer-history.json 恢复撤销栈
-        attachHistoryFolder(folder, JSON.stringify(deck));
-        const mediaRevision = get().mediaRevision + 1;
-        setMediaRevision(mediaRevision);
-        set({ deck, computed, folder, dirty: false, ...projectViewDefaults, mediaRevision, mediaPreparation: emptyMediaPreparation() });
+        const refresh = refreshFromDisk && !!window.api && !window.api.isE2E;
+        const initialDeck = refresh ? null : parseMarkdown(md);
+        const initialComputed = initialDeck ? computeDeck(initialDeck) : null;
+        const request = ++loadRequest;
+        const apply = (deck: Deck, computed: Computed) => {
+          if (request !== loadRequest) return;
+          if (get().presenting) get().endPresent();
+          projectSession++;
+          loadRequest++;
+          clearHistory();
+          // 历史 adopt：读回该工程目录下的 .beamer-history.json 恢复撤销栈
+          attachHistoryFolder(folder, JSON.stringify(deck));
+          const mediaRevision = get().mediaRevision + 1;
+          setMediaRevision(mediaRevision);
+          set({ deck, computed, folder, dirty: false, projectExiting: false, ...projectViewDefaults, mediaRevision, mediaPreparation: emptyMediaPreparation() });
+        };
+        const allowed = get().prepareProjectExit();
+        if (refresh) {
+          return (async () => {
+            if (!await allowed || request !== loadRequest) return;
+            // Save may have written into the selected folder, including Save As.
+            // Read the selected project only after that exit transaction finishes.
+            const result = await window.api.readFile(absMediaPath(folder, 'deck.md'));
+            if (request !== loadRequest) return;
+            if ('error' in result) throw new Error(result.error);
+            const deck = parseMarkdown(new TextDecoder('utf-8', { fatal: true }).decode(result.data));
+            apply(deck, computeDeck(deck));
+          })().catch((error) => {
+            if (request === loadRequest) set({ flashMsg: '工程读取失败：' + String(error) });
+          }).finally(() => { if (request === loadRequest) get().finishProjectExit(); });
+        }
+        if (typeof allowed === 'boolean') {
+          try { if (allowed) apply(initialDeck!, initialComputed!); } finally { get().finishProjectExit(); }
+          return;
+        }
+        return allowed.then((ok) => { if (ok) apply(initialDeck!, initialComputed!); }).finally(() => get().finishProjectExit());
       } catch (e) {
         set({ flashMsg: '工程解析失败：' + String(e) });
       }
     },
 
     loadExample: async (relPath) => {
+      if (get().projectExiting) return;
       const request = ++loadRequest;
       try {
         const r = await window.api.loadExample(relPath);
@@ -631,37 +782,41 @@ export const useStore = create<StoreState>((set, get) => {
           set({ flashMsg: r?.error ? '打开失败：' + r.error : '示例不存在：' + relPath });
           return;
         }
-        get().loadProjectData({ md: r.md, folder: r.folder });
+        await get().loadProjectData({ md: r.md, folder: r.folder }, true);
       } catch (e) {
         if (request === loadRequest) set({ flashMsg: '打开失败：' + String(e) });
       }
     },
 
-    saveProject: async () => {
+    saveProject: async (flushDrafts = true) => {
+      if (flushDrafts) flushProjectDrafts();
       const session = projectSession;
       while (saveTask) {
-        await saveTask;
-        if (session !== projectSession || (!get().dirty && get().folder)) return;
+        if (!await saveTask || session !== projectSession) return false;
+        if (!get().dirty && get().folder) return true;
       }
       const task = (async () => {
         const s = get();
         try {
           const r = await window.api.saveProject({ folder: s.folder, md: serializeMarkdown(s.deck) });
-          if (session !== projectSession) return;
-          if (r?.error) { set({ flashMsg: '保存失败：' + r.error }); return; }
-          if (!r?.folder) return;
+          if (session !== projectSession) return false;
+          if (r?.error) { set({ flashMsg: '保存失败：' + r.error }); return false; }
+          if (!r?.folder) return false;
           if (s.folder !== r.folder) attachHistoryFolder(r.folder, JSON.stringify(s.deck), false);
           set({ folder: r.folder, dirty: get().deck !== s.deck, flashMsg: '已保存 → ' + r.folder });
+          return true;
         } catch (e) {
           if (session === projectSession) set({ flashMsg: '保存失败：' + String(e) });
+          return false;
         }
       })();
       saveTask = task;
-      try { await task; }
+      try { return await task; }
       finally { if (saveTask === task) saveTask = null; }
     },
 
     undo: () => {
+      if (get().projectExiting) return;
       const deck = takeUndo(get().deck);
       if (!deck) return;
       const computed = computeDeck(deck);
@@ -669,6 +824,7 @@ export const useStore = create<StoreState>((set, get) => {
     },
 
     redo: () => {
+      if (get().projectExiting) return;
       const deck = takeRedo(get().deck);
       if (!deck) return;
       const computed = computeDeck(deck);
@@ -722,11 +878,18 @@ export function editableSlideOf(page: Page | undefined, pages: Page[]): Slide | 
 }
 
 /** 当前页出现动画档位：去重升序的 order 值（含 itemize 逐项 itemOrders） */
-export function pageOrders(page: { kind: string; slide?: { blocks: { order?: number; itemOrders?: (number | undefined)[] }[] } } | undefined): number[] {
+export function pageOrders(page: { kind: string; slide?: { blocks: { type?: string; items?: string[]; order?: number; itemOrders?: (number | undefined)[] }[] } } | undefined): number[] {
   const orders: number[] = [];
   for (const b of page?.slide?.blocks || []) {
-    if (b.order != null) orders.push(b.order);
-    if (b.itemOrders) for (const o of b.itemOrders) if (o != null) orders.push(o);
+    if (b.type === 'itemize') {
+      for (let i = 0; i < (b.items?.length ?? 0); i++) {
+        const order = b.itemOrders?.[i] ?? b.order;
+        if (order != null) orders.push(order);
+      }
+    } else {
+      if (b.order != null) orders.push(b.order);
+      if (!b.type && b.itemOrders) for (const order of b.itemOrders) if (order != null) orders.push(order);
+    }
   }
   return [...new Set(orders)].sort((a, b) => a - b);
 }

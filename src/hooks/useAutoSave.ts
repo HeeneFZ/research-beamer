@@ -11,7 +11,7 @@ export function useAutoSave(): void {
     if (window.api.isE2E || !enabled || !dirty || !folder) return;
     const timer = window.setTimeout(() => {
       const s = useStore.getState();
-      if (s.autoSave && s.dirty && s.folder === folder && s.deck === deck) void s.saveProject();
+      if (s.autoSave && s.dirty && s.folder === folder && s.deck === deck) void s.saveProject(false);
     }, 2000);
     return () => clearTimeout(timer);
   }, [deck, dirty, folder, enabled]);

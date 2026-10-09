@@ -26,10 +26,12 @@ const clampY = (y: number, hPct: number): number => r1(Math.max(0, Math.min(100 
 
 /** 选图并导入工程 media/：返回相对路径（media/xxx）；取消/失败返回 null */
 export async function pickLogoFile(folder: string): Promise<string | null> {
+  const revision = useStore.getState().mediaRevision;
+  const valid = () => useStore.getState().mediaRevision === revision && useStore.getState().folder === folder;
   const r = await window.api.pickMedia();
-  if (!r) return null;
+  if (!r || !valid()) return null;
   const imp = await window.api.importMedia({ srcPath: r.path, folder });
-  return imp && imp.fileName ? 'media/' + imp.fileName : null;
+  return valid() && imp?.fileName ? 'media/' + imp.fileName : null;
 }
 
 /** 卡内右下「＋ Logo」占位（编辑态、未设置 logo 时显示；点击载入） */
@@ -42,9 +44,10 @@ export function LogoAddChip() {
       setFlashMsg('请先保存工程（需要 media/ 目录）');
       return;
     }
+    const revision = useStore.getState().mediaRevision;
     const src = await pickLogoFile(folder);
     // 只落 logo 不落 logoPos：默认锚定卡片右下，用户拖/拉后才持久化浮动态坐标
-    if (src) setConfig({ logo: src });
+    if (src && useStore.getState().mediaRevision === revision && useStore.getState().folder === folder) setConfig({ logo: src });
   };
   return (
     <button className="logo-add-chip" onClick={() => { void add(); }} title="载入校徽 / 自定义图案" draggable={false}>
@@ -127,8 +130,9 @@ export function CoverLogo({ config, folder, mode }: {
       setFlashMsg('请先保存工程（需要 media/ 目录）');
       return;
     }
+    const revision = useStore.getState().mediaRevision;
     const src = await pickLogoFile(folder);
-    if (src) setConfig({ logo: src });
+    if (src && useStore.getState().mediaRevision === revision && useStore.getState().folder === folder) setConfig({ logo: src });
   };
 
   // 锚定态（无 logoPos）由卡片 CSS 定位；浮动态用页百分比

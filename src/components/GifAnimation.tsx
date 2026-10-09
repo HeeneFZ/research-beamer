@@ -5,6 +5,7 @@ import { useStore } from '../state/store';
 import { mediaAspect } from '../model/mediaGeometry';
 import { fileUrl } from './pdfRaster';
 import { displayPagePixels } from './displayTargets';
+import { GifStillFrame } from './GifStillFrame';
 interface Frame { raster: ImageBitmap; duration: number }
 interface Animation { key: string; id: number; worker: Worker; width: number; capped: boolean; priority: number; aspect: number; loops: number; duration: number; frames: Frame[]; bytes: number; users: number; retired: boolean; done: boolean; pending: Promise<void>; resolve: () => void; reject: (error: Error) => void }
 interface Message { type: 'metadata' | 'frame' | 'prepared' | 'error'; id: number; bitmap?: ImageBitmap; duration?: number; width?: number; aspect?: number; loops?: number; bytes?: number; error?: string }
@@ -122,7 +123,8 @@ export function GifAnimation({ abs, active = true, onAspect, onError }: { abs: s
   const revision = useStore((state) => state.mediaRevision), canvasRef = useRef<HTMLCanvasElement>(null);
   const control = useRef<{ setActive: (active: boolean) => void } | null>(null);
   const latest = useRef({ active, onAspect }); latest.current = { active, onAspect };
-  const [fallback, setFallback] = useState(false);
+  const [failed, setFailed] = useState<{ abs: string; revision: number } | null>(null);
+  const fallback = failed?.abs === abs && failed.revision === revision;
   useLayoutEffect(() => {
     const canvas = canvasRef.current, box = canvas?.parentElement;
     if (!canvas || !box || fallback) return;
@@ -155,20 +157,24 @@ export function GifAnimation({ abs, active = true, onAspect, onError }: { abs: s
       if (playing) raf = requestAnimationFrame(tick);
     };
     const setActive = (enabled: boolean) => {
-      if (!animation) return;
-      if (desiredActive === enabled) { if (!enabled) draw(animation.frames[0]); return; }
+      const changed = desiredActive !== enabled;
       desiredActive = enabled;
-      playing = enabled; cancelAnimationFrame(raf);
-      if (enabled) { index = 0; loops = 0; due = performance.now(); raf = requestAnimationFrame(tick); }
-      else { index = 0; loops = 0; draw(animation.frames[0]); }
+      if (!animation) { if (enabled) prepare(true); return; }
+      if (!enabled) {
+        playing = false; cancelAnimationFrame(raf); index = loops = 0;
+        draw(animation.frames[0]); release(animation); animation = null;
+      } else if (changed || !playing) {
+        playing = true; cancelAnimationFrame(raf); index = loops = 0;
+        due = performance.now(); raf = requestAnimationFrame(tick);
+      }
     };
     control.current = { setActive };
-    const prepare = () => {
+    const prepare = (refresh = false) => {
       if (!targetWidth || !alive) return;
       const pageWidth = Number(box.closest<HTMLElement>('.sv')?.dataset.pageWidth) || 160 * 96 / 25.4;
       const wanted = Math.max(box.clientWidth * targetWidth / pageWidth, box.getBoundingClientRect().width * (window.devicePixelRatio || 1));
       const next = Math.max(1, Math.ceil(wanted / 128) * 128);
-      if (next === width) return;
+      if (next === width && (!refresh || pending.size > 0 || animation)) return;
       width = next; const current = ++token;
       for (const entry of pending.values()) release(entry); pending.clear();
       const entry = lease(abs, revision, width, latest.current.active ? 0 : 30); pending.set(current, entry);
@@ -183,18 +189,21 @@ export function GifAnimation({ abs, active = true, onAspect, onError }: { abs: s
         canvas.getContext('2d')?.getImageData(0, 0, 1, 1);
         delete canvas.dataset.mediaPending; canvas.dispatchEvent(new Event('mediaready', { bubbles: true }));
         setActive(latest.current.active);
-      }).catch((error) => { if (alive && current === token) { if (window.api.isE2E) console.warn('GIF_WORKER_FALLBACK', String(error)); setFallback(true); } })
+      }).catch((error) => { if (alive && current === token) { if (window.api.isE2E) console.warn('GIF_WORKER_FALLBACK', String(error)); setFailed({ abs, revision }); } })
         .finally(() => { if (pending.delete(current)) release(entry); });
     };
     void displayPagePixels().then((value) => { if (alive) { targetWidth = value; prepare(); } });
-    const resize = new ResizeObserver(prepare); resize.observe(box);
-    window.addEventListener('raster-scale', prepare);
+    const resized = () => prepare();
+    const resize = new ResizeObserver(resized); resize.observe(box);
+    window.addEventListener('raster-scale', resized);
     return () => {
-      alive = false; token++; cancelAnimationFrame(raf); control.current = null; resize.disconnect(); window.removeEventListener('raster-scale', prepare);
+      alive = false; token++; cancelAnimationFrame(raf); control.current = null; resize.disconnect(); window.removeEventListener('raster-scale', resized);
       if (animation) release(animation); for (const entry of pending.values()) release(entry); pending.clear(); canvas.width = canvas.height = 0;
     };
   }, [abs, revision, fallback]);
   useLayoutEffect(() => { control.current?.setActive(active); }, [active]);
-  if (fallback) return <img src={fileUrl(abs)} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (image.naturalWidth && image.naturalHeight) onAspect(image.naturalWidth / image.naturalHeight); else onError(); }} onError={onError} />;
+  if (fallback) return active
+    ? <img src={fileUrl(abs)} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (image.naturalWidth && image.naturalHeight) onAspect(image.naturalWidth / image.naturalHeight); else onError(); }} onError={onError} />
+    : <GifStillFrame abs={abs} onAspect={onAspect} onError={onError} />;
   return <canvas ref={canvasRef} className="gif-animation" width={0} height={0} data-media-pending="true" />;
 }

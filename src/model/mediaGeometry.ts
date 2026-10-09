@@ -8,8 +8,8 @@ export const mediaAspect = (abs: string) => aspects.get(abs);
 export const mediaFailure = (abs: string) => failures.get(abs);
 export const epsTarget = (abs: string) => epsTargets.get(abs);
 
-export function setMediaRevision(next: number): void {
-  if (revision === next) return;
+export function setMediaRevision(next: number, force = false): void {
+  if (revision === next && !force) return;
   revision = next;
   aspects.clear();
   failures.clear();

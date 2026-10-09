@@ -14,6 +14,8 @@ import { drawPreparedRaster } from './resourceRaster';
 import type { MediaPreparation } from '../model/mediaResources';
 import { IcoLens } from './icons';
 import { GifAnimation } from './GifAnimation';
+import { GifStillFrame } from './GifStillFrame';
+export { GifStillFrame } from './GifStillFrame';
 import { SCREEN_SAMPLING } from './displayTargets';
 import type { SlideMode } from './slide/types';
 
@@ -40,12 +42,15 @@ export function EdgeResizeHandles({ hostRef, block, onWidthChange }: {
   onWidthChange: (w: number) => void;
 }) {
   const dragRef = useRef<{ x: number; w0: number; cw: number; scale: number; side: 1 | -1; moved: boolean } | null>(null);
+  const finishDragRef = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => () => { finishDragRef.current?.(); }, [block.id]);
   const onDown = (side: 1 | -1) => (e: React.MouseEvent) => {
     const host = hostRef.current;
     if (!host || e.button !== 0) return;
     if ((e.target as HTMLElement).closest('.ord-badge, .li-ord, button, input')) return;
     e.preventDefault();
     e.stopPropagation();
+    finishDragRef.current?.();
     const cw = host.parentElement?.clientWidth || host.clientWidth || 1;
     const scale = host.offsetWidth > 0 ? host.getBoundingClientRect().width / host.offsetWidth : 1;
     const w0 = block.width ?? (cw > 0 ? host.clientWidth / cw : 0.6);
@@ -53,6 +58,7 @@ export function EdgeResizeHandles({ hostRef, block, onWidthChange }: {
     const prevCursor = document.body.style.cursor;
     document.body.style.cursor = 'ew-resize';
     const onMove = (ev: MouseEvent) => {
+      if (!(ev.buttons & 1)) { onUp(); return; }
       const d = dragRef.current;
       if (!d) return;
       const dx = (ev.clientX - d.x) / (d.scale || 1);
@@ -63,12 +69,16 @@ export function EdgeResizeHandles({ hostRef, block, onWidthChange }: {
     const onUp = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('blur', onUp);
       document.body.style.cursor = prevCursor;
       if (dragRef.current?.moved) swallowNextClick(hostRef.current);
       dragRef.current = null;
+      finishDragRef.current = null;
     };
+    finishDragRef.current = onUp;
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+    window.addEventListener('blur', onUp);
   };
   return (
     <>
@@ -79,14 +89,14 @@ export function EdgeResizeHandles({ hostRef, block, onWidthChange }: {
 }
 
 /** PDF 首页矢量渲染（含 eps 转出的 pdf）；媒体弹窗预览复用 */
-export function PdfCanvas({ abs, thumbnail = false, print = false, preparation: snapshot }: { abs: string; thumbnail?: boolean; print?: boolean; preparation?: MediaPreparation }) {
+export function PdfCanvas({ abs, thumbnail = false, print = false, preparation: snapshot, sourceError }: { abs: string; thumbnail?: boolean; print?: boolean; preparation?: MediaPreparation; sourceError?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const preparation = useStore((state) => snapshot ?? state.mediaPreparation);
   const resource = preparation.resources[abs];
   const [geometry, setGeometry] = useState<{ abs: string; aspect: number } | null>(null);
   const aspect = resource?.aspect ?? (geometry?.abs === abs ? geometry.aspect : pdfAspectSync(abs));
   const [failure, setFailure] = useState<{ abs: string; message: string } | null>(null);
-  const error = (failure?.abs === abs ? failure.message : null) ?? preparation.errors[abs] ?? preparation.errors.__prepare__ ?? mediaFailure(abs);
+  const error = sourceError ?? (failure?.abs === abs ? failure.message : null) ?? preparation.errors[abs] ?? preparation.errors.__prepare__ ?? mediaFailure(abs);
   const boxAspect = aspect ?? (error ? 16 / 9 : undefined);
 
   useLayoutEffect(() => {
@@ -139,7 +149,7 @@ export function PdfCanvas({ abs, thumbnail = false, print = false, preparation: 
           .then((ready) => drawPreparedRaster(ready, canvas, width, valid, purpose))
           : drawPreparedRaster(resource, canvas, width, valid, thumbnail ? 'thumb' : 'screen');
         void rendered
-          .catch((error) => { if (!cancelled) { canvas.dataset.mediaError = String(error); delete canvas.dataset.mediaPending; canvas.dispatchEvent(new Event('error')); } });
+          .catch((error) => { if (valid()) { canvas.dataset.mediaError = String(error); delete canvas.dataset.mediaPending; canvas.dispatchEvent(new Event('error')); } });
       }
     };
     const onError = () => setFailure({ abs, message: canvas.dataset.mediaError || 'PDF 绘制失败' });
@@ -175,10 +185,10 @@ export function PdfCanvas({ abs, thumbnail = false, print = false, preparation: 
 /** EPS：主进程 Ghostscript 转矢量 PDF 后渲染；媒体弹窗预览复用 */
 export function EpsFigure({ abs, thumbnail = false, print = false, preparation }: { abs: string; thumbnail?: boolean; print?: boolean; preparation?: MediaPreparation }) {
   const [result, setResult] = useState<{ abs: string; pdf?: string; error?: boolean } | null>(null);
-  const target = epsTarget(abs);
+  const target = preparation?.epsTargets?.[abs] !== undefined ? preparation.epsTargets[abs] : epsTarget(abs);
   const current = target !== undefined ? { pdf: target, error: target === null } : result?.abs === abs ? result : null;
   useEffect(() => {
-    if (epsTarget(abs) !== undefined) return;
+    if (target !== undefined) return;
     let alive = true;
     const version = mediaRevision();
     window.api.ensureEpsPdf({ absPath: abs }).then((r) => {
@@ -189,45 +199,14 @@ export function EpsFigure({ abs, thumbnail = false, print = false, preparation }
       if (alive) { rememberEpsTarget(abs, null, version); setResult({ abs, error: true }); }
     });
     return () => { alive = false; };
-  }, [abs]);
-  if (current?.pdf) return <PdfCanvas abs={current.pdf} thumbnail={thumbnail} print={print} preparation={preparation} />;
-  if (current?.error) return <div className="fig-note" data-media-error="EPS 转换失败">EPS 需要 Ghostscript（C:\Program Files\gs）</div>;
+  }, [abs, target]);
+  if (preparation?.errors.__prepare__) return <div className="fig-note" data-media-error={preparation.errors.__prepare__}>矢量图加载失败：{preparation.errors.__prepare__}</div>;
+  if (current?.pdf) return <PdfCanvas abs={current.pdf} thumbnail={thumbnail} print={print} preparation={preparation} sourceError={preparation?.errors[abs]} />;
+  if (current?.error) return <div className="fig-note" data-media-error={preparation?.errors[abs] ?? 'EPS 转换失败'}>EPS 转换失败：{preparation?.errors[abs] ?? '请检查素材和 Ghostscript 安装'}</div>;
   // 转换期占位：data-eps-pending 让溢出扫描等待（否则扫描提前收工，图后撑出版心）
   return <div className="fig-note eps-pending" data-eps-pending>EPS 转换中…</div>;
 }
 
-/** GIF 静帧（缩略图用）：离屏 Image 解码、drawImage 取首帧入 canvas——图片不进 DOM
- *  即不起 Chromium 动画循环（对动画图 drawImage 恒画默认帧=首帧）。胶片缩略图渲染
- *  全部页，几十张 GIF 同时持续播放/解码会拖垮编辑帧率（用户实测卡顿报障）；
- *  画布与放映复用 Worker 预备帧；排版等待固有宽高比，而不是位图精度。 */
-export function GifStillFrame({ abs, onAspect, onError, print = false }: { abs: string; onAspect: (a: number) => void; onError: () => void; print?: boolean }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    let alive = true;
-    const im = new Image();
-    im.onload = () => {
-      if (!alive) return;
-      if (!(im.naturalWidth > 0 && im.naturalHeight > 0)) { onError(); return; }
-      onAspect(im.naturalWidth / im.naturalHeight);
-      const c = ref.current;
-      if (!c) return;
-      const scale = print ? Math.min(1, Math.sqrt((16 * 1024 * 1024) / (im.naturalWidth * im.naturalHeight))) : Math.min(1, 512 / im.naturalWidth, 512 / im.naturalHeight);
-      c.width = Math.max(1, Math.round(im.naturalWidth * scale));
-      c.height = Math.max(1, Math.round(im.naturalHeight * scale));
-      c.getContext('2d')?.drawImage(im, 0, 0, c.width, c.height);
-      im.onload = im.onerror = null;
-      im.src = ''; // The thumbnail owns the first frame; release the large animation source.
-    };
-    im.src = fileUrl(abs);
-    im.onerror = () => {
-      if (!alive) return;
-      if (ref.current) ref.current.dataset.mediaError = 'GIF 加载失败';
-      onError();
-    };
-    return () => { alive = false; im.onload = null; im.onerror = null; };
-  }, [abs, onAspect, onError, print]);
-  return <canvas ref={ref} className="gif-still" data-gif-source={abs} width={0} height={0} />;
-}
 export function FigureView({
   block, folder, computed, lang, palette, onRef, onZoom, onWidthChange, still, print, preparation, active,
 }: {
@@ -279,6 +258,7 @@ export function FigureView({
     inner = <GifStillFrame abs={abs} onAspect={setNatAspect} onError={onError} print={print} />;
   }
   else if (lower.endsWith('.gif') && 'ImageDecoder' in window) inner = <GifAnimation abs={abs} active={active} onAspect={setNatAspect} onError={onError} />;
+  else if (lower.endsWith('.gif') && active === false) inner = <GifStillFrame abs={abs} onAspect={setNatAspect} onError={onError} />;
   else {
     inner = (
       <img

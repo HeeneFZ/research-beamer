@@ -14,7 +14,7 @@ const EMPTY_REVEALED = new Set<number>();
 const PAGE_CACHE_LIMIT = 64;
 const pageKey = (page: Page) => page.slide?.id ?? page.section?.id ?? page.no;
 
-export function ReadySlideStage({ preloadPages, onPrepared, onPreparation, preparationKey, active: viewActive = true, ...props }: SlideViewProps & { preloadPages?: Page[]; onPrepared?: (ready: boolean) => void; onPreparation?: (state: ViewPreparation) => void; preparationKey?: string; active?: boolean }) {
+export function ReadySlideStage({ preloadPages, onPrepared, onPreparation, preparationKey, active: viewActive = true, retainOutgoing = true, ...props }: SlideViewProps & { preloadPages?: Page[]; onPrepared?: (ready: boolean) => void; onPreparation?: (state: ViewPreparation) => void; preparationKey?: string; active?: boolean; retainOutgoing?: boolean }) {
   const revision = useStore((state) => props.mediaSnapshot ?? state.mediaRevision);
   const layouts = useStore((state) => props.layoutSnapshot ?? state.pageLayout);
   const resources = useStore((state) => props.resourceSnapshot ?? state.mediaPreparation);
@@ -45,9 +45,9 @@ export function ReadySlideStage({ preloadPages, onPrepared, onPreparation, prepa
   useEffect(() => { onPrepared?.(!warming); }, [warming, onPrepared]);
   useLayoutEffect(() => {
     const root = layers.current.get(identity)?.querySelector<HTMLElement>('.sv');
-    const currentReady = !transitioning && !!root && root.dataset.slideReady === 'true' && pageMediaReady(root);
+    const currentReady = viewActive && !transitioning && !!root && root.dataset.slideReady === 'true' && pageMediaReady(root);
     onPreparation?.({ scope, targetKey: preparationKey ?? identity, ready: !warming, currentReady, completed: progress.completed, total: progress.total });
-  }, [scope, identity, preparationKey, warming, transitioning, readinessTick, progress.completed, progress.total, onPreparation]);
+  }, [viewActive, scope, identity, preparationKey, warming, transitioning, readinessTick, progress.completed, progress.total, onPreparation]);
   useEffect(() => {
     let alive = true;
     const index = pages.findIndex((page) => pageKey(page) === pageKey(props.page));
@@ -124,7 +124,7 @@ export function ReadySlideStage({ preloadPages, onPrepared, onPreparation, prepa
         };
         callbacks.current.set(key, notify);
       }
-      const visible = viewActive && key === current;
+      const visible = viewActive && key === current && (!transitioning || retainOutgoing);
       const animated = frame.page.slide?.blocks.some((block) => block.type === 'video' || /\.gif$/i.test(block.src ?? ''));
       return <div key={key} className="ready-slide-layer" data-stage-visible={visible || undefined} aria-hidden={!visible || undefined}
         ref={(node) => { if (node) { const inert = !viewActive || !visible || transitioning || warming; if (node.inert !== inert) node.inert = inert; layers.current.set(key, node); } else layers.current.delete(key); }}

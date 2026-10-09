@@ -10,6 +10,9 @@ declare global {
       openProject(): Promise<{ md: string | null; folder: string; error?: string } | null>;
       loadExample(relPath: string): Promise<{ md: string | null; folder: string; error?: string } | null>;
       saveProject(p: { folder: string | null; md: string }): Promise<{ folder: string; error?: string } | null>;
+      confirmProjectExit(p: { title: string; language: 'zh' | 'en'; reason: 'switch' | 'close' }): Promise<'save' | 'discard' | 'cancel'>;
+      onWindowCloseRequest(cb: (requestId: number) => void): () => void;
+      completeWindowClose(p: { requestId: number; approved: boolean }): Promise<boolean>;
       pickMedia(): Promise<{ path: string } | null>;
       importMedia(p: { srcPath: string; folder: string | null }): Promise<{ fileName: string; error?: string } | null>;
       ensureEpsPdf(p: { absPath: string }): Promise<{ pdf?: string; error?: string }>;
@@ -23,16 +26,16 @@ declare global {
       winMax(): void;
       winClose(): void;
       saveMediaAs(p: { srcPath: string }): Promise<{ path: string; error?: string } | null>;
-      openPresent(): Promise<{ ok: boolean; display?: number }>;
+      openPresent(p?: { session: string }): Promise<{ ok: boolean; display?: number; error?: string }>;
       swapPresentScreens(): Promise<{ ok: boolean; error?: string }>;
       closePresent(): void;
       sendPresentState(p: unknown): void;
-      sendPresentEvent(e: { type: string; index?: number; label?: string }): void;
+      sendPresentEvent(e: { type: string; index?: number; label?: string; session?: string }): void;
       onPresentState(cb: (p: unknown) => void): () => void;
-    onPresentEvent(cb: (e: { type: string; index?: number; label?: string }) => void): () => void;
+    onPresentEvent(cb: (e: { type: string; index?: number; label?: string; session?: string }) => void): () => void;
     /** 编辑器窗 → 放映窗控制命令（录制开关等） */
-    sendPresentCtrl(e: { type: string }): void;
-    onPresentCtrl(cb: (e: { type: string }) => void): () => void;
+    sendPresentCtrl(e: { type: string; mediaRevision?: number; owner?: string }): void;
+    onPresentCtrl(cb: (e: { type: string; mediaRevision?: number; owner?: string; session?: string; closeGeneration?: number }) => void): () => void;
       readHistory(folder: string): Promise<{ json?: string; error?: string } | null>;
       writeHistory(p: { folder: string; json: string }): Promise<{ ok?: boolean; error?: string }>;
       saveRecording(p: { folder: string | null; name: string; data: ArrayBuffer }): Promise<{ path: string; error?: string }>;

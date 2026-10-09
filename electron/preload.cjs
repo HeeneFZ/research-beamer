@@ -6,6 +6,14 @@ contextBridge.exposeInMainWorld('api', {
   openProject: () => ipcRenderer.invoke('project:open'),
   loadExample: (relPath) => ipcRenderer.invoke('project:loadPath', relPath),
   saveProject: (payload) => ipcRenderer.invoke('project:save', payload),
+  confirmProjectExit: (payload) => ipcRenderer.invoke('project:confirm-exit', payload),
+  onWindowCloseRequest: (cb) => {
+    const listener = (_event, requestId) => cb(requestId);
+    ipcRenderer.on('win:close-request', listener);
+    ipcRenderer.send('win:close-ready');
+    return () => ipcRenderer.removeListener('win:close-request', listener);
+  },
+  completeWindowClose: (payload) => ipcRenderer.invoke('win:close-result', payload),
   pickMedia: () => ipcRenderer.invoke('media:pick'),
   importMedia: (payload) => ipcRenderer.invoke('media:import', payload),
   ensureEpsPdf: (payload) => ipcRenderer.invoke('media:ensureEpsPdf', payload),
@@ -20,7 +28,7 @@ contextBridge.exposeInMainWorld('api', {
   winMin: () => ipcRenderer.invoke('win:min'),
   winMax: () => ipcRenderer.invoke('win:max'),
   winClose: () => ipcRenderer.invoke('win:close'),
-  openPresent: () => ipcRenderer.invoke('present:open'),
+  openPresent: (payload) => ipcRenderer.invoke('present:open', payload),
   closePresent: () => ipcRenderer.invoke('present:close'),
   swapPresentScreens: () => ipcRenderer.invoke('present:swapScreens'),
   sendPresentState: (payload) => ipcRenderer.send('present:state', payload),

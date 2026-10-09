@@ -119,6 +119,7 @@ export function LatexEditor({ value, onChange, rows = 5, autoFocus, onSubmit, on
         onClick={() => setAc(null)}
         onKeyDown={(e) => {
           e.stopPropagation();
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
           if (ac) {
             if (e.key === 'ArrowDown') { e.preventDefault(); setAc({ ...ac, idx: Math.min(ac.idx + 1, ac.list.length - 1) }); return; }
             if (e.key === 'ArrowUp') { e.preventDefault(); setAc({ ...ac, idx: Math.max(ac.idx - 1, 0) }); return; }

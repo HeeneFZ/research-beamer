@@ -18,6 +18,7 @@ export function BlockToolbar({ slide, block }: {
   const moveBlockBefore = useStore((s) => s.moveBlockBefore);
   const deleteBlock = useStore((s) => s.deleteBlock);
   const updateBlock = useStore((s) => s.updateBlock);
+  const active = useStore((s) => !s.presenting && s.computed.pages[s.current]?.slide?.id === slide.id);
   const [visible, setVisible] = useState(false);
   const [menu, setMenu] = useState(false);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -55,6 +56,7 @@ export function BlockToolbar({ slide, block }: {
 
   // hover 检测（document 委托；块卸载/重排后依然有效）
   useEffect(() => {
+    if (!active) { keepRef.current = false; setVisible(false); setMenu(false); return; }
     const over = (e: MouseEvent) => {
       // 限定编辑画布（与 syncPos 同款前缀）：悬停胶片缩略图里的同 id 副本时，
       // 工具条会闪现在侧栏缩略图位置
@@ -78,11 +80,11 @@ export function BlockToolbar({ slide, block }: {
       document.removeEventListener('mouseout', out);
       clearTimeout(hideTimer.current);
     };
-  }, [block.id]);
+  }, [block.id, active]);
 
   // 显示期间 10fps 同步位置（块被调序/插入/窗口缩放后跟随）
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || !active) return;
     let alive = true;
     let last = 0;
     const tick = (t: number) => {
@@ -92,7 +94,7 @@ export function BlockToolbar({ slide, block }: {
     };
     const raf = requestAnimationFrame(tick);
     return () => { alive = false; cancelAnimationFrame(raf); };
-  }, [visible]);
+  }, [visible, active]);
 
   const insert = (key: InsertKey) => {
     insertBlockByKey(slide.id, block.id, key);
@@ -126,7 +128,7 @@ export function BlockToolbar({ slide, block }: {
     }
   };
 
-  if (!visible || !pos) return null;
+  if (!active || !visible || !pos) return null;
 
   return createPortal(
     <>

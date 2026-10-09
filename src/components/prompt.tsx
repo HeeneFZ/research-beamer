@@ -34,6 +34,7 @@ function PromptDialog({ title, initial, onDone }: {
     const el = inputRef.current;
     if (el) { el.focus(); el.select(); } // 对齐原生 prompt：初始值全选，键入即替换
     const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key !== 'Escape') return;
       e.stopPropagation(); // 弹窗独占 Esc：不穿透到底层画布/弹窗的快捷键
       onDone(null);
@@ -55,7 +56,7 @@ function PromptDialog({ title, initial, onDone }: {
             className="txt"
             value={v}
             onChange={(e) => setV(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') onDone(v); }}
+            onKeyDown={(e) => { if (!e.nativeEvent.isComposing && e.keyCode !== 229 && e.key === 'Enter') onDone(v); }}
           />
           <div className="modal-actions">
             <button onClick={() => onDone(null)}>取消</button>

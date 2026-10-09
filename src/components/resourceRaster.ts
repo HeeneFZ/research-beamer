@@ -1,7 +1,7 @@
 // Main owns one final PNG per source. Screen and thumbnail copies are RAM-only;
 // navigation never competes with thumbnails for the large, decoded source.
 import type { RasterResource } from '../model/mediaResources';
-interface Job { priority: number; run: () => Promise<void> }
+interface Job { priority: number; run: () => Promise<void>; reject: (error: Error) => void }
 interface Decoded { key: string; retired: boolean; resource: RasterResource; bitmap?: ImageBitmap; pending: Promise<ImageBitmap>; users: number; bytes: number; job: Job }
 interface DisplayRaster { canvas?: HTMLCanvasElement; width: number; pending?: Promise<void>; source?: Decoded; users: number }
 const decoded = new Map<string, Decoded>();
@@ -21,21 +21,20 @@ const thumbs = new Map<string, DisplayRaster>();
 let pinned = new Set<string>();
 let pinRequests: { resource: RasterResource; width: number }[] = [];
 let epoch = 0;
-const jobs: Job[] = [];
-let running = false;
+let decodeQueue: { jobs: Job[]; running: boolean } = { jobs: [], running: false };
 const resourceKey = (resource: RasterResource) => `${resource.session}|${resource.id}|${resource.version}`;
 
-async function drain(): Promise<void> {
-  if (running) return;
-  running = true;
+async function drain(queue: typeof decodeQueue): Promise<void> {
+  if (queue.running) return;
+  queue.running = true;
   try {
-    while (jobs.length) {
-      jobs.sort((a, b) => a.priority - b.priority);
-      await jobs.shift()!.run();
+    while (queue.jobs.length) {
+      queue.jobs.sort((a, b) => a.priority - b.priority);
+      await queue.jobs.shift()!.run();
       // Let input/paint run between image decodes, including during background warmup.
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-  } finally { running = false; }
+  } finally { queue.running = false; }
 }
 
 export function screenRasterWidth(resource: RasterResource, width: number): number {
@@ -96,10 +95,11 @@ function lease(resource: RasterResource, priority = 0): Decoded {
     const generation = epoch;
     const created = { key, retired: false, resource, users: 0, bytes: 0 } as Decoded;
     created.pending = new Promise<ImageBitmap>((resolve, reject) => {
-      created.job = { priority, run: async () => {
+      created.job = { priority, reject, run: async () => {
         try {
           if (generation !== epoch) throw new Error('资源会话已结束');
           const result = await window.api.readRasterResource(resource);
+          if (generation !== epoch) throw new Error('资源会话已结束');
           const bitmap = await createImageBitmap(new Blob([result.data.slice().buffer], { type: 'image/png' }));
           if (generation !== epoch) { bitmap.close(); throw new Error('资源会话已结束'); }
           created.resource = result; created.bitmap = bitmap; created.bytes = bitmap.width * bitmap.height * 4;
@@ -109,13 +109,13 @@ function lease(resource: RasterResource, priority = 0): Decoded {
           reject(error);
         }
       } };
-      jobs.push(created.job);
+      decodeQueue.jobs.push(created.job);
     });
     entry = created;
   }
   entry.job.priority = Math.min(entry.job.priority, priority);
   decoded.delete(key); decoded.set(key, entry); entry.users++;
-  void drain();
+  void drain(decodeQueue);
   return entry;
 }
 function release(entry: Decoded): void {
@@ -195,6 +195,9 @@ export async function warmScreenRaster(resource: RasterResource, width: number, 
 }
 export function clearDecodedRasters(): void {
   epoch++; pinned.clear(); pinRequests = [];
+  const oldQueue = decodeQueue;
+  decodeQueue = { jobs: [], running: false };
+  for (const job of oldQueue.jobs.splice(0)) job.reject(new Error('资源会话已结束'));
   for (const cache of [screens, thumbs]) {
     for (const entry of cache.values()) if (entry.canvas) entry.canvas.width = entry.canvas.height = 0;
     cache.clear();

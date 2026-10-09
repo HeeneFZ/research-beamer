@@ -115,7 +115,7 @@ function applyRule(j: RuleJob): void {
   const prev = parseFloat(el.dataset.rsnapDy || '0') || 0;
   const centerDev = (rect.bottom - hVisual / 2) * dpr;
   const targetDev = Math.round(centerDev - 0.5) + 0.5;
-  const total = prev + (targetDev - centerDev) / dpr;
+  const total = prev + (targetDev - centerDev) / (dpr * j.scale);
   el.style.transform = total ? `translateY(${total.toFixed(4)}px)` : '';
   el.dataset.rsnapDy = String(total);
 }

@@ -2,7 +2,7 @@
 // - 位图/SVG：<img> transform 缩放（GPU 合成，无重解码）
 // - PDF/EPS：pdf.js 按 zoom 重渲染（防抖），矢量放大不糊
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { cancelCanvasRender, fileUrl, renderPdfToCanvas, PDF_DPI_SCALE } from './pdfRaster';
 import { IcoZoomIn, IcoZoomOut, IcoReset, IcoClose } from './icons';
@@ -39,9 +39,12 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+  const finishDragRef = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => () => { finishDragRef.current?.(); }, [lb]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const [pdfAbs, setPdfAbs] = useState<string | null>(null);
+  const [failure, setFailure] = useState<{ abs: string; message: string } | null>(null);
 
   const close = useCallback(() => onClose(), [onClose]);
 
@@ -51,23 +54,32 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
     setTx(0);
     setTy(0);
     setPdfAbs(null);
+    setFailure(null);
     if (lb && lb.ext === 'eps') {
       let alive = true;
       window.api.ensureEpsPdf({ absPath: lb.abs }).then((r) => {
-        if (alive) setPdfAbs(r.pdf ?? lb.abs); // 转换失败时退回原路径（渲染报错即显示空）
-      });
+        if (!alive) return;
+        if (r.pdf) setPdfAbs(r.pdf);
+        else setFailure({ abs: lb.abs, message: r.error ?? 'EPS 转换失败' });
+      }).catch((error) => { if (alive) setFailure({ abs: lb.abs, message: String(error) }); });
       return () => { alive = false; };
     }
   }, [lb]);
 
   const isPdf = lb != null && (lb.ext === 'pdf' || lb.ext === 'eps');
   const pdfTarget = lb && lb.ext === 'eps' ? pdfAbs : lb?.abs ?? null;
+  const pdfResource = pdfTarget ? preparation.resources[pdfTarget] : undefined;
+  // IPC clones object identities even when this source's pixels have not changed.
+  const resourceKey = pdfResource ? [pdfResource.id, pdfResource.version, pdfResource.stamp, pdfResource.width, pdfResource.height, pdfResource.aspect].join('|') : '';
+  const error = failure?.abs === lb?.abs ? failure?.message : undefined;
 
   // PDF：按 zoom 防抖重渲染（矢量精度随缩放提升）
   useEffect(() => {
     if (!isPdf || !pdfTarget) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const failed = () => { if (lb) setFailure({ abs: lb.abs, message: canvas.dataset.mediaError || 'PDF 加载失败' }); };
+    canvas.addEventListener('error', failed);
     const t = setTimeout(() => {
       // 显示宽 = wrap CSS 宽 × zoom（transform scale 作用于 wrap）；
       // 位图 = 显示宽 × dpr → 任意缩放都锐利（EditorApp 同款策略）
@@ -75,8 +87,8 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
       const pixels = Math.min(wrapW * PDF_DPI_SCALE, wrapW * zoom * (window.devicePixelRatio || 1));
       renderPdfToCanvas(pdfTarget, canvas, pixels, 1, preparation);
     }, 120);
-    return () => { clearTimeout(t); cancelCanvasRender(canvas); };
-  }, [isPdf, pdfTarget, zoom, preparation]);
+    return () => { clearTimeout(t); cancelCanvasRender(canvas); canvas.removeEventListener('error', failed); };
+  }, [isPdf, pdfTarget, zoom, preparation.session, resourceKey]);
 
 
   const onKey = useCallback((e: KeyboardEvent) => {
@@ -115,8 +127,10 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
     if (e.button !== 0) return; // 仅左键拖拽平移（侧键/右键不触发）
     // 阻止冒泡到 window 级页面平移监听（放大镜内拖拽平移图片 ≠ 平移页面）
     e.stopPropagation();
+    finishDragRef.current?.();
     dragRef.current = { x: e.clientX, y: e.clientY, tx, ty };
     const move = (ev: MouseEvent) => {
+      if (!(ev.buttons & 1)) { up(); return; }
       const d = dragRef.current;
       if (!d) return;
       setTx(d.tx + ev.clientX - d.x);
@@ -126,9 +140,13 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
       dragRef.current = null;
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
+      window.removeEventListener('blur', up);
+      finishDragRef.current = null;
     };
+    finishDragRef.current = up;
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
+    window.addEventListener('blur', up);
   };
 
   const transform = `translate(${tx}px, ${ty}px) scale(${zoom})`;
@@ -136,7 +154,7 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
   return (
     <div className="lb-overlay" ref={overlayRef}>
       <div className="lb-stage" onMouseDown={dragStart} onDoubleClick={reset} title="双击重置">
-        {isPdf ? (
+        {error ? <div className="lb-error" role="alert">无法预览：{error}</div> : isPdf ? (
           <div className="lb-canvas-wrap" style={{ transform, width: 'min(80vw, 900px)' }}>
             <canvas ref={canvasRef} />
           </div>
@@ -146,6 +164,7 @@ export function LightboxInner({ lb, onClose, captionCtx }: {
             src={fileUrl(lb.abs)}
             alt={lb.caption || ''}
             draggable={false}
+            onError={() => setFailure({ abs: lb.abs, message: '图片加载失败' })}
             style={{ transform }}
             onLoad={(e) => {
               // 初始适配：超大图缩到 90% 视口内

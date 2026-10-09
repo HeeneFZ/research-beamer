@@ -4,7 +4,7 @@
 
 import { useEffect } from 'react';
 
-const GUARD = 'input, textarea, .ProseMirror, .modal-mask, .lb-overlay';
+const GUARD = 'input, textarea, .ProseMirror, .modal-mask, .lb-overlay, .math-float, .field-popover';
 
 const guarded = (t: EventTarget | null): boolean =>
   t instanceof HTMLElement && !!t.closest(GUARD);
@@ -12,7 +12,7 @@ const guarded = (t: EventTarget | null): boolean =>
 /** 键盘事件的 target 是焦点元素（常为 body）而非浮层本身——closest 守卫对键盘失效，
  *  需按 DOM 存在性判断：放大镜/弹窗打开时 Backspace/Alt+← 不得触发页面回跳 */
 const overlayOpen = (): boolean =>
-  typeof document !== 'undefined' && document.querySelector('.lb-overlay, .modal-mask') != null;
+  typeof document !== 'undefined' && document.querySelector('.lb-overlay, .modal-mask, .math-float, .field-popover') != null;
 
 export function useBackNav(onBack: () => void, active = true): void {
   useEffect(() => {

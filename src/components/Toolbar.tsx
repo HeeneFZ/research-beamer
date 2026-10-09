@@ -11,13 +11,16 @@ function FontSizeInput() {
   const fontSize = useStore((s) => s.deck.config.fontSize);
   const setConfig = useStore((s) => s.setConfig);
   const [text, setText] = useState(String(fontSize));
+  const textRef = useRef(text);
+  textRef.current = text;
   const focused = useRef(false);
+  const cancelBlur = useRef(false);
   // 外部变更（撤销等）在未聚焦时同步显示值
   useEffect(() => {
     if (!focused.current) setText(String(fontSize));
   }, [fontSize]);
   const commit = () => {
-    const n = parseFloat(text);
+    const n = parseFloat(textRef.current);
     if (Number.isFinite(n)) {
       const v = Math.min(40, Math.max(10, n));
       if (v !== fontSize) setConfig({ fontSize: v });
@@ -28,13 +31,14 @@ function FontSizeInput() {
     <input
       type="number" min={10} max={40} step={0.5} value={text}
       title="全局标准正文字号（PPT 等效 pt；每页可在胶片右键 60%–150% 微调）"
-      onFocus={() => { focused.current = true; }}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={() => { focused.current = false; commit(); }}
+      onFocus={() => { focused.current = true; cancelBlur.current = false; }}
+      onChange={(e) => { textRef.current = e.target.value; setText(e.target.value); }}
+      onBlur={() => { focused.current = false; if (!cancelBlur.current) commit(); cancelBlur.current = false; }}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') { commit(); (e.target as HTMLInputElement).blur(); }
-        else if (e.key === 'Escape') { setText(String(fontSize)); (e.target as HTMLInputElement).blur(); }
         e.stopPropagation();
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        else if (e.key === 'Escape') { cancelBlur.current = true; setText(String(fontSize)); (e.target as HTMLInputElement).blur(); }
       }}
     />
   );

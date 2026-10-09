@@ -12,7 +12,7 @@ import { displayPagePixels } from '../components/displayTargets';
 interface Task { controller: AbortController; done: boolean; failed?: boolean }
 interface Request { key: string; abs: string; width: number; resource?: RasterResource }
 
-export function useScreenPreparation(pages: Page[], current: number, folder: string, preparation: MediaPreparation | undefined, displayWidth: number, displayHeight: number, enabled = true, logicalWidth = 160 * 96 / 25.4, firstTen = false, background = true) {
+export function useScreenPreparation(pages: Page[], current: number, folder: string, preparation: MediaPreparation | undefined, displayWidth: number, displayHeight: number, enabled = true, logicalWidth = 160 * 96 / 25.4, firstTen = false, background = true, owner = '') {
   const [dpr, setDpr] = useState(window.devicePixelRatio || 1);
   const [targetWidth, setTargetWidth] = useState(0);
   useEffect(() => { void displayPagePixels().then(setTargetWidth); }, []);
@@ -23,14 +23,18 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
     return () => { query.removeEventListener('change', update); window.removeEventListener('resize', update); };
   }, [dpr]);
   const session = preparation?.session ?? '';
+  const gifRevision = Number(session.slice(session.lastIndexOf(':') + 1));
+  const scope = `${owner}|${session}`;
   const tasks = useRef(new Map<string, Task>());
   const epoch = useRef(0);
   const [status, setStatus] = useState({ session: '', ready: false, completed: 0, total: 0 });
-  const order = preparationOrder(pages.length, current, firstTen && !(status.session === session && status.ready));
+  const order = preparationOrder(pages.length, current, firstTen && !(status.session === scope && status.ready));
   const front = new Set(order.front);
   const requests = new Map<string, Request>(), required = new Set<string>();
   let missing = false;
+  const failedPreparation = !!preparation?.errors.__prepare__;
   for (const index of order.all) {
+    if (failedPreparation) continue;
     if (!background && !front.has(index)) continue;
     const page = pages[index];
     if (!page.slide || !['content', 'twoCol'].includes(page.slide.layout)) continue;
@@ -46,7 +50,8 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
           request = { key: `gif|${session}|${abs}|${width}`, abs, width };
         } else if (front.has(index)) missing = true;
       } else if (/\.(pdf|eps)$/i.test(abs)) {
-        const target = /\.eps$/i.test(abs) ? epsTarget(abs) : abs;
+        const target = /\.eps$/i.test(abs) ? preparation?.epsTargets?.[abs] !== undefined ? preparation.epsTargets[abs] : epsTarget(abs) : abs;
+        if (target === null) continue;
         const resource = target ? preparation?.resources[target] : undefined;
         if (resource) request = { key: `pdf|${session}|${resource.id}|${resource.version}`, abs, width: resource.width, resource };
         else if (front.has(index) && !(target && preparation?.errors[target])) missing = true;
@@ -55,14 +60,14 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
     }
   }
   const plan = [...requests.values()];
-  const latest = useRef({ session, plan, required, missing, phase: preparation?.phase });
-  latest.current = { session, plan, required, missing, phase: preparation?.phase };
+  const latest = useRef({ session, scope, plan, required, missing, phase: preparation?.phase });
+  latest.current = { session, scope, plan, required, missing, phase: preparation?.phase };
   const publish = () => {
     const value = latest.current;
     const completed = value.plan.filter((request) => tasks.current.get(request.key)?.done).length;
     const ready = value.phase === 'ready' && !value.missing && [...value.required].every((key) => tasks.current.get(key)?.done);
     setStatus((old) => {
-      const next = { session: value.session, ready: ready || old.session === value.session && old.ready, completed, total: value.plan.length };
+      const next = { session: value.scope, ready: ready || old.session === value.scope && old.ready, completed, total: value.plan.length };
       return old.session === next.session && old.ready === next.ready && old.completed === next.completed && old.total === next.total ? old : next;
     });
   };
@@ -75,10 +80,10 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
       for (const task of tasks.current.values()) task.controller.abort();
       tasks.current.clear();
     };
-  }, [session]);
+  }, [scope]);
   const signature = JSON.stringify(plan.map((request) => [request.key, required.has(request.key)]));
   useEffect(() => {
-    if (!enabled || !targetWidth || !preparation || preparation.phase === 'waiting') return;
+    if (!enabled || !preparation || preparation.phase === 'waiting') return;
     const generation = epoch.current;
     const keys = new Set(plan.map((request) => request.key));
     for (const [key, task] of tasks.current) if (!keys.has(key)) { task.controller.abort(); tasks.current.delete(key); }
@@ -87,11 +92,11 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
       const priority = required.has(request.key) ? 0 : 30;
       const old = tasks.current.get(request.key);
       if (old) {
-        const resident = request.resource ? screenRasterReady(request.resource, request.width) : gifAnimationReady(request.abs, Number(session), request.width);
+        const resident = request.resource ? screenRasterReady(request.resource, request.width) : gifAnimationReady(request.abs, gifRevision, request.width);
         if (!old.done || old.failed || resident || !required.has(request.key)) {
           if (priority === 0) {
             if (request.resource) prioritizeScreenRaster(request.resource);
-            else prioritizeGifAnimation(request.abs, Number(session));
+            else prioritizeGifAnimation(request.abs, gifRevision);
           }
           continue;
         }
@@ -102,7 +107,7 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
       if (task.done) continue;
       const pending = request.resource
         ? prepareScreenBudget().then(() => warmScreenRaster(request.resource!, request.width, priority))
-        : warmGifAnimation(request.abs, Number(session), request.width, task.controller.signal, priority);
+        : warmGifAnimation(request.abs, gifRevision, request.width, task.controller.signal, priority);
       void pending.catch(() => { task.failed = true; }).then(() => {
         if (epoch.current !== generation || tasks.current.get(request.key) !== task) return;
         task.done = true; publish();
@@ -110,7 +115,7 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
     }
     publish();
     // Existing decodes survive navigation and monitor changes. Only the session cancels them.
-  }, [enabled, session, targetWidth, signature, preparation?.phase]);
+  }, [enabled, scope, targetWidth, signature, missing, preparation?.phase]);
   const physicalWidth = displayWidth * dpr, physicalHeight = displayHeight * dpr;
   const lastScale = useRef({ width: 0, height: 0 });
   useLayoutEffect(() => {
@@ -118,5 +123,5 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
     lastScale.current = { width: physicalWidth, height: physicalHeight };
     window.dispatchEvent(new Event('raster-scale'));
   }, [enabled, physicalWidth, physicalHeight]);
-  return { completed: status.completed, total: status.total, ready: status.session === session && status.ready };
+  return { completed: status.completed, total: status.total, ready: status.session === scope && status.ready };
 }

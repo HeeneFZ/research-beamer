@@ -1,5 +1,5 @@
 // Section operations share one + menu. New headings use two levels; old level 3 remains readable.
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Section, Slide } from '../../model/types';
 import { Computed } from '../../model/numbering';
 import { slideOf, useStore } from '../../state/store';
@@ -14,9 +14,11 @@ export function SectionBreadcrumb({ slide, path, computed }: {
   const editing = useStore((s) => s.editing?.slideId === slide.id && s.editing.field === 'section' ? s.editing : null);
   const setEditing = useStore((s) => s.setEditing);
   const config = useStore((s) => s.deck.config);
+  const activeEditor = useStore((s) => !s.presenting && s.computed.pages[s.current]?.slide?.id === slide.id);
   const [menu, setMenu] = useState<{ anchor: AnchorRect; section?: Section } | null>(null);
   const [field, setField] = useState<{ anchor: AnchorRect; value: string; session: number; sectionId?: string; level?: 1 | 2 } | null>(null);
-  const active = editing?.slideId === slide.id && editing.field === 'section';
+  const active = activeEditor && editing?.slideId === slide.id && editing.field === 'section';
+  useEffect(() => { if (!activeEditor) { setMenu(null); setField(null); } }, [activeEditor]);
   const zh = config.language === 'zh';
   const name = (level: number) => zh ? level === 1 ? '章节' : level === 2 ? '小节' : '旧三级章节' : level === 1 ? 'section' : level === 2 ? 'subsection' : 'legacy subsection';
   const closeField = () => {
@@ -58,7 +60,7 @@ export function SectionBreadcrumb({ slide, path, computed }: {
           {i < path.length - 1 && <span className="s-sec-sep">›</span>}
         </span>
       ))}
-      {menu && <Popover anchor={menu.anchor} className="sec-menu" role="menu" onClose={() => setMenu(null)}>
+      {activeEditor && menu && <Popover anchor={menu.anchor} className="sec-menu" role="menu" onClose={() => setMenu(null)}>
         <div className="sec-menu-label">{menu.section ? `${computed.sectionNum.get(menu.section.id)} ${menu.section.title}` : zh ? '章节操作' : 'Section actions'}</div>
         {menu.section && <button className="sec-menu-item" role="menuitem" onClick={() => start(menu.section!.id, undefined, menu.section!.title)}>{zh ? `重命名该${name(menu.section.level)}` : 'Rename'}</button>}
         <button className="sec-menu-item" role="menuitem" onClick={() => start(undefined, menu.section && menu.section.level >= 2 ? 2 : 1)}>

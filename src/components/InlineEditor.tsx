@@ -11,8 +11,8 @@ import { Placeholder } from '@tiptap/extensions';
 import { Block, Slide } from '../model/types';
 import { useStore, slideOf } from '../state/store';
 import {
-  InlineMath, RefChip, ColorSpan, BgSpan, BlockKeys, bareRefKey, makePasteHandler,
-  textToDoc, itemsToDoc, docToText, docToItems,
+  InlineMath, RefChip, ColorSpan, BgSpan, ListAnimationOrder, BlockKeys, bareRefKey, makePasteHandler,
+  textToDoc, itemsToDoc, docToText, docToItems, docToList,
 } from '../editor/schema';
 import { resolveRole } from '../model/palette';
 import { onOverlay } from './overlays';
@@ -47,7 +47,6 @@ function textBlockNeighbors(slide: Slide) {
 
 export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block }) {
   const updateBlock = useStore((s) => s.updateBlock);
-  const insertBlock = useStore((s) => s.insertBlock);
   const deleteBlock = useStore((s) => s.deleteBlock);
   const setFocus = useStore((s) => s.setFocus);
   const focusId = useStore((s) => s.focusId);
@@ -67,7 +66,7 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
 
   const isList = block.type === 'itemize';
   // 与 useEditor 的初始化边界一致；后续变更由下方外部内容同步处理。
-  const initialContent = useMemo(() => isList ? itemsToDoc(block.items ?? []) : textToDoc(block.text ?? ''), [block.id]);
+  const initialContent = useMemo(() => isList ? itemsToDoc(block.items ?? [], block.itemOrders) : textToDoc(block.text ?? ''), [block.id]);
 
   const serialize = (ed: Editor): string | string[] =>
     isList ? docToItems(ed.getJSON()) : docToText(ed.getJSON());
@@ -118,14 +117,14 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
         link: false, trailingNode: false,
       }),
       Placeholder.configure({ placeholder: isList ? '列表项' : '输入文本，/ 快捷插入，@ 交叉引用' }),
+      ...(isList ? [ListAnimationOrder] : []),
       InlineMath, RefChip, ColorSpan, BgSpan,
       BlockKeys.configure({
         handlers: {
           onSplit: (before, after) => {
-            updateBlock(slide.id, block.id, { text: before });
-            const id = insertBlock(slide.id, block.id, 'paragraph', { text: after });
-            setFocus(id, 'start');
-            return true;
+            const id = useStore.getState().splitParagraph(slide.id, block.id, before, after);
+            if (id) setFocus(id, 'start');
+            return id != null;
           },
           onBackspaceAtStart: () => {
             // 闭包里的 slide 是编辑器创建时的快照（deck 变更后即陈旧）：邻居/合并目标
@@ -145,13 +144,8 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
               if (prev) setFocus(prev.id, 'end');
               return true;
             }
-            if (prev && prev.type === 'paragraph') {
-              const merged = (prev.text ?? '') + curText;
-              updateBlock(slide.id, prev.id, { text: merged });
-              deleteBlock(slide.id, block.id);
-              setFocus(prev.id, 'end');
-              return true;
-            }
+            const merged = !isList ? useStore.getState().mergeParagraph(slide.id, block.id, curText) : null;
+            if (merged) setFocus(merged, 'end');
             return true; // 前一个是公式/图片等：阻止合并
           },
           onArrowUpAtStart: () => {
@@ -180,6 +174,7 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
       // 不依赖 effect 时序；slash/ref 弹层打开时由它们各自的 capture 监听处理 Esc）
       handleDOMEvents: {
         keydown: (_view, ev) => {
+          if (ev.isComposing || ev.keyCode === 229) return false;
           if (ev.key === 'Escape' && !pickerRef.current && !slashRef.current) {
             ev.preventDefault();
             useStore.getState().setEditing(null);
@@ -208,7 +203,7 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
       setBubble((b) => (b && Math.abs(b.left - left) < 1 && Math.abs(b.top - top) < 1 ? b : { left, top }));
     },
     onUpdate: ({ editor: e }) => {
-      if (isList) updateBlock(slide.id, block.id, { items: serialize(e) as string[] });
+      if (isList) updateBlock(slide.id, block.id, docToList(e.getJSON()));
       else updateBlock(slide.id, block.id, { text: serialize(e) as string });
 
       const { $from, empty } = e.state.selection;
@@ -250,13 +245,15 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
       // ③ 焦点转移到编辑器内部的 nodeview 控件（行内公式浮层等）或
       //   任何 portal 浮层，属「块内转移」，不退出。
       const myBlock = block.id;
+      const mySlide = slide.id;
       const ed = editorRef.current;
       window.setTimeout(() => {
+        if (!ed || ed.isDestroyed || editorRef.current !== ed) return;
         const ae = document.activeElement;
         if (ae && ed && ed.isInitialized && ed.view.dom.contains(ae)) return;
         if (onOverlay(ae)) return;
         const st = useStore.getState();
-        if (st.editing?.blockId === myBlock && !st.editing.field) st.setEditing(null);
+        if (st.editing?.slideId === mySlide && st.editing.blockId === myBlock && !st.editing.field) st.setEditing(null);
       }, 150);
     },
   }, [block.id]);
@@ -273,18 +270,22 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
   // 外部变更（撤销）同步进编辑器（仅当未聚焦）
   useEffect(() => {
     if (!editor || editor.isFocused) return;
-    const current = isList ? (block.items ?? []).join('\n') : (block.text ?? '');
-    const inEditor = isList ? docToItems(editor.getJSON()).join('\n') : docToText(editor.getJSON());
-    if (current !== inEditor) {
-      editor.commands.setContent(isList ? itemsToDoc(block.items ?? []) : textToDoc(block.text ?? ''), { emitUpdate: false });
+    if (isList) {
+      const current = block.items ?? [], previous = docToList(editor.getJSON());
+      const same = current.length === previous.items.length && current.every((item, i) =>
+        item === previous.items[i] && (block.itemOrders?.[i] ?? null) === (previous.itemOrders?.[i] ?? null));
+      if (!same) editor.commands.setContent(itemsToDoc(current, block.itemOrders), { emitUpdate: false });
+    } else if ((block.text ?? '') !== docToText(editor.getJSON())) {
+      editor.commands.setContent(textToDoc(block.text ?? ''), { emitUpdate: false });
     }
-  }, [editor, block.text, block.items, isList]);
+  }, [editor, block.text, block.items, block.itemOrders, isList]);
 
   // 引用选择器打开时的键盘导航
   useEffect(() => {
     if (!picker || !editor || !editor.isInitialized) return;
     const dom = editor.view.dom as HTMLElement;
     const onKey = (ev: KeyboardEvent) => {
+      if (ev.isComposing || ev.keyCode === 229) return;
       if (ev.key === 'ArrowDown') { ev.preventDefault(); ev.stopPropagation(); setSelIdx((i) => Math.min(i + 1, Math.min(filtered.length, 8) - 1)); }
       else if (ev.key === 'ArrowUp') { ev.preventDefault(); ev.stopPropagation(); setSelIdx((i) => Math.max(i - 1, 0)); }
       else if (ev.key === 'Enter' || ev.key === 'Tab') {
@@ -302,6 +303,7 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
     if (!slash || !editor || !editor.isInitialized) return;
     const dom = editor.view.dom as HTMLElement;
     const onKey = (ev: KeyboardEvent) => {
+      if (ev.isComposing || ev.keyCode === 229) return;
       if (ev.key === 'ArrowDown') { ev.preventDefault(); ev.stopPropagation(); setSlashIdx((i) => Math.min(i + 1, SLASH_ITEMS.length - 1)); }
       else if (ev.key === 'ArrowUp') { ev.preventDefault(); ev.stopPropagation(); setSlashIdx((i) => Math.max(i - 1, 0)); }
       else if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); ev.stopPropagation(); if (!slashDisabled(SLASH_ITEMS[slashIdx].key)) applySlash(SLASH_ITEMS[slashIdx].key); }

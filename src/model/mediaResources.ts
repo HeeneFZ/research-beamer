@@ -9,6 +9,8 @@ export interface MediaPreparation {
   phase: 'waiting' | 'preparing' | 'ready';
   completed: number; total: number;
   resources: Record<string, RasterResource>;
+  /** Source EPS paths to prepared PDF targets; transferred with the resource snapshot. */
+  epsTargets?: Record<string, string | null>;
   errors: Record<string, string>;
   assetSignature?: string;
   /** Finalized figure widths in the deck's logical CSS coordinates. */

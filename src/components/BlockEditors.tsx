@@ -5,7 +5,7 @@
 
 import { ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { slideOf, useStore } from '../state/store';
+import { slideOf, useStore, PROJECT_DRAFT_FLUSH } from '../state/store';
 import { Block, Slide } from '../model/types';
 import { Computed } from '../model/numbering';
 import { normLabel } from '../model/markdown';
@@ -33,8 +33,11 @@ export function Modal({ title, children, onClose, wide, extra }: {
   const bornAt = useRef(Date.now());
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (!e.isComposing && e.keyCode !== 229 && e.key === 'Escape') onClose(); };
+    const commitDraft = () => onClose();
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // Capture runs before App's bubble listener unmounts the buffered editor.
+    window.addEventListener(PROJECT_DRAFT_FLUSH, commitDraft, true);
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener(PROJECT_DRAFT_FLUSH, commitDraft, true); };
   }, [onClose]);
   return createPortal(
     // 遮罩 mousedown 关闭：挂载 250ms 内忽略——双击编辑块时第二击会落到遮罩上误关
@@ -64,7 +67,7 @@ export function MediaPanel({ slide, block, kind }: { slide: Slide; block: Block;
   const [order, setOrder] = useState(block.order != null ? String(block.order) : '');
   const prefix = kind === 'figure' ? 'fig' : 'vid';
   const commit = (patch: Partial<Block>) => updateBlock(slide.id, block.id, patch);
-  const abs = folder && block.src ? absMedia(folder, block.src) : null;
+  const abs = block.src ? absMedia(folder ?? '', block.src) : null;
   const lower = (block.src || '').toLowerCase();
   const done = () => {
     const w = num(width), o = num(order);
@@ -75,17 +78,19 @@ export function MediaPanel({ slide, block, kind }: { slide: Slide; block: Block;
   };
 
   const saveAs = async () => {
-    if (!folder || !block.src) return;
-    const r = await window.api.saveMediaAs({ srcPath: absMedia(folder, block.src) });
+    if (!abs) return;
+    const r = await window.api.saveMediaAs({ srcPath: abs });
     if (r && r.error) setFlashMsg('保存失败：' + r.error);
     else if (r) setFlashMsg('已保存图像 → ' + r.path);
   };
   const replaceMedia = async () => {
     if (!folder) return;
+    const revision = useStore.getState().mediaRevision;
+    const valid = () => useStore.getState().mediaRevision === revision && useStore.getState().folder === folder && !!slideOf(useStore.getState().deck, slide.id)?.blocks.some((b) => b.id === block.id);
     const r = await window.api.pickMedia();
-    if (!r) return;
+    if (!r || !valid()) return;
     const imp = await window.api.importMedia({ srcPath: r.path, folder });
-    if (imp && imp.fileName) commit({ src: 'media/' + imp.fileName });
+    if (valid() && imp?.fileName) commit({ src: 'media/' + imp.fileName });
   };
 
   return (
@@ -130,7 +135,7 @@ export function MediaPanel({ slide, block, kind }: { slide: Slide; block: Block;
         <span className="spacer" />
         {kind === 'figure' && (
           <button onMouseDown={(e) => e.preventDefault()}
-            onClick={() => folder && block.src && setLightbox({ abs: absMedia(folder, block.src), ext: (block.src!.split('.').pop() || '').toLowerCase(), caption: block.caption })}>
+            onClick={() => abs && setLightbox({ abs, ext: (block.src!.split('.').pop() || '').toLowerCase(), caption: block.caption })}>
             放大查看</button>
         )}
         <button onMouseDown={(e) => e.preventDefault()} onClick={() => { void saveAs(); }}>保存图像副本…</button>
@@ -280,6 +285,7 @@ export function CoverFieldEditor({ slideId, value, rawValue, onCommit, placehold
   const [text, setText] = useState(value);
   const textRef = useRef(text);
   const closed = useRef(false);
+  const PlainField = session?.field === 'coverAff' ? 'textarea' : 'input';
   textRef.current = text;
   useLayoutEffect(() => {
     const target = previewRef.current?.closest<HTMLElement>('[data-cover-field]');
@@ -301,14 +307,14 @@ export function CoverFieldEditor({ slideId, value, rawValue, onCommit, placehold
     <div className="field-popover-label">{label ?? '编辑字段'}</div>
     {math ? <RichFieldEditor cls="field-input" live multiline={session?.field === 'coverTitle'} value={value}
       onCommit={commit} onDone={done} onCancel={cancel} placeholder={placeholder} /> :
-      <input className="field-input" autoFocus value={text} spellCheck={false} placeholder={placeholder}
-        onChange={(e) => setText(e.target.value)} onKeyDown={(e) => {
+      <PlainField className="field-input" autoFocus value={text} spellCheck={false} placeholder={placeholder}
+        onChange={(e) => { textRef.current = e.target.value; setText(e.target.value); }} onKeyDown={(e) => {
           e.stopPropagation();
           if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-          if (e.key === 'Enter') done();
+          if (e.key === 'Enter' && !(PlainField === 'textarea' && e.shiftKey)) { e.preventDefault(); done(); }
           if (e.key === 'Escape') cancel();
         }} />}
-    <div className="field-popover-hint">{session?.field === 'coverAuthors' ? '多位作者用 ; 分隔，上标写成 姓名^1,2' : session?.field === 'coverAff' ? '多个单位用 ; 分隔，序号对应作者上标' : math ? '$…$ 插入公式；Enter 完成，Esc 取消' : 'Enter 完成，Esc 取消'}</div>
+    <div className="field-popover-hint">{session?.field === 'coverAuthors' ? '多位作者用 ; 分隔，上标写成 姓名^1,2' : session?.field === 'coverAff' ? '单位用 ; 分隔；Shift+Enter 保留换行，Enter 完成' : math ? '$…$ 插入公式；Enter 完成，Esc 取消' : 'Enter 完成，Esc 取消'}</div>
     <button onMouseDown={(e) => e.preventDefault()} onClick={done}>完成</button>
   </Popover>}</>;
 }
@@ -348,6 +354,8 @@ export function FooterEditor({ slide }: { slide: Slide }) {
       onChange={(e) => setVal(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
         if (e.key === 'Enter') {
           commit();
           closeEditing();
@@ -355,7 +363,6 @@ export function FooterEditor({ slide }: { slide: Slide }) {
           doneRef.current = true; // Esc = 取消（不提交）
           closeEditing();
         }
-        e.stopPropagation();
       }}
     />
   );
@@ -368,9 +375,11 @@ export async function insertMediaBlock(slideId: string, afterId: string | null, 
     s.setFlashMsg('请先保存工程（需要 media/ 目录）');
     return;
   }
+  const valid = () => useStore.getState().mediaRevision === s.mediaRevision && useStore.getState().folder === s.folder && !!slideOf(useStore.getState().deck, slideId);
   const r = await window.api.pickMedia();
-  if (!r) return;
+  if (!r || !valid()) return;
   const imp = await window.api.importMedia({ srcPath: r.path, folder: s.folder });
+  if (!valid()) return;
   if (!imp || imp.error || !imp.fileName) {
     s.setFlashMsg('媒体导入失败');
     return;
@@ -379,5 +388,6 @@ export async function insertMediaBlock(slideId: string, afterId: string | null, 
   const id = s.insertBlock(slideId, afterId, kind, {
     src: 'media/' + imp.fileName,
   });
-  useStore.getState().setEditing({ slideId, blockId: id });
+  const current = useStore.getState();
+  if (!current.presenting && current.computed.pages[current.current]?.slide?.id === slideId) current.setEditing({ slideId, blockId: id });
 }

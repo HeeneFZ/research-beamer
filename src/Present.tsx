@@ -17,7 +17,7 @@ import { MediaPreparation, emptyMediaPreparation, emptyViewPreparation, presenta
 import { clearDecodedRasters } from './components/resourceRaster';
 import { clearGifAnimations } from './components/GifAnimation';
 import { releaseUnusedPdfDocuments } from './components/pdfRaster';
-import { rememberMediaAspect } from './model/mediaGeometry';
+import { rememberEpsTarget, rememberMediaAspect } from './model/mediaGeometry';
 import { realignKatexRules } from './components/katexRuleSnap';
 import { useBackNav } from './hooks/useBackNav';
 import { useStore } from './state/store';
@@ -30,6 +30,7 @@ interface PresentState {
   deck: Deck;
   folder: string;
   mediaRevision: number;
+  presentSession?: string;
   mediaPreparation?: MediaPreparation;
   current: number;
   revealed: number[];
@@ -48,6 +49,7 @@ interface PresentEvent {
   type: string;
   index?: number;
   label?: string;
+  session?: string;
 }
 
 const LASER_COLORS = ['#ff2d2d', '#2dff6a', '#2db8ff', '#ffd62d'];
@@ -104,6 +106,11 @@ function PIcon({ children }: { children: React.ReactNode }) {
 export default function Present() {
   const [st, setSt] = useState<PresentState | null>(null);
   const stateRef = useRef<PresentState | null>(null);
+  const awaitingSnapshot = useRef(true);
+  const expectedSession = useRef<string | undefined>();
+  const suspended = useRef(false);
+  const sourceOwner = useRef(0);
+  const cleared = useRef<{ owner: string; revision: number } | null>(null);
   const [sessionActive, setSessionActive] = useState(true);
   const [awaitingState, setAwaitingState] = useState(true);
   const [bootReady, setBootReady] = useState(false);
@@ -148,14 +155,19 @@ export default function Present() {
     recGenerationRef.current++; recStartingRef.current = false;
     const rec = recorderRef.current;
     if (rec && rec.state !== 'inactive') rec.stop();
+    if (rec) window.api.sendPresentEvent({ type: 'recState', label: 'off', session: stateRef.current?.presentSession });
     recorderRef.current = null;
     setRecording(false);
   };
 
   const startRecording = async () => {
-    if (!activeSessionRef.current || !screenReady.current || recStartingRef.current || (recorderRef.current && recorderRef.current.state !== 'inactive')) return;
+    const snapshot = stateRef.current;
+    const session = expectedSession.current;
+    if (!snapshot || awaitingSnapshot.current || snapshot.presentSession !== session || !activeSessionRef.current || !screenReady.current || recStartingRef.current || (recorderRef.current && recorderRef.current.state !== 'inactive')) return;
     const generation = ++recGenerationRef.current;
-    const valid = () => activeSessionRef.current && recGenerationRef.current === generation;
+    const owner = snapshot.deckVersion?.split(':')[0];
+    const valid = () => activeSessionRef.current && recGenerationRef.current === generation && expectedSession.current === session
+      && stateRef.current?.mediaRevision === snapshot.mediaRevision && stateRef.current?.deckVersion?.split(':')[0] === owner;
     recStartingRef.current = true;
     setRecErr(null);
     let disp: MediaStream | null = null, mic: MediaStream | null = null, ctx: AudioContext | null = null;
@@ -199,6 +211,7 @@ export default function Present() {
       const chunks: Blob[] = [];
       rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
       rec.onstop = async () => {
+        let saveError: string | undefined;
         try {
           const blob = new Blob(chunks, { type: mime || 'video/webm' });
           // 释放采集设备
@@ -207,17 +220,17 @@ export default function Present() {
           if (blob.size === 0) return;
           const ts = new Date();
           const pad = (n: number) => String(n).padStart(2, '0');
-          const name = `rec-${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.webm`;
+          const name = `rec-${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}-${crypto.randomUUID()}.webm`;
           const buf = await blob.arrayBuffer();
-          const r = await window.api.saveRecording({ folder: st?.folder ?? null, name, data: buf });
+          const r = await window.api.saveRecording({ folder: snapshot.folder || null, name, data: buf });
           if (r && !r.error) window.api.sendPresentEvent({ type: 'recSaved', label: r.path } as unknown as PresentEvent);
-          else if (r && r.error) setRecErr('录像保存失败：' + r.error);
+          else if (r && r.error) { saveError = '录像保存失败：' + r.error; setRecErr(saveError); }
         } catch (e) {
-          setRecErr('录像保存失败：' + String(e));
+          saveError = '录像保存失败：' + String(e); setRecErr(saveError);
         } finally {
           // 落盘完成 ack（成功/失败/空块全路径）：present:close 等此信号再关窗，
           // 否则停止录制后立刻结束放映会在序列化途中销毁本窗 → 录像静默丢失
-          window.api.sendPresentEvent({ type: 'recStopped' });
+          window.api.sendPresentEvent({ type: 'recStopped', label: saveError });
         }
       };
       // 用户从浏览器级「停止共享」栏结束录制（不经控件按钮）
@@ -226,6 +239,7 @@ export default function Present() {
       });
       recorderRef.current = rec;
       rec.start(1000); // 1s 分片：长录制内存峰值受控
+      window.api.sendPresentEvent({ type: 'recState', label: 'on', session });
       ownedByRecorder = true;
       setRecording(true);
     } catch (e) {
@@ -248,20 +262,40 @@ export default function Present() {
     // 同步编辑器窗的页级排版状态到本窗 store（SlideView 从本窗 store 读取排版变量）
     const off = window.api.onPresentState((p: unknown) => {
       const ps = p as PresentStateUpdate;
+      if (expectedSession.current && ps.presentSession !== expectedSession.current) return;
+      if (awaitingSnapshot.current && !ps.deck) return;
       const previous = stateRef.current;
+      const owner = ps.deckVersion?.split(':')[0] ?? '';
+      const ownerEpoch = Number(owner);
+      if (ownerEpoch < sourceOwner.current) return;
+      sourceOwner.current = ownerEpoch;
+      if (cleared.current?.owner === owner && ps.mediaRevision < cleared.current.revision) return;
+      if (previous?.deckVersion?.split(':')[0] === owner && ps.mediaRevision < previous.mediaRevision) return;
       if (!previous && !ps.deck) return;
-      const changedProject = previous?.mediaRevision !== ps.mediaRevision;
-      setMediaRevision(ps.mediaRevision);
-      if (changedProject) { clearDecodedRasters(); clearGifAnimations(ps.mediaRevision); releaseUnusedPdfDocuments(); }
+      const changedProject = previous?.mediaRevision !== ps.mediaRevision || previous?.deckVersion?.split(':')[0] !== owner;
+      const changedOwner = previous?.deckVersion?.split(':')[0] !== owner;
+      setMediaRevision(ps.mediaRevision, changedOwner);
+      if (changedProject) {
+        screenReady.current = false;
+        stopRecording();
+        setBootReady(false);
+        clearDecodedRasters();
+        if (changedOwner) clearGifAnimations();
+        clearGifAnimations(ps.mediaRevision); releaseUnusedPdfDocuments(changedOwner);
+      }
       const same = (key: 'deckVersion' | 'layoutVersion' | 'resourceVersion') => !changedProject && !!ps[key] && ps[key] === previous?.[key];
       const pageLayout = same('layoutVersion') ? previous?.pageLayout : ps.pageLayout ?? previous?.pageLayout ?? {};
       const mediaPreparation = same('resourceVersion') ? previous?.mediaPreparation : ps.mediaPreparation ?? previous?.mediaPreparation;
       const revealed = previous && previous.revealed.length === ps.revealed.length && previous.revealed.every((order, i) => order === ps.revealed[i]) ? previous.revealed : ps.revealed;
       const next: PresentState = { ...ps, deck: same('deckVersion') ? previous!.deck : ps.deck ?? previous!.deck, pageLayout, mediaPreparation, revealed };
       stateRef.current = next;
+      expectedSession.current = ps.presentSession;
       useStore.setState({ pageLayout, mediaRevision: ps.mediaRevision, ...(mediaPreparation ? { mediaPreparation } : {}) });
+      if (mediaPreparation) for (const [abs, target] of Object.entries(mediaPreparation.epsTargets ?? {})) rememberEpsTarget(abs, target, ps.mediaRevision);
       if (mediaPreparation) for (const [abs, resource] of Object.entries(mediaPreparation.resources)) rememberMediaAspect(abs, resource.aspect);
+      awaitingSnapshot.current = false;
       setSt(next); setAwaitingState(false);
+      if (!suspended.current) { activeSessionRef.current = true; setSessionActive(true); }
     });
     window.api.sendPresentEvent({ type: 'ready' });
     // 放映台（主窗 PresenterView）与主进程（结束放映先停录）的控制命令：
@@ -271,26 +305,42 @@ export default function Present() {
       if (c.type === 'rec-toggle') recCtlRef.current();
       // 主进程结束放映前的停录命令（present:close 检测到录制中先停录再关窗）
       else if (c.type === 'rec-stop') stopRecording();
-      else if (c.type === 'suspend') { activeSessionRef.current = false; stopRecording(); setSessionActive(false); }
+      else if (c.type === 'suspend') {
+        if (c.session && expectedSession.current && c.session !== expectedSession.current) return;
+        screenReady.current = false;
+        suspended.current = true; activeSessionRef.current = false; stopRecording(); setSessionActive(false);
+        if (c.closeGeneration != null) window.api.sendPresentEvent({ type: 'suspended', label: String(c.closeGeneration), session: c.session });
+      }
       else if (c.type === 'resume') {
+        screenReady.current = false;
+        expectedSession.current = c.session ?? stateRef.current?.presentSession;
+        suspended.current = false;
+        awaitingSnapshot.current = true;
         stopRecording(); activeSessionRef.current = true;
         setSessionActive(true); setAwaitingState(true); setBootReady(false);
         setZoomState(FREE1); setBlank(null); setSorter(false); setLaser(false); setLightbox(null); setRecErr(null);
         dragRef.current = null; suppressClick.current = false; setDragging(false); setMouse({ x: 0.5, y: 0.5 });
       } else if (c.type === 'clear-project') {
+        const current = stateRef.current;
+        const owner = c.owner ?? current?.deckVersion?.split(':')[0] ?? '';
+        if (c.mediaRevision == null) return;
+        const ownerEpoch = Number(owner);
+        if (ownerEpoch < sourceOwner.current) return;
+        sourceOwner.current = ownerEpoch;
+        if (current?.deckVersion?.split(':')[0] === owner && c.mediaRevision <= current.mediaRevision) return;
+        if (cleared.current?.owner === owner && c.mediaRevision < cleared.current.revision) return;
+        cleared.current = { owner, revision: c.mediaRevision };
+        screenReady.current = false;
+        awaitingSnapshot.current = true;
         activeSessionRef.current = false; stopRecording();
         setSessionActive(false); setAwaitingState(true); setBootReady(false);
-        stateRef.current = null; setSt(null); clearDecodedRasters(); clearGifAnimations(); releaseUnusedPdfDocuments();
+        stateRef.current = null; setSt(null); clearDecodedRasters(); clearGifAnimations(); releaseUnusedPdfDocuments(true);
         useStore.setState({ pageLayout: {}, mediaPreparation: emptyMediaPreparation() });
       }
     });
     return () => { off(); offCtrl(); };
   }, []);
 
-  // 录制态 → 放映台按钮（含浏览器「停止共享」栏结束的旁路路径）
-  useEffect(() => {
-    window.api.sendPresentEvent({ type: 'recState', label: recording ? 'on' : 'off' });
-  }, [recording]);
 
   // 卸载守卫：放映窗直接关闭时停掉录制（closed 前 stop，onstop 落盘链路仍可用）
   useEffect(() => () => {
@@ -322,7 +372,7 @@ export default function Present() {
 
   const send = useCallback((evt: PresentEvent) => {
     if (!screenReady.current && ['advance', 'reverse', 'skip', 'goto', 'ref', 'back'].includes(evt.type)) return;
-    window.api.sendPresentEvent(evt);
+    window.api.sendPresentEvent({ ...evt, session: expectedSession.current ?? stateRef.current?.presentSession });
   }, []);
 
   const onRef = useCallback((label: string) => send({ type: 'ref', label }), [send]);
@@ -336,15 +386,16 @@ export default function Present() {
   const displayWidth = Math.min(vp.w, vp.h * displayAspect);
   const rasterZoom = zoomState.mode === 'free' ? zoomState.z : 1;
   const logicalWidth = PAGE_SIZE[st?.deck.config.aspect ?? '16:9'].w * 96 / 25.4;
-  const screen = useScreenPreparation(computed?.pages ?? [], st?.current ?? 0, st?.folder ?? '', st?.mediaPreparation, displayWidth * rasterZoom, displayWidth / displayAspect * rasterZoom, sessionActive, logicalWidth);
+  const stateOwner = st?.deckVersion?.split(':')[0] ?? '';
+  const screen = useScreenPreparation(computed?.pages ?? [], st?.current ?? 0, st?.folder ?? '', st?.mediaPreparation, displayWidth * rasterZoom, displayWidth / displayAspect * rasterZoom, sessionActive, logicalWidth, false, true, stateOwner);
   const requestedPreparationKey = st ? presentationPreparationKey(st.mediaRevision, st.deckVersion, st.layoutVersion, st.resourceVersion, st.current) : '';
   useEffect(() => {
     if (sessionActive && !awaitingState && screen.ready && (computed?.pages.length === 0 || stagePreparation.targetKey === requestedPreparationKey && stagePreparation.ready && stagePreparation.currentReady)) setBootReady(true);
-  }, [sessionActive, awaitingState, screen.ready, stagePreparation, requestedPreparationKey, computed?.pages.length]);
+  }, [sessionActive, awaitingState, bootReady, screen.ready, stagePreparation, requestedPreparationKey, computed?.pages.length]);
   screenReady.current = sessionActive && bootReady;
   useEffect(() => {
     if (!sessionActive || !st) return;
-    window.api.sendPresentEvent({ type: 'preparation', label: JSON.stringify({ scope: String(st.mediaRevision), targetKey: requestedPreparationKey,
+    window.api.sendPresentEvent({ type: 'preparation', session: st.presentSession, label: JSON.stringify({ scope: String(st.mediaRevision), targetKey: requestedPreparationKey,
       ready: bootReady && !awaitingState, currentReady: computed?.pages.length === 0 || stagePreparation.currentReady,
       completed: screen.completed + stagePreparation.completed, total: screen.total + stagePreparation.total }) });
   }, [sessionActive, st?.mediaRevision, requestedPreparationKey, bootReady, awaitingState, computed?.pages.length, stagePreparation.currentReady, stagePreparation.completed, stagePreparation.total, screen.completed, screen.total]);
@@ -609,7 +660,9 @@ export default function Present() {
         >
           <div style={{ width: pxW, height: pxH, transform: `scale(${base})`, transformOrigin: 'top left' }}>
             <ReadySlideStage
-              active={sessionActive}
+              key={stateOwner}
+              active={sessionActive && !awaitingState}
+              retainOutgoing={bootReady}
               preparationKey={requestedPreparationKey}
               preloadPages={computed.pages}
               onPreparation={setStagePreparation}

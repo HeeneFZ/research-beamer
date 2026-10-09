@@ -60,6 +60,8 @@ export const SlideView = memo(function SlideView({
 
   // 空页首块类型菜单（portal 到 body 的浮层，存屏幕坐标；仅编辑画布需要）
   const [firstMenu, setFirstMenu] = useState<{ x: number; y: number } | null>(null);
+  const activeEditor = useStore((s) => mode === 'edit' && !s.presenting && s.computed.pages[s.current]?.slide?.id === page.slide?.id);
+  useEffect(() => { if (!activeEditor) setFirstMenu(null); }, [activeEditor]);
   // 菜单打开期间：点击菜单外/Esc 关闭（portal 浮层通用关闭通道）
   useEffect(() => {
     if (!firstMenu) return;
@@ -107,7 +109,7 @@ export const SlideView = memo(function SlideView({
   const tocSig = layout === 'toc'
     ? '|toc:' + deck.items.filter((it) => it.kind === 'section').map((it) => (it.kind === 'section' ? it.section.title : '')).join('|')
     : '';
-  const editing = useStore((s) => mode === 'edit' && s.editing?.slideId === slide0?.id ? s.editing : null);
+  const editing = useStore((s) => activeEditor && s.editing?.slideId === slide0?.id ? s.editing : null);
   // All visible modes consume the finalized static thumbnail layout.
   const editingThisSlide = mode === 'edit' && editing != null && editing.slideId === slide0?.id;
   const layoutSignature = blockSig + tocSig + referenceSignature(computed) + `|media:${mediaRevision}`;
@@ -115,6 +117,11 @@ export const SlideView = memo(function SlideView({
   const mediaReady = useMediaReady(rootRef, mode !== 'thumb', layoutSignature);
   useLayoutScan(bodyRef, fitKey, scannable && layoutAuthority, layoutSignature, spec);
   useTitleAlignment(rootRef, `${config.fontEn}|${config.fontZh}|${config.fontSize}|${config.aspect}|${slide0?.title}|${page.sectionPath.map((section) => section.title).join('|')}|${lang}|${mode}|${editing?.field ?? ''}`);
+  useLayoutEffect(() => {
+    // Inherited label fonts may change while the KaTeX equation keeps its width.
+    // Refresh annotation geometry from the same finalized layout in every view.
+    rootRef.current?.querySelectorAll('.ae-wrap').forEach((wrap) => wrap.dispatchEvent(new Event('layoutprobe')));
+  }, [layoutSignature, layoutState]);
   useLayoutEffect(() => { onReady?.(layoutReady && mediaReady && !!rootRef.current && pageMediaReady(rootRef.current)); }, [layoutReady, mediaReady, layoutSignature, page, config, computed, onReady]);
 
   const setEditing = useStore((s) => s.setEditing);
@@ -317,7 +324,7 @@ export const SlideView = memo(function SlideView({
               >
                 ＋ 添加内容
               </button>
-              {firstMenu && createPortal(
+              {activeEditor && firstMenu && createPortal(
                 <div
                   className="btools-menu-float add-first-menu"
                   style={{ left: firstMenu.x, top: firstMenu.y }}

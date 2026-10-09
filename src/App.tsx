@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { MenuBar } from './components/MenuBar';
 import { Toolbar } from './components/Toolbar';
 import { Filmstrip } from './components/Filmstrip';
@@ -11,13 +12,61 @@ import { useBackNav } from './hooks/useBackNav';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useMediaPreparation } from './hooks/useMediaPreparation';
 import { exportPDF } from './exportPdf';
-import { useStore, pageOrders } from './state/store';
+import { useStore, pageOrders, PROJECT_DRAFT_FLUSH } from './state/store';
 
 export default function App() {
   useMediaPreparation();
   const darkMode = useStore((s) => s.darkMode);
   const flashMsg = useStore((s) => s.flashMsg);
   const setFlashMsg = useStore((s) => s.setFlashMsg);
+  const closing = useRef(false);
+  const projectExiting = useStore((s) => s.projectExiting);
+  const initialInert = useRef(document.body.inert);
+
+  useEffect(() => {
+    document.body.inert = initialInert.current || projectExiting;
+    return () => { document.body.inert = initialInert.current; };
+  }, [projectExiting]);
+
+  useEffect(() => {
+    const flush = () => {
+      flushSync(() => {
+        // Notes commit on blur; field editors commit when their editing session ends.
+        const focused = document.activeElement;
+        if (focused instanceof HTMLElement) focused.blur();
+        const state = useStore.getState();
+        state.setEditing(null);
+        state.setFocus(null);
+      });
+    };
+    window.addEventListener(PROJECT_DRAFT_FLUSH, flush);
+    const off = window.api.onWindowCloseRequest?.(async (requestId) => {
+      if (closing.current) return;
+      if (useStore.getState().projectExiting) {
+        await window.api.completeWindowClose({ requestId, approved: false });
+        return;
+      }
+      closing.current = true;
+      const revision = useStore.getState().mediaRevision;
+      let accepted = false;
+      try {
+        const decision = useStore.getState().prepareProjectExit('close');
+        document.body.inert = true;
+        const approved = await decision;
+        accepted = await window.api.completeWindowClose({ requestId, approved: approved && useStore.getState().mediaRevision === revision });
+      } catch (error) {
+        useStore.getState().setFlashMsg('关闭未完成：' + String(error));
+        await window.api.completeWindowClose({ requestId, approved: false }).catch(() => false);
+      } finally {
+        if (!accepted) {
+          useStore.getState().finishProjectExit();
+          document.body.inert = initialInert.current;
+          closing.current = false;
+        }
+      }
+    });
+    return () => { window.removeEventListener(PROJECT_DRAFT_FLUSH, flush); off?.(); };
+  }, []);
 
   useEffect(() => {
     document.body.classList.toggle('dark', darkMode);
@@ -47,6 +96,7 @@ export default function App() {
   // 快捷键
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (closing.current || useStore.getState().projectExiting) { e.preventDefault(); return; }
       if (e.key === 'F5') {
         e.preventDefault();
         const s = useStore.getState();
@@ -59,7 +109,7 @@ export default function App() {
       // 浮层打开时全局快捷键不穿透（放大镜/弹窗背后的 deck 撤销/保存看不见，属事件泄漏——
       // 与第十九轮放映窗放大镜键盘隔离同族：编辑窗的 Ctrl+Z/Y/S 通道此前漏防）
       const st0 = useStore.getState();
-      if (st0.lightbox || document.querySelector('.modal-mask')) return;
+      if (st0.lightbox || document.querySelector('.modal-mask, .field-popover, .math-float')) return;
       const k = e.key.toLowerCase();
       // 输入焦点（TipTap/textarea/input）内的撤销/重做归编辑器自己，全局 deck 撤销不接管
       const inField = e.target instanceof HTMLElement && !!e.target.closest('input, textarea, .ProseMirror');
@@ -92,6 +142,7 @@ export default function App() {
 
   // ===== 放映：状态广播 + 事件接收 =====
   const presenting = useStore((s) => s.presenting);
+  const presentSession = useStore((s) => s.presentSession);
   const deck = useStore((s) => s.deck);
   const computed = useStore((s) => s.computed);
   const current = useStore((s) => s.current);
@@ -116,7 +167,7 @@ export default function App() {
   const total = mediaPreparation.total + (viewPreparation.scope === String(mediaRevision) ? viewPreparation.total : 0) + (projectionCurrent ? projectionPreparation.total : 0);
   const backgroundPending = completed < total;
   const [presentNonce, setPresentNonce] = useState(0);
-  const lastPresentState = useRef<{ deck: typeof deck; pageLayout: typeof pageLayout; mediaPreparation: typeof mediaPreparation; ready: number } | null>(null);
+  const lastPresentState = useRef<{ deck: typeof deck; pageLayout: typeof pageLayout; mediaPreparation: typeof mediaPreparation; ready: number; session: string | null } | null>(null);
   const versions = useRef({ deck, pageLayout, mediaPreparation, deckId: 0, layoutId: 0, resourceId: 0 });
   if (versions.current.deck !== deck) { versions.current.deck = deck; versions.current.deckId++; }
   if (versions.current.pageLayout !== pageLayout) { versions.current.pageLayout = pageLayout; versions.current.layoutId++; }
@@ -126,18 +177,19 @@ export default function App() {
   const resourceVersion = `${performance.timeOrigin}:${versions.current.resourceId}`;
   const expectedProjectionKey = useRef('');
   expectedProjectionKey.current = presentationPreparationKey(mediaRevision, deckVersion, layoutVersion, resourceVersion, current);
-  useEffect(() => { window.api.sendPresentCtrl({ type: 'clear-project' }); }, [mediaRevision]);
+  useEffect(() => { window.api.sendPresentCtrl({ type: 'clear-project', mediaRevision, owner: String(performance.timeOrigin) }); }, [mediaRevision]);
   useEffect(() => { if (!presenting) setProjectionPreparation(emptyViewPreparation()); }, [presenting]);
 
   useEffect(() => {
     if (!presenting) { lastPresentState.current = null; return; }
     const previous = lastPresentState.current;
     // 首帧、内容变化及 ready 重播发送完整快照；导航不重复传输整份工程。
-    const full = !previous || previous.deck !== deck || previous.ready !== presentNonce;
+    const full = !previous || previous.deck !== deck || previous.ready !== presentNonce || previous.session !== presentSession;
     const orders = pageOrders(computed.pages[current]);
     window.api.sendPresentState({
       ...(full ? { deck } : {}),
       folder: folder ?? '',
+      presentSession: presentSession ?? undefined,
       mediaRevision,
       deckVersion, layoutVersion, resourceVersion,
       ...(full || previous?.mediaPreparation !== mediaPreparation ? { mediaPreparation } : {}),
@@ -147,8 +199,8 @@ export default function App() {
       ...(full || previous?.pageLayout !== pageLayout ? { pageLayout } : {}),
       nonce: Date.now(),
     });
-    lastPresentState.current = { deck, pageLayout, mediaPreparation, ready: presentNonce };
-  }, [presenting, deck, computed, current, revealStep, flash, folder, pageLayout, presentNonce, mediaRevision, mediaPreparation]);
+    lastPresentState.current = { deck, pageLayout, mediaPreparation, ready: presentNonce, session: presentSession };
+  }, [presenting, presentSession, deck, computed, current, revealStep, flash, folder, pageLayout, presentNonce, mediaRevision, mediaPreparation]);
 
   // 放映事件监听注册一次（handler 全部经 getState 取即时态，无闭包依赖）：
   // 结束放映后仍需收尾事件——recSaved 的「录像已保存」提示在落盘完成时才到，
@@ -156,6 +208,7 @@ export default function App() {
   useEffect(() => {
     return window.api.onPresentEvent((evt) => {
       const s = useStore.getState();
+      if (evt.session && evt.session !== s.presentSession && evt.type !== 'recSaved' && evt.type !== 'recStopped') return;
       // 导航事件仅在放映中生效：present:close 的落盘等待窗（最长 30s）里
       // 残留的全屏放映窗仍可交互，其点击/翻页不得驱动编辑器页码与跳转栈
       if (s.presenting) {
@@ -175,6 +228,8 @@ export default function App() {
         }
       }
       else if (evt.type === 'recSaved' && evt.label) s.setFlashMsg('录像已保存 → ' + evt.label);
+      else if (evt.type === 'recStopped' && evt.label) s.setFlashMsg(evt.label);
+      else if (evt.type === 'error' && evt.label) s.setFlashMsg(evt.label);
       else if (evt.type === 'end') s.endPresent();
       else if (evt.type === 'ready') setPresentNonce((n) => n + 1); // 放映窗就绪：重播状态
     });

@@ -7,7 +7,7 @@ import { NodeViewWrapper, NodeViewProps } from '@tiptap/react';
 import { katexHtml, preprocessMath } from './MathView';
 import { LatexEditor, stripMathDelims } from './LatexEditor';
 import { refDisplay, refPageIndex, refParts } from '../model/numbering';
-import { useStore } from '../state/store';
+import { PROJECT_DRAFT_FLUSH, useStore } from '../state/store';
 
 /** 行内公式浮层编辑器：Enter 提交、Esc 取消、点击浮层外提交关闭 */
 function MathFloatEditor({ latex, rect, onCommit, onCancel }: {
@@ -16,26 +16,55 @@ function MathFloatEditor({ latex, rect, onCommit, onCancel }: {
 }) {
   const [val, setVal] = useState(latex);
   const boxRef = useRef<HTMLDivElement>(null);
-  // 点击浮层外 → 提交并关闭（val 经依赖数组保持新鲜）
+  const valRef = useRef(val);
+  valRef.current = val;
+  const callbacks = useRef({ onCommit, onCancel });
+  callbacks.current = { onCommit, onCancel };
+  const closed = useRef(false);
+  const alive = useRef(true);
+  const state = useStore.getState();
+  const owner = useRef({ revision: state.mediaRevision, editing: state.editing, current: state.current }).current;
+  const valid = () => {
+    const current = useStore.getState();
+    return alive.current && !current.projectExiting && current.mediaRevision === owner.revision
+      && current.editing === owner.editing && current.current === owner.current;
+  };
+  const finish = () => {
+    if (closed.current) return;
+    closed.current = true;
+    if (valid()) callbacks.current.onCommit(valRef.current);
+  };
+  const cancel = () => {
+    if (closed.current) return;
+    closed.current = true;
+    if (valid()) callbacks.current.onCancel();
+  };
+  // Capture commits the child transaction before App closes the parent editor.
   useEffect(() => {
+    alive.current = true;
     const onDown = (e: MouseEvent) => {
-      if (boxRef.current && !boxRef.current.contains(e.target as Node)) onCommit(val);
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) finish();
     };
     window.addEventListener('mousedown', onDown);
-    return () => window.removeEventListener('mousedown', onDown);
-  }, [val, onCommit]);
+    window.addEventListener(PROJECT_DRAFT_FLUSH, finish, true);
+    return () => {
+      alive.current = false;
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener(PROJECT_DRAFT_FLUSH, finish, true);
+    };
+  }, []);
   return createPortal(
     <div ref={boxRef} className="math-float" style={{ left: rect.left, top: rect.top }}
       onMouseDown={(e) => e.stopPropagation()}>
-      <LatexEditor value={val} onChange={(v) => setVal(stripMathDelims(v))} rows={2} autoFocus
-        onSubmit={() => onCommit(val)} onCancel={onCancel} />
+      <LatexEditor value={val} onChange={(v) => { const value = stripMathDelims(v); valRef.current = value; setVal(value); }} rows={2} autoFocus
+        onSubmit={finish} onCancel={cancel} />
       <div className="math-float-hint">Enter 提交 · Esc 取消 · 点外部关闭 · \ 命令联想</div>
     </div>,
     document.body,
   );
 }
 
-export function InlineMathView({ node, updateAttributes }: NodeViewProps) {
+export function InlineMathView({ node, editor, getPos, updateAttributes }: NodeViewProps) {
   const [editing, setEditing] = useState(false);
   const [rect, setRect] = useState<{ left: number; top: number } | null>(null);
   const latex: string = node.attrs.latex ?? '';
@@ -80,7 +109,15 @@ export function InlineMathView({ node, updateAttributes }: NodeViewProps) {
         <MathFloatEditor
           latex={latex}
           rect={rect}
-          onCommit={(v) => { updateAttributes({ latex: v.trim() }); setEditing(false); }}
+          onCommit={(v) => {
+            if (editor.isDestroyed) return;
+            const pos = getPos();
+            const current = typeof pos === 'number' ? editor.state.doc.nodeAt(pos) : null;
+            if (current?.type !== node.type) return;
+            const value = v.trim();
+            if (current.attrs.latex !== value) updateAttributes({ latex: value });
+            setEditing(false);
+          }}
           onCancel={() => setEditing(false)}
         />
       )}

@@ -2,9 +2,16 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const { writeFileAtomic, readFileAfterWrites, readProjectFromFolder, importMedia } = require('./files.cjs');
+const { writeFileAtomic, writeGeneratedAtomic, copyFileTracked, saveProjectToFolder, readFileAfterWrites, readFileStamped, drainFileWrites, readProjectFromFolder, importMedia } = require('./files.cjs');
 const { createRasterCache } = require('./raster-cache.cjs');
 const rasterCache = createRasterCache();
+const pendingFileOps = new Set();
+function trackFileOperation(task) {
+  pendingFileOps.add(task);
+  const release = () => pendingFileOps.delete(task);
+  void task.then(release, release);
+  return task;
+}
 // Split the display cache allowance between two renderers; leave room for transient decode.
 ipcMain.handle('display:memory-budget', () => Math.min(4.5 * 1024 ** 3, Math.max(256 * 1024 ** 2, Math.floor(require('os').totalmem() / 8))));
 ipcMain.handle('display:targets', () => require('electron').screen.getAllDisplays().map((display) => ({
@@ -17,7 +24,76 @@ if (process.env.E2E_SCREENSHOT || process.env.E2E_PDF || process.env.E2E_EVAL) {
 }
 
 let mainWindow = null;
+let mainCloseReady = false;
+let managedMainClose = false;
+let mainClosePending = null;
+let mainCloseGeneration = 0;
+let quitRequested = false;
+let mainRendererUnavailable = false;
+let mainCloseFallbackTimer = null;
+
+function cancelMainCloseFallback() {
+  clearTimeout(mainCloseFallbackTimer);
+  mainCloseFallbackTimer = null;
+}
+
+function waitForMainCloseReady() {
+  cancelMainCloseFallback();
+  const pending = mainClosePending;
+  if (!pending || mainCloseReady) return;
+  mainCloseFallbackTimer = setTimeout(() => {
+    if (!mainCloseReady && mainClosePending === pending) void offerUnavailableMainClose(pending);
+  }, 10000);
+}
+
+async function offerUnavailableMainClose(pending) {
+  if (mainClosePending !== pending || pending.dialog || pending.window.isDestroyed()) return;
+  pending.dialog = true;
+  try {
+    const result = await dialog.showMessageBox(pending.window, {
+      type: 'warning', title: '关闭 Research Beamer',
+      message: '编辑窗口未能完成保存确认',
+      detail: '可以取消关闭并等待窗口恢复，或关闭窗口并丢弃尚未保存的修改。',
+      buttons: ['取消', '丢弃并关闭'], defaultId: 0, cancelId: 0, noLink: true,
+    });
+    if (mainClosePending !== pending || pending.window.isDestroyed() || mainCloseReady && !mainRendererUnavailable) return;
+    mainClosePending = null;
+    if (result.response !== 1) { quitRequested = false; return; }
+    managedMainClose = true;
+    pending.window.close();
+  } catch (_) {
+    if (mainClosePending === pending) { mainClosePending = null; quitRequested = false; }
+  }
+}
+
+function sendMainCloseRequest() {
+  if (mainCloseReady && mainClosePending && !mainClosePending.window.isDestroyed()) {
+    mainClosePending.window.webContents.send('win:close-request', mainClosePending.requestId);
+  }
+}
+
+ipcMain.on('win:close-ready', (event) => {
+  if (event.sender !== mainWindow?.webContents) return;
+  mainCloseReady = true;
+  mainRendererUnavailable = false;
+  cancelMainCloseFallback();
+  sendMainCloseRequest();
+});
+ipcMain.handle('win:close-result', (event, { requestId, approved }) => {
+  const pending = mainClosePending;
+  if (!pending || pending.requestId !== requestId || event.sender !== pending.window.webContents) return false;
+  mainClosePending = null;
+  cancelMainCloseFallback();
+  if (!approved) { quitRequested = false; return false; }
+  if (pending.window !== mainWindow || pending.window.isDestroyed()) return false;
+  managedMainClose = true;
+  setImmediate(() => { if (!pending.window.isDestroyed()) pending.window.close(); });
+  return true;
+});
+
 function createWindow() {
+  mainCloseReady = false; managedMainClose = false; mainClosePending = null; mainRendererUnavailable = false;
+  cancelMainCloseFallback();
   mainWindow = new BrowserWindow({
     width: 1480,
     height: 940,
@@ -34,26 +110,73 @@ function createWindow() {
       backgroundThrottling: false, // Editor and projector must keep their frame clocks across monitors.
     },
   });
+  const createdMainWindow = mainWindow;
+  mainWindow.on('close', (event) => {
+    if (managedMainClose) return;
+    event.preventDefault();
+    if (!mainClosePending) {
+      mainClosePending = { window: createdMainWindow, requestId: ++mainCloseGeneration };
+      sendMainCloseRequest();
+      if (mainRendererUnavailable) void offerUnavailableMainClose(mainClosePending);
+      else waitForMainCloseReady();
+    }
+  });
+  mainWindow.webContents.on('did-start-loading', () => {
+    if (mainWindow !== createdMainWindow) return;
+    // The reloaded editor owns a new store/session; retire its predecessor's projection.
+    if (presentWin && !presentWin.isDestroyed()) void closePresentation();
+    mainCloseReady = false;
+    mainRendererUnavailable = false;
+    if (mainClosePending) mainClosePending.requestId = ++mainCloseGeneration;
+    waitForMainCloseReady();
+  });
   const indexPath = path.join(__dirname, '..', 'dist', 'index.html');
-  mainWindow.loadFile(indexPath, { hash: process.env.E2E_EXAMPLE ? `example=${process.env.E2E_EXAMPLE}` : '' });
+  void mainWindow.loadFile(indexPath, { hash: process.env.E2E_EXAMPLE ? `example=${process.env.E2E_EXAMPLE}` : '' }).catch((error) => {
+    console.error('主窗口加载失败：', error);
+    if (!createdMainWindow.isDestroyed()) createdMainWindow.show();
+  });
   // 关闭后置空：放映窗存活时主窗先关（window-all-closed 不触发），second-instance
   // 再进 if (mainWindow) 会对已销毁窗口调 isMinimized() 抛 "Object has been destroyed"
   mainWindow.on('closed', () => {
     mainWindow = null;
-    if (presentWin && !presentWin.isDestroyed() && !presentWin.isVisible()) presentWin.close();
+    mainClosePending = null;
+    cancelMainCloseFallback();
+    void closePresentation();
   });
   // 首帧后再显示（配合 show:false 防白屏）；⚠ 此行丢失 = 窗口永不显示（第卅三轮实测事故）
-  mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.once('ready-to-show', () => {
+    if (mainWindow === createdMainWindow && !createdMainWindow.isDestroyed()) createdMainWindow.show();
+  });
   let reloaded = false;
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
     console.log('render-process-gone', details?.reason);
+    if (mainWindow === createdMainWindow) {
+      mainRendererUnavailable = true;
+      void closePresentation();
+      if (mainClosePending) void offerUnavailableMainClose(mainClosePending);
+    }
     if (!reloaded && details?.reason !== 'clean-exit') {
       reloaded = true;
-      setTimeout(() => mainWindow?.reload(), 300);
+      setTimeout(() => {
+        if (mainWindow === createdMainWindow && !createdMainWindow.isDestroyed()) createdMainWindow.reload();
+      }, 300);
     }
   });
   mainWindow.webContents.on('unresponsive', () => {
-    setTimeout(() => { try { mainWindow?.webContents?.stop(); } catch (_) { /* ignore */ } }, 5000);
+    if (mainWindow === createdMainWindow) {
+      mainRendererUnavailable = true;
+      if (mainClosePending) void offerUnavailableMainClose(mainClosePending);
+    }
+    setTimeout(() => {
+      if (mainWindow !== createdMainWindow || createdMainWindow.isDestroyed()) return;
+      try { createdMainWindow.webContents.stop(); } catch (_) { /* ignore */ }
+    }, 5000);
+  });
+  mainWindow.webContents.on('responsive', () => { if (mainWindow === createdMainWindow) mainRendererUnavailable = false; });
+  mainWindow.webContents.on('did-fail-load', (_e, code, _description, _url, isMainFrame) => {
+    if (mainWindow !== createdMainWindow || code === -3 || isMainFrame === false) return;
+    mainRendererUnavailable = true;
+    if (mainClosePending) void offerUnavailableMainClose(mainClosePending);
   });
 
   // E2E smoke-test hook: E2E_SCREENSHOT=/abs/out.png E2E_PDF=/abs/out.pdf npx electron .
@@ -87,7 +210,9 @@ function createWindow() {
             if (!n) return;
             fs.mkdirSync(process.env.E2E_SHOT_DIR, { recursive: true });
             for (let i = 0; i < n; i++) {
+              let requireContent = false;
               try {
+                requireContent = await wc.executeJavaScript(`!!window.__shotSeq[${i}].requireContent`);
                 const step = await wc.executeJavaScript(`window.__shotSeq[${i}] ? window.__shotSeq[${i}].name : null`).catch(() => null);
                 await wc.executeJavaScript(`(async () => { await window.__shotSeq[${i}].run(); })()`);
                 const wait = await wc.executeJavaScript(`window.__shotSeq[${i}].wait || 700`).catch(() => 700);
@@ -99,10 +224,21 @@ function createWindow() {
                     width: Math.max(2, Math.round(rect.width)), height: Math.max(2, Math.round(rect.height)),
                   })
                   : await wc.capturePage();
+                if (requireContent) {
+                  if (!BrowserWindow.fromWebContents(wc)?.isVisible()) throw new Error('投影窗口不可见');
+                  const pixels = img.toBitmap();
+                  let samples = 0, painted = 0;
+                  for (let p = 0; p + 3 < pixels.length; p += 256) {
+                    samples++; if (pixels[p] + pixels[p + 1] + pixels[p + 2] > 60) painted++;
+                  }
+                  if (!samples || painted / samples < .05) throw new Error('投影截图为空或黑屏');
+                  console.log('E2E_PAINTED=' + (painted / samples).toFixed(3));
+                }
                 const safe = String(tag ? tag + '-' + step : step || ('shot' + i)).replace(/[^-\w.]/g, '_');
                 fs.writeFileSync(require('path').join(process.env.E2E_SHOT_DIR, safe + '.png'), img.toPNG());
                 console.log('E2E_SHOT ' + safe + ' ' + img.getSize().width + 'x' + img.getSize().height);
               } catch (er) {
+                if (requireContent) throw er;
                 console.log('E2E_SHOT_SKIP ' + i + ' ' + er);
               }
             }
@@ -178,19 +314,33 @@ if (!gotLock) {
     createWindow();
     setupRecordingHandlers();
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      if (!closingCache && !quitRequested && (!mainWindow || mainWindow.isDestroyed())) createWindow();
     });
   });
 }
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform !== 'darwin' || quitRequested) app.quit();
 });
 let closingCache = false;
+let cacheClosed = false;
 app.on('before-quit', (event) => {
+  if (cacheClosed) return;
+  event.preventDefault();
   if (closingCache) return;
-  event.preventDefault(); closingCache = true;
-  void rasterCache.close().finally(() => app.quit());
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    quitRequested = true;
+    mainWindow.close();
+    return;
+  }
+  if (presentWin && !presentWin.isDestroyed()) { void closePresentation(); return; }
+  closingCache = true;
+  void (async () => {
+    // Renderer lifetime does not shorten accepted saves, copies, or template loads.
+    while (pendingFileOps.size) await Promise.allSettled([...pendingFileOps]);
+    await drainFileWrites();
+    await rasterCache.close();
+  })().finally(() => { cacheClosed = true; app.quit(); });
 });
 
 ipcMain.handle('raster:begin', async (event, session) => {
@@ -221,30 +371,44 @@ function findGhostscript() {
 // ---------- IPC ----------
 
 // 解析示例/相对工程路径：开发时在应用目录；打包后在 resources，首次访问复制到 userData（可写，自动保存才能工作）
-// 示例内容升级时递增此版本号——userData 下的旧副本整体换新（用户改过示例会被覆盖，示例本就是演示素材）
+// Editable copies are user projects. Template upgrades get a separate version directory.
 const EXAMPLE_VERSION = '8';
+function copyMissingExample(srcDir, writableDir) {
+  if (fs.existsSync(writableDir) || !fs.existsSync(srcDir)) return;
+  const parent = path.resolve(path.dirname(writableDir));
+  fs.mkdirSync(parent, { recursive: true });
+  const temporary = fs.mkdtempSync(path.join(parent, '.beamer-example-'));
+  try {
+    fs.cpSync(srcDir, temporary, { recursive: true });
+    if (!fs.existsSync(writableDir)) fs.renameSync(temporary, writableDir);
+  } finally {
+    const resolved = path.resolve(temporary);
+    if (path.dirname(resolved) !== parent || !path.basename(resolved).startsWith('.beamer-example-')) throw new Error('Invalid example cache cleanup path');
+    fs.rmSync(resolved, { recursive: true, force: true });
+  }
+}
 function resolveProjectFolder(relPath) {
   if (path.isAbsolute(relPath)) return relPath;
   if (!app.isPackaged) return path.join(app.getAppPath(), relPath);
   const srcDir = path.join(process.resourcesPath, relPath);
-  const writableDir = path.join(app.getPath('userData'), relPath);
-  if (relPath.startsWith('examples')) {
+  let writableDir = path.join(app.getPath('userData'), relPath);
+  if (/^examples(?:[\\/]|$)/.test(relPath)) {
     const verFile = path.join(app.getPath('userData'), 'examples', '.version');
     const curVer = fs.existsSync(verFile) ? fs.readFileSync(verFile, 'utf8') : '';
-    if (curVer !== EXAMPLE_VERSION && fs.existsSync(srcDir)) {
-      const examplesDir = path.join(app.getPath('userData'), 'examples');
-      fs.rmSync(examplesDir, { recursive: true, force: true });
-      fs.cpSync(path.join(process.resourcesPath, 'examples'), examplesDir, { recursive: true });
-      fs.writeFileSync(verFile, EXAMPLE_VERSION, 'utf8');
+    let exampleRoot = path.join(app.getPath('userData'), 'examples');
+    if (curVer !== EXAMPLE_VERSION) {
+      exampleRoot = path.join(app.getPath('userData'), 'example-templates', 'v' + EXAMPLE_VERSION);
+      copyMissingExample(path.join(process.resourcesPath, 'examples'), exampleRoot);
     }
+    // Both shipped examples remain discoverable through Open, even when startup selects zh.
+    for (const name of ['zh_talk', 'en_talk']) copyMissingExample(path.join(process.resourcesPath, 'examples', name), path.join(exampleRoot, name));
+    writableDir = path.join(exampleRoot, relPath.replace(/^examples[\\/]?/, ''));
   }
-  if (!fs.existsSync(writableDir) && fs.existsSync(srcDir)) {
-    fs.cpSync(srcDir, writableDir, { recursive: true });
-  }
+  copyMissingExample(srcDir, writableDir);
   return fs.existsSync(writableDir) ? writableDir : srcDir;
 }
 
-ipcMain.handle('project:loadPath', async (_e, relPath) => {
+async function loadProjectPath(relPath) {
   try {
     const folder = resolveProjectFolder(relPath);
     const project = await readProjectFromFolder(folder);
@@ -252,7 +416,8 @@ ipcMain.handle('project:loadPath', async (_e, relPath) => {
   } catch (e) {
     return { error: String(e) };
   }
-});
+}
+ipcMain.handle('project:loadPath', (_e, relPath) => trackFileOperation(loadProjectPath(relPath)));
 
 ipcMain.handle('project:open', async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
@@ -268,7 +433,21 @@ ipcMain.handle('project:open', async () => {
   }
 });
 
-ipcMain.handle('project:save', async (_e, { folder, md }) => {
+ipcMain.handle('project:confirm-exit', async (event, { title, language, reason }) => {
+  if (event.sender !== mainWindow?.webContents) return 'cancel';
+  const zh = language !== 'en';
+  const choice = await dialog.showMessageBox(mainWindow, {
+    type: 'question', noLink: true, defaultId: 0, cancelId: 2,
+    buttons: zh ? ['保存', '不保存', '取消'] : ['Save', 'Discard', 'Cancel'],
+    title: zh ? '保存工程修改' : 'Save project changes',
+    message: zh ? `是否保存“${title || '未命名工程'}”的修改？` : `Save changes to “${title || 'Untitled project'}”?`,
+    detail: zh ? (reason === 'close' ? '保存后关闭窗口；不保存将放弃未保存的修改。' : '保存后切换工程；不保存将放弃未保存的修改。')
+      : (reason === 'close' ? 'Save before closing. Discard will lose the unsaved changes.' : 'Save before switching projects. Discard will lose the unsaved changes.'),
+  });
+  return ['save', 'discard', 'cancel'][choice.response] ?? 'cancel';
+});
+
+async function saveProjectToDisk({ folder, md }) {
   try {
     if (!folder) {
       const r = await dialog.showOpenDialog(mainWindow, {
@@ -278,17 +457,13 @@ ipcMain.handle('project:save', async (_e, { folder, md }) => {
       if (r.canceled || !r.filePaths[0]) return null;
       folder = r.filePaths[0];
     }
-    const mediaDir = path.join(folder, 'media');
-    await fs.promises.mkdir(mediaDir, { recursive: true });
-    await writeFileAtomic(path.join(folder, 'deck.md'), md);
-    // Leave an existing project-owned Skill untouched; new projects describe their format.
-    await fs.promises.copyFile(path.join(__dirname, '..', 'skills', 'research-beamer-deck', 'SKILL.md'), path.join(folder, 'SKILL.md'), fs.constants.COPYFILE_EXCL)
-      .catch((error) => { if (error.code !== 'EEXIST') throw error; });
+    await saveProjectToFolder(folder, md, path.join(__dirname, '..', 'skills', 'research-beamer-deck', 'SKILL.md'));
     return { folder };
   } catch (e) {
     return { error: String(e) };
   }
-});
+}
+ipcMain.handle('project:save', (_e, payload) => trackFileOperation(saveProjectToDisk(payload)));
 
 // 图片/视频导入工程 media/（仅复制文件）
 // 同名已存在：内容一致 → 复用现有文件（同一素材多处引用不再产生 -N 副本；
@@ -321,38 +496,13 @@ ipcMain.handle('media:pick', async () => {
 
 // EPS → 矢量 PDF（Ghostscript pdfwrite，无损矢量转换）
 // 按 absPath 在途去重——多个副本同时触发时避免并发双写输出文件
-const epsPdfInflight = new Map(); // absPath -> Promise<{pdf}|{error}>
-ipcMain.handle('media:ensureEpsPdf', async (_e, { absPath }) => {
-  try {
-    const out = absPath.replace(/\.eps$/i, '') + '.pdf';
-    if (fs.existsSync(out)) return { pdf: out };
-    if (epsPdfInflight.has(absPath)) return epsPdfInflight.get(absPath);
-    const gs = findGhostscript();
-    if (!gs) return { error: 'Ghostscript not found (C:\\Program Files\\gs)' };
-    const job = new Promise((resolve) => {
-      const { execFile } = require('child_process');
-      execFile(
-        gs,
-        ['-dSAFER', '-dBATCH', '-dNOPAUSE', '-dEPSCrop', '-sDEVICE=pdfwrite', '-o', out, absPath],
-        { timeout: 30000, killSignal: 'SIGKILL' },
-        (err) => (err ? resolve({ error: String(err) }) : resolve({ pdf: out })),
-      );
-    }).finally(() => epsPdfInflight.delete(absPath));
-    epsPdfInflight.set(absPath, job);
-    return job;
-  } catch (e) {
-    return { error: String(e) };
-  }
-});
+const ensureEpsPdf = require('./eps-pdf.cjs').createEpsConverter(findGhostscript);
+ipcMain.handle('media:ensureEpsPdf', (_e, { absPath }) => ensureEpsPdf(absPath));
 
 // 异步读（大 PDF/视频可达几十 MB；readFileSync 会卡主进程消息循环）
 ipcMain.handle('file:read', async (_e, absPath) => {
   try {
-    const before = await fs.promises.stat(absPath);
-    const data = await readFileAfterWrites(absPath);
-    const stats = await fs.promises.stat(absPath);
-    if (before.size !== stats.size || before.mtimeMs !== stats.mtimeMs) throw new Error('素材在读取过程中发生变化，请重试');
-    return { data: new Uint8Array(data), stamp: `${stats.size}:${stats.mtimeMs}` };
+    return await readFileStamped(absPath);
   } catch (e) {
     return { error: String(e) };
   }
@@ -387,8 +537,15 @@ ipcMain.handle('win:close', () => mainWindow?.close());
 
 // ---------- 放映窗口 ----------
 let presentWin = null;
+let presentLoading = null;
+const presentationSessions = new WeakMap();
+const managedPresentationClose = new WeakSet();
 
-ipcMain.handle('present:open', async () => {
+ipcMain.handle('present:open', async (_event, payload) => {
+  const opening = ++closeGen;
+  presentClosing = false;
+  if (suspendWaiter) suspendWaiter();
+  if (flushWaiter) flushWaiter();
   const { screen } = require('electron');
   const displays = screen.getAllDisplays();
   // 目标屏：主窗口中心不在的那块（副屏）；单屏时用当前屏
@@ -403,18 +560,25 @@ ipcMain.handle('present:open', async () => {
     if (other) target = other;
   }
   if (presentWin && !presentWin.isDestroyed()) {
-    closeGen++;
-    presentClosing = false;
-    const previous = screen.getDisplayMatching(presentWin.getBounds());
-    if (previous.id !== target.id) {
-      presentWin.setFullScreen(false); presentWin.setBounds(target.bounds); presentWin.setFullScreen(true);
+    const existing = presentWin;
+    if (payload?.session) presentationSessions.set(existing, payload.session);
+    const loading = presentLoading?.window === existing ? presentLoading.promise : null;
+    if (loading) {
+      const result = await loading;
+      if (!result.ok) return result;
     }
-    presentWin.webContents.send('present:ctrl', { type: 'resume' });
-    presentWin.show(); presentWin.focus();
-    mainWindow?.webContents.send('present:event', { type: 'ready' });
+    if (opening !== closeGen || existing !== presentWin || existing.isDestroyed()) return { ok: false, error: '放映启动已取消' };
+    const previous = screen.getDisplayMatching(existing.getBounds());
+    if (previous.id !== target.id) {
+      existing.setFullScreen(false); existing.setBounds(target.bounds);
+    }
+    if (!existing.isFullScreen()) existing.setFullScreen(true);
+    existing.webContents.send('present:ctrl', { type: 'resume', session: presentationSessions.get(existing) });
+    existing.show(); existing.focus();
+    mainWindow?.webContents.send('present:event', { type: 'ready', session: presentationSessions.get(existing) });
     return { ok: true, display: target.id };
   }
-  presentWin = new BrowserWindow({
+  const created = new BrowserWindow({
     frame: false,
     backgroundColor: '#000000',
     x: target.bounds.x,
@@ -428,19 +592,30 @@ ipcMain.handle('present:open', async () => {
       backgroundThrottling: false,
     },
   });
+  presentWin = created;
+  if (payload?.session) presentationSessions.set(created, payload.session);
   // Windows 下 constructor 传 fullscreen + 坐标会失效（窗口悬浮不全屏）：
   // 先按目标屏 bounds 建窗，ready 后再进全屏
-  presentWin.once('ready-to-show', () => {
+  created.once('ready-to-show', () => {
+    if (opening !== closeGen) return;
     try {
-      presentWin.setBounds(target.bounds);
-      presentWin.setFullScreen(true);
-      presentWin.setMenuBarVisibility(false);
+      created.setBounds(target.bounds);
+      created.setFullScreen(true);
+      created.setMenuBarVisibility(false);
     } catch (_) { /* 窗口可能已关 */ }
   });
   const indexPath = path.join(__dirname, '..', 'dist', 'index.html');
-  presentWin.loadFile(indexPath, { hash: 'present' });
-  presentWin.on('closed', () => {
+  let failedLoad = false;
+  created.on('close', (event) => {
+    if (managedPresentationClose.has(created) || !(presentRecording || presentFlushing)) return;
+    event.preventDefault();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('present:event', { type: 'end', session: presentationSessions.get(created) });
+    void closePresentation();
+  });
+  created.on('closed', () => {
+    if (presentWin !== created) return;
     presentWin = null;
+    if (presentLoading?.window === created) presentLoading = null;
     presentRecording = false; // 窗毁录制链已断，防下次 close 误等
     presentFlushing = 0;
     // 窗口被旁路销毁（Alt+F4）时使挂起的延迟关闭失效：不清则 presentClosing
@@ -448,48 +623,87 @@ ipcMain.handle('present:open', async () => {
     // close 计时到点按陈旧 generation 判定通过、关掉【新】放映窗（数据丢失类）
     closeGen++;
     presentClosing = false;
+    if (suspendWaiter) suspendWaiter();
     if (flushWaiter) flushWaiter();
     // 退出应用时 mainWindow 可能已销毁（先于放映窗关闭）——发消息前必须查活
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('present:event', { type: 'end' });
+    if (!failedLoad && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('present:event', { type: 'end', session: presentationSessions.get(created) });
     }
   });
+  created.webContents.on('render-process-gone', (_event, details) => {
+    if (presentWin !== created || created.isDestroyed()) return;
+    console.error('放映进程退出：', details.reason);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('present:event', {
+        type: 'error', session: presentationSessions.get(created),
+        label: '放映窗口意外退出' + (presentFlushing ? '，未完成保存的录像无法恢复' : ''),
+      });
+    }
+    // A dead renderer cannot acknowledge suspension or finish a recording write.
+    // Its closed handler releases waiters; never kill a live renderer for a slow save.
+    created.destroy();
+  });
+  const loading = created.loadFile(indexPath, { hash: 'present' }).then(() => ({ ok: true }), (error) => {
+    failedLoad = true;
+    if (!created.isDestroyed()) created.destroy();
+    return { ok: false, error: String(error) };
+  });
+  presentLoading = { window: created, promise: loading };
+  const result = await loading;
+  if (presentLoading?.window === created) presentLoading = null;
+  if (!result.ok) return result;
+  if (opening !== closeGen) return { ok: false, error: '放映启动已取消' };
+  if (created.isDestroyed()) return { ok: false, error: '投影窗口已关闭' };
   return { ok: true, display: target.id };
 });
 
 // 结束放映：录制中或落盘链在途则先等 ack 再关窗——直接销毁渲染进程会让
 // onstop 的异步落盘链（Blob→arrayBuffer→IPC）竞态窗口销毁，录像整段丢失。
 // recStopped 由渲染进程 onstop 的 finally 发出（保存成功/失败/空块全路径）；
-// 30s 兜底覆盖长录制的序列化耗时。closeGen 防「结束→立刻重开放映」竞态：
+// 保存可能超过 30s（长录像或慢盘），不得以超时销毁仍在落盘的渲染进程。
+// closeGen 防「结束→立刻重开放映」竞态：
 // 复用存活窗口的 present:open 使挂起的关闭作废，否则延迟关窗会杀掉新放映。
 let presentRecording = false;  // recState UI 镜像（按钮态）
 let presentFlushing = 0;      // 在途落盘会话数（recState on +1 / recStopped -1）
 let presentClosing = false;
 let closeGen = 0;
 let flushWaiter = null;
+let suspendWaiter = null;
 
 async function closePresentation() {
   if (!presentWin || presentWin.isDestroyed()) return;
   if (presentClosing) return;
   const gen = ++closeGen;
+  const closingWindow = presentWin;
   presentClosing = true;
   try {
     if (presentRecording) {
       presentWin.webContents.send('present:ctrl', { type: 'rec-stop' });
     }
-    presentWin.webContents.send('present:ctrl', { type: 'suspend' });
+    await new Promise((resolve) => {
+      const wake = () => { clearTimeout(timer); if (suspendWaiter === wake) suspendWaiter = null; resolve(); };
+      const timer = setTimeout(wake, 30000);
+      suspendWaiter = wake;
+      closingWindow.webContents.send('present:ctrl', { type: 'suspend', session: presentationSessions.get(closingWindow), closeGeneration: gen });
+    });
+    if (gen !== closeGen) return;
+    // Keep the renderer alive for disk writes, while ending the visible projection promptly.
+    if (!closingWindow.isDestroyed()) closingWindow.hide();
     if (presentFlushing) {
       await new Promise((resolve) => {
-        const t = setTimeout(() => { flushWaiter = null; resolve(); }, 30000);
-        flushWaiter = () => { clearTimeout(t); flushWaiter = null; resolve(); };
+        const wake = () => {
+          if (flushWaiter === wake) flushWaiter = null;
+          resolve();
+        };
+        flushWaiter = wake;
       });
     }
   } catch (_) { /* 窗口已销毁 */ }
-  presentClosing = false;
   if (gen !== closeGen) return; // 等待期间放映被重新打开：放弃关闭
+  presentClosing = false;
   if (presentWin && !presentWin.isDestroyed()) {
     if (mainWindow && !mainWindow.isDestroyed()) presentWin.hide();
-    else presentWin.close();
+    else { managedPresentationClose.add(presentWin); presentWin.close(); }
   }
 }
 ipcMain.handle('present:close', closePresentation);
@@ -535,6 +749,8 @@ ipcMain.handle('present:swapScreens', async () => {
 // 编辑器 → 放映窗：整页状态广播（deck 序列化 + 当前页 + 已出现 order）
 ipcMain.on('present:state', (_e, payload) => {
   if (presentWin && !presentWin.isDestroyed()) {
+    const session = presentationSessions.get(presentWin);
+    if (session && payload.presentSession !== session) return;
     presentWin.webContents.send('present:state', payload);
   }
 });
@@ -546,6 +762,11 @@ ipcMain.on('present:state', (_e, payload) => {
 // 会话计数：停 A 后立刻重录 B 时，A 的 recStopped 迟到——布尔标记会被它清掉，
 // B 的落盘保护失效（close 直杀落盘链）。计数保证每个在途会话各自抵消
 ipcMain.on('present:event', (_e, evt) => {
+  if (!evt.session && presentWin && _e.sender === presentWin.webContents) evt = { ...evt, session: presentationSessions.get(presentWin) };
+  if (evt.type === 'ready' && suspendWaiter && presentWin && _e.sender === presentWin.webContents) {
+    presentWin.webContents.send('present:ctrl', { type: 'suspend', session: presentationSessions.get(presentWin), closeGeneration: closeGen });
+  }
+  if (evt.type === 'suspended' && Number(evt.label) === closeGen && suspendWaiter && presentWin && _e.sender === presentWin.webContents) suspendWaiter();
   if (evt && evt.type === 'recState' && evt.label === 'on') {
     presentRecording = true;
     presentFlushing++;
@@ -563,40 +784,41 @@ ipcMain.on('present:event', (_e, evt) => {
 // 编辑器 → 放映窗：控制命令（放映台的录制/停止按钮等，录制设备在放映窗持有）
 ipcMain.on('present:ctrl', (_e, evt) => {
   if (presentWin && !presentWin.isDestroyed()) {
-    presentWin.webContents.send('present:ctrl', evt);
+    presentWin.webContents.send('present:ctrl', { ...evt, session: presentationSessions.get(presentWin) });
   }
 });
 
 // ---------- 图片另存（复制原图到指定位置） ----------
-ipcMain.handle('media:saveAs', async (_e, { srcPath }) => {
+async function saveMediaCopy({ srcPath }) {
   const r = await dialog.showSaveDialog(mainWindow, {
     title: '保存图像',
     defaultPath: path.basename(srcPath),
   });
   if (r.canceled || !r.filePath) return null;
   try {
-    await fs.promises.copyFile(srcPath, r.filePath);
+    await copyFileTracked(srcPath, r.filePath);
     return { path: r.filePath };
   } catch (e) {
     // 与其他 handler 一致的 {error} 契约（如目标被 PDF 阅读器占用 EBUSY）
     return { error: String(e) };
   }
-});
+}
+ipcMain.handle('media:saveAs', (_e, payload) => trackFileOperation(saveMediaCopy(payload)));
 
 // ---------- PDF 导出（渲染进程准备好打印 DOM 后调用） ----------
-ipcMain.handle('pdf:print', async (_e, { savePath }) => {
+async function printProjectPDF(contents, { savePath }) {
   try {
-    const data = await mainWindow.webContents.printToPDF({
+    const data = await writeGeneratedAtomic(savePath, () => contents.printToPDF({
       printBackground: true,
       margins: { marginType: 'none' },
       preferCSSPageSize: true,
-    });
-    await writeFileAtomic(savePath, data);
+    }));
     return { path: savePath, bytes: data.length };
   } catch (e) {
     return { error: String(e) };
   }
-});
+}
+ipcMain.handle('pdf:print', (event, payload) => trackFileOperation(printProjectPDF(event.sender, payload)));
 
 // ---------- 撤销历史持久化（工程目录 .beamer-history.json 隐藏文件） ----------
 ipcMain.handle('history:read', async (_e, folder) => {
