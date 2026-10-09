@@ -114,6 +114,7 @@ export default function App() {
   const projectionCurrent = presenting && projectionPreparation.scope === String(mediaRevision);
   const completed = mediaPreparation.completed + (viewPreparation.scope === String(mediaRevision) ? viewPreparation.completed : 0) + (projectionCurrent ? projectionPreparation.completed : 0);
   const total = mediaPreparation.total + (viewPreparation.scope === String(mediaRevision) ? viewPreparation.total : 0) + (projectionCurrent ? projectionPreparation.total : 0);
+  const backgroundPending = completed < total;
   const [presentNonce, setPresentNonce] = useState(0);
   const lastPresentState = useRef<{ deck: typeof deck; pageLayout: typeof pageLayout; mediaPreparation: typeof mediaPreparation; ready: number } | null>(null);
   const versions = useRef({ deck, pageLayout, mediaPreparation, deckId: 0, layoutId: 0, resourceId: 0 });
@@ -184,16 +185,16 @@ export default function App() {
       <MenuBar />
       <Toolbar />
       <div className="main">
-        {loading && <div className="project-loading" role="status"><span>{presenting ? '正在准备放映' : '正在准备工程'} {completed}/{total}</span><progress value={total ? completed : undefined} max={Math.max(1, total)} /></div>}
+        {(loading || backgroundPending) && <div className="resource-progress" data-blocking={loading || undefined} role="status"><span>{loading ? presenting ? '准备当前放映页面' : '准备前 10 页' : '后台准备资源'} {completed}/{total}</span><progress value={total ? completed : undefined} max={Math.max(1, total)} /></div>}
         <Filmstrip />
         <div className="workspace-view">
           <div className="workspace-layer editor-col" aria-hidden={presenting || undefined}
-            ref={(node) => { if (node) node.inert = presenting; }} style={{ visibility: presenting ? 'hidden' : 'visible', pointerEvents: presenting ? 'none' : undefined }}>
+            ref={(node) => { if (node) node.inert = presenting; }} style={{ visibility: presenting ? 'hidden' : 'visible', opacity: presenting ? 0 : 1, pointerEvents: presenting ? 'none' : undefined }}>
             <EditorCanvas active={!presenting} onPreparation={setEditorPreparation} />
             <NotesPane />
           </div>
           {monitorSnapshot.current && <div className="workspace-layer" aria-hidden={!presenting || undefined}
-            ref={(node) => { if (node) node.inert = !presenting; }} style={{ visibility: presenting ? 'visible' : 'hidden', pointerEvents: presenting ? undefined : 'none' }}>
+            ref={(node) => { if (node) node.inert = !presenting; }} style={{ visibility: presenting ? 'visible' : 'hidden', opacity: presenting ? 1 : 0, pointerEvents: presenting ? undefined : 'none' }}>
             <PresenterView active={presenting} snapshot={monitorSnapshot.current} onPreparation={setMonitorPreparation} />
           </div>}
         </div>

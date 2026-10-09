@@ -7,11 +7,23 @@ declare class ImageDecoder {
   decode(options: { frameIndex: number }): Promise<{ image: VideoFrame }>;
   close(): void;
 }
-interface Job { id: number; url: string; width: number; aspect: number; cancelled: boolean; abort?: AbortController; decoder?: ImageDecoder; allow?: (value: boolean) => void }
-type Request = { type: 'prepare'; id: number; url: string; width: number; aspect: number } | { type: 'allow'; id: number; allowed: boolean } | { type: 'remove'; id: number };
+interface Job { id: number; url: string; width: number; aspect: number; priority: number; cancelled: boolean; abort?: AbortController; decoder?: ImageDecoder; allow?: (value: boolean) => void }
+type Request = { type: 'prepare'; id: number; url: string; width: number; aspect: number; priority: number } | { type: 'allow'; id: number; allowed: boolean } | { type: 'priority'; id: number; priority: number } | { type: 'remove'; id: number };
 const port = self as unknown as { postMessage(message: unknown, transfer?: Transferable[]): void; onmessage: ((event: MessageEvent<Request>) => void) | null };
 const jobs = new Map<number, Job>();
-let preparation = Promise.resolve();
+const queue: Job[] = [];
+let running = false;
+async function drain(): Promise<void> {
+  if (running) return;
+  running = true;
+  try {
+    while (queue.length) {
+      queue.sort((a, b) => a.priority - b.priority);
+      const job = queue.shift()!;
+      if (!job.cancelled) await prepare(job);
+    }
+  } finally { running = false; }
+}
 async function prepare(job: Job): Promise<void> {
   if (job.cancelled) return;
   try {
@@ -39,17 +51,20 @@ async function prepare(job: Job): Promise<void> {
           if (!await allowed || job.cancelled) return;
         }
         if (!raster) {
-          raster = new OffscreenCanvas(width, height); context = raster.getContext('2d', { willReadFrequently: true });
+          raster = new OffscreenCanvas(width, height); context = raster.getContext('2d');
           if (!context) throw new Error('Canvas 2D 不可用');
           context.imageSmoothingQuality = 'high';
         }
         context!.clearRect(0, 0, width, height); context!.drawImage(image, 0, 0, width, height);
-        const pixels = context!.getImageData(0, 0, width, height);
         if (job.cancelled) return;
-        port.postMessage({ type: 'frame', id: job.id, data: pixels.data.buffer, width, height, duration: Math.max(10, (image.duration ?? 100000) / 1000) }, [pixels.data.buffer]);
+        const bitmap = raster.transferToImageBitmap();
+        port.postMessage({ type: 'frame', id: job.id, bitmap, duration: Math.max(10, (image.duration ?? 100000) / 1000) }, [bitmap]);
       } finally { image.close(); }
     }
-    if (!job.cancelled) port.postMessage({ type: 'prepared', id: job.id });
+    if (!job.cancelled) {
+      context?.getImageData(0, 0, 1, 1);
+      port.postMessage({ type: 'prepared', id: job.id });
+    }
   } catch (error) {
     if (!job.cancelled) port.postMessage({ type: 'error', id: job.id, error: String(error) });
   } finally { job.decoder?.close(); jobs.delete(job.id); }
@@ -57,10 +72,11 @@ async function prepare(job: Job): Promise<void> {
 port.onmessage = ({ data }) => {
   if (data.type === 'prepare') {
     const job: Job = { ...data, cancelled: false }; jobs.set(data.id, job);
-    preparation = preparation.then(() => prepare(job));
+    queue.push(job); void drain();
   } else {
     const job = jobs.get(data.id); if (!job) return;
-    if (data.type === 'allow') { job.allow?.(data.allowed); job.allow = undefined; }
+    if (data.type === 'priority') job.priority = Math.min(job.priority, data.priority);
+    else if (data.type === 'allow') { job.allow?.(data.allowed); job.allow = undefined; }
     else { job.cancelled = true; job.abort?.abort(); job.decoder?.close(); job.allow?.(false); jobs.delete(data.id); }
   }
 };

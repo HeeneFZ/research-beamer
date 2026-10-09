@@ -11,7 +11,7 @@ export let SCREEN_RASTER_LIMIT = 512 * 1024 * 1024;
 let screenBudget: Promise<void> | null = null;
 export function prepareScreenBudget(): Promise<void> {
   return screenBudget ??= window.api.displayMemoryBudget().then((budget) => {
-    SCREEN_RASTER_LIMIT = Math.max(256 * 1024 * 1024, Math.min(1024 * 1024 * 1024, budget / 4));
+    SCREEN_RASTER_LIMIT = Math.max(64 * 1024 * 1024, budget / 4);
     rebuildPins(); trimDisplay(screens, SCREEN_RASTER_LIMIT);
   });
 }
@@ -43,7 +43,11 @@ export function screenRasterWidth(resource: RasterResource, width: number): numb
 }
 export function screenRasterReady(resource: RasterResource, width: number): boolean {
   const entry = screens.get(resourceKey(resource));
-  return !!entry?.canvas && entry.canvas.width >= screenRasterWidth(resource, width);
+  return width <= resource.width && !!entry?.canvas && entry.canvas.width >= Math.ceil(width);
+}
+export function prioritizeScreenRaster(resource: RasterResource): void {
+  const source = screens.get(resourceKey(resource))?.source ?? decoded.get(resourceKey(resource));
+  if (source) source.job.priority = 0;
 }
 
 function trimDisplay(cache: Map<string, DisplayRaster>, limit: number): void {

@@ -58,7 +58,7 @@ export const PresenterView = memo(function PresenterView({ active, snapshot, onP
 
   const main = useFitScale(size.w, size.h);
   const next = useFitScale(size.w, size.h, 16);
-  const screen = useScreenPreparation(computed.pages, current, folder ?? '', preparation, pxW * main.scale, pxH * main.scale, active, pxW);
+  const screen = useScreenPreparation(computed.pages, current, folder ?? '', preparation, pxW * main.scale, pxH * main.scale, active, pxW, false, false);
   useLayoutEffect(() => {
     const scope = String(revision);
     const rightReady = !previewPage || nextStage.scope === scope && nextStage.ready;

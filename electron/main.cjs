@@ -5,8 +5,11 @@ const path = require('path');
 const { writeFileAtomic, readFileAfterWrites, readProjectFromFolder, importMedia } = require('./files.cjs');
 const { createRasterCache } = require('./raster-cache.cjs');
 const rasterCache = createRasterCache();
-// Two renderers may cache display frames. Together they use at most a quarter of RAM.
-ipcMain.handle('display:memory-budget', () => Math.min(8 * 1024 ** 3, Math.max(256 * 1024 ** 2, Math.floor(require('os').totalmem() / 8))));
+// Split the display cache allowance between two renderers; leave room for transient decode.
+ipcMain.handle('display:memory-budget', () => Math.min(4.5 * 1024 ** 3, Math.max(256 * 1024 ** 2, Math.floor(require('os').totalmem() / 8))));
+ipcMain.handle('display:targets', () => require('electron').screen.getAllDisplays().map((display) => ({
+  width: display.bounds.width, height: display.bounds.height, scaleFactor: display.scaleFactor,
+})));
 
 // E2E 模式用独立 userData：不与用户正开着的实例抢单实例锁，也不碰用户示例副本
 if (process.env.E2E_SCREENSHOT || process.env.E2E_PDF || process.env.E2E_EVAL) {
@@ -386,14 +389,6 @@ ipcMain.handle('win:close', () => mainWindow?.close());
 let presentWin = null;
 
 ipcMain.handle('present:open', async () => {
-  if (presentWin && !presentWin.isDestroyed()) {
-    closeGen++; // 使挂起的延迟关闭作废（结束→立刻重开：复用的窗不能被旧 close 杀掉）
-    presentClosing = false;
-    presentWin.webContents.send('present:ctrl', { type: 'resume' });
-    presentWin.show(); presentWin.focus();
-    mainWindow?.webContents.send('present:event', { type: 'ready' });
-    return { ok: true };
-  }
   const { screen } = require('electron');
   const displays = screen.getAllDisplays();
   // 目标屏：主窗口中心不在的那块（副屏）；单屏时用当前屏
@@ -406,6 +401,18 @@ ipcMain.handle('present:open', async () => {
       (d) => !(cx >= d.workArea.x && cx < d.workArea.x + d.workArea.width && cy >= d.workArea.y && cy < d.workArea.y + d.workArea.height),
     );
     if (other) target = other;
+  }
+  if (presentWin && !presentWin.isDestroyed()) {
+    closeGen++;
+    presentClosing = false;
+    const previous = screen.getDisplayMatching(presentWin.getBounds());
+    if (previous.id !== target.id) {
+      presentWin.setFullScreen(false); presentWin.setBounds(target.bounds); presentWin.setFullScreen(true);
+    }
+    presentWin.webContents.send('present:ctrl', { type: 'resume' });
+    presentWin.show(); presentWin.focus();
+    mainWindow?.webContents.send('present:event', { type: 'ready' });
+    return { ok: true, display: target.id };
   }
   presentWin = new BrowserWindow({
     frame: false,

@@ -377,6 +377,8 @@ export const SlideView = memo(function SlideView({
       ref={rootRef}
       id={mode === 'print' ? `page-${page.no}` : undefined}
       className={`sv mode-${mode}`}
+      data-page-index={page.index}
+      data-page-width={size.w * 96 / 25.4}
       data-fen={config.fontEn}
       data-fzh={config.fontZh}
       data-layout-ready={layoutReady}

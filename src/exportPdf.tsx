@@ -51,6 +51,7 @@ async function capturePrintSnapshot(mediaRevision: number): Promise<ReturnType<t
     const pages = document.querySelectorAll('.filmstrip .sv');
     if (pages.length === state.computed.pages.length
       && state.mediaPreparation.phase === 'ready'
+      && state.mediaPreparation.completed === state.mediaPreparation.total
       && state.mediaPreparation.assetSignature === mediaAssetSignature(state.deck)
       && [...pages].every((page) => page.getAttribute('data-layout-ready') === 'true')) return state;
   }

@@ -609,7 +609,7 @@ export default function Present() {
         >
           <div style={{ width: pxW, height: pxH, transform: `scale(${base})`, transformOrigin: 'top left' }}>
             <ReadySlideStage
-              active={sessionActive && bootReady}
+              active={sessionActive}
               preparationKey={requestedPreparationKey}
               preloadPages={computed.pages}
               onPreparation={setStagePreparation}
@@ -633,7 +633,7 @@ export default function Present() {
         )}
       </div>
 
-      {sessionActive && (awaitingState || !bootReady) && <div className="project-loading projection-preparing" role="status">
+      {sessionActive && (awaitingState || !bootReady) && <div className="resource-progress projection-preparing" data-blocking="true" role="status">
         <span>正在准备放映 {screen.completed + stagePreparation.completed}/{screen.total + stagePreparation.total}</span>
         <progress value={screen.completed + stagePreparation.completed} max={Math.max(1, screen.total + stagePreparation.total)} />
       </div>}

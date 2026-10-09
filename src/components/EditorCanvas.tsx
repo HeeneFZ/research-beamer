@@ -21,7 +21,9 @@ const PAD_H = 100; // 上下边距 + zoom 条预留
 export function EditorCanvas({ active = true, onPreparation }: { active?: boolean; onPreparation?: (state: ViewPreparation) => void }) {
   const deck = useStore((s) => s.deck);
   const computed = useStore((s) => s.computed);
-  const current = useStore((s) => s.current);
+  const savedCurrent = useRef(useStore.getState().current);
+  const current = useStore((s) => active ? s.current : savedCurrent.current);
+  if (active) savedCurrent.current = current;
   const folder = useStore((s) => s.folder);
   const zoom = useStore((s) => s.zoom);
   const setZoom = useStore((s) => s.setZoom);
@@ -65,7 +67,7 @@ export function EditorCanvas({ active = true, onPreparation }: { active?: boolea
 
   const page = computed.pages[current];
   const scale = fit * zoom;
-  const screen = useScreenPreparation(computed.pages, current, folder ?? '', preparation, pxW * scale, pxH * scale, true, pxW);
+  const screen = useScreenPreparation(computed.pages, current, folder ?? '', preparation, pxW * scale, pxH * scale, active, pxW, true);
   useLayoutEffect(() => {
     onPreparation?.({ scope: String(revision), targetKey: stage.targetKey, ready: screen.ready && (!page || stage.scope === String(revision) && stage.ready),
       currentReady: !page || stage.currentReady, completed: screen.completed + (page ? stage.completed : 0), total: screen.total + (page ? stage.total : 0) });

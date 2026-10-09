@@ -6,6 +6,7 @@ declare global {
     api: {
       isE2E: boolean;
       displayMemoryBudget(): Promise<number>;
+      displayTargets(): Promise<{ width: number; height: number; scaleFactor: number }[]>;
       openProject(): Promise<{ md: string | null; folder: string; error?: string } | null>;
       loadExample(relPath: string): Promise<{ md: string | null; folder: string; error?: string } | null>;
       saveProject(p: { folder: string | null; md: string }): Promise<{ folder: string; error?: string } | null>;

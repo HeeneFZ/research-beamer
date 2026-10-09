@@ -14,6 +14,7 @@ import { drawPreparedRaster } from './resourceRaster';
 import type { MediaPreparation } from '../model/mediaResources';
 import { IcoLens } from './icons';
 import { GifAnimation } from './GifAnimation';
+import { SCREEN_SAMPLING } from './displayTargets';
 import type { SlideMode } from './slide/types';
 
 const absPath = absMediaPath;
@@ -126,15 +127,16 @@ export function PdfCanvas({ abs, thumbnail = false, print = false, preparation: 
       if (w > 0) {
         const precision = print ? PDF_DPI_SCALE : thumbnail
           ? Math.max(PDF_PREVIEW_WIDTH / w, (box.getBoundingClientRect().width / w) * (window.devicePixelRatio || 1))
-          : PDF_SLIDE_SCALE;
-        const width = Math.max(1, Math.ceil(w * precision));
+          : Math.min(PDF_SLIDE_SCALE, SCREEN_SAMPLING * (window.devicePixelRatio || 1));
+        const width = Math.max(1, Math.ceil((print || thumbnail ? w : box.getBoundingClientRect().width) * precision));
         if (width === drawnWidth) return;
         drawnWidth = width;
         const token = ++drawing;
         if (!canvas.width) canvas.dataset.mediaPending = 'true';
         const valid = () => !cancelled && token === drawing;
-        const rendered = print ? preparePdfRaster(abs, preparation.session, w, PDF_DPI_SCALE)
-          .then((ready) => drawPreparedRaster(ready, canvas, width, valid, 'print'))
+        const purpose = print ? 'print' : thumbnail ? 'thumb' : 'screen';
+        const rendered = print || width > resource.width ? preparePdfRaster(abs, preparation.session, print ? w : width, print ? PDF_DPI_SCALE : 1)
+          .then((ready) => drawPreparedRaster(ready, canvas, width, valid, purpose))
           : drawPreparedRaster(resource, canvas, width, valid, thumbnail ? 'thumb' : 'screen');
         void rendered
           .catch((error) => { if (!cancelled) { canvas.dataset.mediaError = String(error); delete canvas.dataset.mediaPending; canvas.dispatchEvent(new Event('error')); } });
@@ -147,7 +149,7 @@ export function PdfCanvas({ abs, thumbnail = false, print = false, preparation: 
     let timer = 0;
     const ro = new ResizeObserver(() => {
       clearTimeout(timer);
-      timer = window.setTimeout(draw, thumbnail ? 0 : 80);
+      draw();
     });
     ro.observe(box);
     return () => {

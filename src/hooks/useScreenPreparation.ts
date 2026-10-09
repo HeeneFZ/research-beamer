@@ -1,104 +1,122 @@
-// Decode for this window before interaction; keep +/-5 pages warm afterwards.
-import { useEffect, useMemo, useRef, useState } from 'react';
+// Foreground pages become usable first; remaining resources stay in RAM when prepared.
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Page } from '../model/types';
 import type { MediaPreparation, RasterResource } from '../model/mediaResources';
+import { preparationOrder } from '../model/preparation';
 import { epsTarget } from '../model/mediaGeometry';
 import { absMediaPath } from '../components/paths';
-import { pinScreenRasters, prepareScreenBudget, SCREEN_RASTER_LIMIT, screenRasterReady, warmScreenRaster } from '../components/resourceRaster';
-import { warmGifAnimation } from '../components/GifAnimation';
+import { pinScreenRasters, prepareScreenBudget, prioritizeScreenRaster, screenRasterReady, warmScreenRaster } from '../components/resourceRaster';
+import { warmGifAnimation, prioritizeGifAnimation, gifAnimationReady } from '../components/GifAnimation';
+import { displayPagePixels } from '../components/displayTargets';
 
-export function useScreenPreparation(pages: Page[], current: number, folder: string, preparation: MediaPreparation | undefined, displayWidth: number, displayHeight: number, enabled = true, logicalWidth = 160 * 96 / 25.4) {
+interface Task { controller: AbortController; done: boolean; failed?: boolean }
+interface Request { key: string; abs: string; width: number; resource?: RasterResource }
+
+export function useScreenPreparation(pages: Page[], current: number, folder: string, preparation: MediaPreparation | undefined, displayWidth: number, displayHeight: number, enabled = true, logicalWidth = 160 * 96 / 25.4, firstTen = false, background = true) {
   const [dpr, setDpr] = useState(window.devicePixelRatio || 1);
+  const [targetWidth, setTargetWidth] = useState(0);
+  useEffect(() => { void displayPagePixels().then(setTargetWidth); }, []);
   useEffect(() => {
     const update = () => setDpr(window.devicePixelRatio || 1);
-    const resolution = window.matchMedia(`(resolution: ${dpr}dppx)`);
-    resolution.addEventListener('change', update);
-    window.addEventListener('resize', update);
-    return () => { resolution.removeEventListener('change', update); window.removeEventListener('resize', update); };
+    const query = window.matchMedia(`(resolution: ${dpr}dppx)`);
+    query.addEventListener('change', update); window.addEventListener('resize', update);
+    return () => { query.removeEventListener('change', update); window.removeEventListener('resize', update); };
   }, [dpr]);
-  const physicalWidth = displayWidth * dpr, physicalHeight = displayHeight * dpr;
   const session = preparation?.session ?? '';
+  const tasks = useRef(new Map<string, Task>());
+  const epoch = useRef(0);
   const [status, setStatus] = useState({ session: '', ready: false, completed: 0, total: 0 });
-  const [animations, setAnimations] = useState({ session: '', ready: false, completed: 0, total: 0 });
-  const animationPlan = Object.entries(preparation?.gifWidths ?? {}).map(([abs, width]) => ({ abs, width: Math.max(1, Math.ceil(width * physicalWidth / logicalWidth / 128) * 128) }));
-  const animationSignature = JSON.stringify(animationPlan);
-  useEffect(() => {
-    if (!enabled || !preparation || preparation.phase === 'waiting' || physicalWidth <= 0) return;
-    let alive = true, completed = 0;
-    const abort = new AbortController();
-    const total = animationPlan.length;
-    const publish = (ready: boolean) => { if (alive) setAnimations({ session, ready, completed, total }); };
-    publish(false);
-    void Promise.all(animationPlan.map(async ({ abs, width }) => {
-      await warmGifAnimation(abs, Number(session), width, abort.signal).catch(() => undefined);
-      completed++; publish(completed === total);
-    })).then(() => publish(true));
-    return () => { alive = false; abort.abort(); };
-  }, [enabled, session, animationSignature, physicalWidth > 0, preparation?.phase === 'waiting']);
-  const plan = useMemo(() => {
-    if (!preparation || physicalWidth <= 0 || physicalHeight <= 0) return null;
-    const pageResources = pages.map((page) => {
-      const resources: RasterResource[] = [];
-      for (const block of page.slide?.blocks ?? []) {
-        if (!block.src) continue;
-        const abs = absMediaPath(folder, block.src);
-        const target = /\.eps$/i.test(block.src) ? epsTarget(abs) : abs;
-        const resource = target ? preparation.resources[target] : undefined;
-        if (resource) resources.push(resource);
+  const order = preparationOrder(pages.length, current, firstTen && !(status.session === session && status.ready));
+  const front = new Set(order.front);
+  const requests = new Map<string, Request>(), required = new Set<string>();
+  let missing = false;
+  for (const index of order.all) {
+    if (!background && !front.has(index)) continue;
+    const page = pages[index];
+    if (!page.slide || !['content', 'twoCol'].includes(page.slide.layout)) continue;
+    for (const block of page.slide.blocks) {
+      if (!block.src || !['figure', 'video'].includes(block.type)) continue;
+      const abs = absMediaPath(folder, block.src);
+      if (preparation?.errors[abs]) continue;
+      let request: Request | undefined;
+      if (/\.gif$/i.test(abs)) {
+        const logical = preparation?.gifWidths?.[abs];
+        if (logical && targetWidth) {
+          const width = Math.max(1, Math.ceil(logical * targetWidth / logicalWidth / 128) * 128);
+          request = { key: `gif|${session}|${abs}|${width}`, abs, width };
+        } else if (front.has(index)) missing = true;
+      } else if (/\.(pdf|eps)$/i.test(abs)) {
+        const target = /\.eps$/i.test(abs) ? epsTarget(abs) : abs;
+        const resource = target ? preparation?.resources[target] : undefined;
+        if (resource) request = { key: `pdf|${session}|${resource.id}|${resource.version}`, abs, width: resource.width, resource };
+        else if (front.has(index) && !(target && preparation?.errors[target])) missing = true;
       }
-      return resources;
-    });
-    const near = [current];
-    for (let distance = 1; distance <= 5; distance++) near.push(current + distance, current - distance);
-    const ordered = [...near, ...pages.map((_, i) => i)];
-    const seen = new Set<string>();
-    const requests = ordered.flatMap((index, position) => (pageResources[index] ?? []).flatMap((resource) => {
-      if (seen.has(resource.id)) return [];
-      seen.add(resource.id);
-      // Retain the final high-DPI raster, independent of monitor scaling.
-      const width = resource.width;
-      return [{ resource, width, near: position < near.length }];
-    }));
-    const cost = requests.reduce((sum, request) => sum + request.width * Math.round(request.width / request.resource.aspect) * 4, 0);
-    return { requests, cost };
-  }, [pages, current, folder, preparation, physicalWidth, physicalHeight]);
-  const signature = JSON.stringify(plan?.requests.map(({ resource, width, near }) => [resource.id, resource.version, width, near]));
-
-  useEffect(() => {
-    if (!enabled || !plan || preparation?.phase !== 'ready') return;
-    let alive = true;
-    pinScreenRasters(plan.requests.filter((request) => request.near));
-    if (plan.requests.every((request) => screenRasterReady(request.resource, request.width))) {
-      if (status.session !== session || !status.ready) setStatus({ session, ready: true, completed: plan.requests.length, total: plan.requests.length });
-      return;
+      if (request) { requests.set(request.key, request); if (front.has(index)) required.add(request.key); }
     }
-    void (async () => {
-      await prepareScreenBudget();
-      if (!alive) return;
-      pinScreenRasters(plan.requests.filter((request) => request.near));
-      const fits = plan.cost <= SCREEN_RASTER_LIMIT;
-      let completed = 0;
-      const publish = (ready: boolean) => {
-        if (alive) setStatus((previous) => ({ session, ready: ready || (previous.session === session && previous.ready), completed, total: plan.requests.length }));
-      };
-      publish(false);
-      for (const request of plan.requests) {
-        if (!alive) return;
-        if (!fits && !request.near) publish(true);
-        await warmScreenRaster(request.resource, request.width, request.near ? 10 : 30).catch(() => undefined);
-        completed++; publish(false);
-      }
-      publish(true);
-    })();
-    return () => { alive = false; };
-  }, [enabled, signature, session, preparation?.phase]);
-
-  const lastScale = useRef({ width: 0, height: 0 });
+  }
+  const plan = [...requests.values()];
+  const latest = useRef({ session, plan, required, missing, phase: preparation?.phase });
+  latest.current = { session, plan, required, missing, phase: preparation?.phase };
+  const publish = () => {
+    const value = latest.current;
+    const completed = value.plan.filter((request) => tasks.current.get(request.key)?.done).length;
+    const ready = value.phase === 'ready' && !value.missing && [...value.required].every((key) => tasks.current.get(key)?.done);
+    setStatus((old) => {
+      const next = { session: value.session, ready: ready || old.session === value.session && old.ready, completed, total: value.plan.length };
+      return old.session === next.session && old.ready === next.ready && old.completed === next.completed && old.total === next.total ? old : next;
+    });
+  };
   useEffect(() => {
+    epoch.current++;
+    for (const task of tasks.current.values()) task.controller.abort();
+    tasks.current.clear();
+    return () => {
+      epoch.current++;
+      for (const task of tasks.current.values()) task.controller.abort();
+      tasks.current.clear();
+    };
+  }, [session]);
+  const signature = JSON.stringify(plan.map((request) => [request.key, required.has(request.key)]));
+  useEffect(() => {
+    if (!enabled || !targetWidth || !preparation || preparation.phase === 'waiting') return;
+    const generation = epoch.current;
+    const keys = new Set(plan.map((request) => request.key));
+    for (const [key, task] of tasks.current) if (!keys.has(key)) { task.controller.abort(); tasks.current.delete(key); }
+    pinScreenRasters(plan.filter((request) => request.resource && required.has(request.key)).map((request) => ({ resource: request.resource!, width: request.width })));
+    for (const request of plan) {
+      const priority = required.has(request.key) ? 0 : 30;
+      const old = tasks.current.get(request.key);
+      if (old) {
+        const resident = request.resource ? screenRasterReady(request.resource, request.width) : gifAnimationReady(request.abs, Number(session), request.width);
+        if (!old.done || old.failed || resident || !required.has(request.key)) {
+          if (priority === 0) {
+            if (request.resource) prioritizeScreenRaster(request.resource);
+            else prioritizeGifAnimation(request.abs, Number(session));
+          }
+          continue;
+        }
+        tasks.current.delete(request.key);
+      }
+      const task: Task = { controller: new AbortController(), done: !!request.resource && screenRasterReady(request.resource, request.width) };
+      tasks.current.set(request.key, task);
+      if (task.done) continue;
+      const pending = request.resource
+        ? prepareScreenBudget().then(() => warmScreenRaster(request.resource!, request.width, priority))
+        : warmGifAnimation(request.abs, Number(session), request.width, task.controller.signal, priority);
+      void pending.catch(() => { task.failed = true; }).then(() => {
+        if (epoch.current !== generation || tasks.current.get(request.key) !== task) return;
+        task.done = true; publish();
+      });
+    }
+    publish();
+    // Existing decodes survive navigation and monitor changes. Only the session cancels them.
+  }, [enabled, session, targetWidth, signature, preparation?.phase]);
+  const physicalWidth = displayWidth * dpr, physicalHeight = displayHeight * dpr;
+  const lastScale = useRef({ width: 0, height: 0 });
+  useLayoutEffect(() => {
     if (!enabled || lastScale.current.width === physicalWidth && lastScale.current.height === physicalHeight) return;
     lastScale.current = { width: physicalWidth, height: physicalHeight };
     window.dispatchEvent(new Event('raster-scale'));
   }, [enabled, physicalWidth, physicalHeight]);
-  return { completed: status.completed + animations.completed, total: status.total + animations.total,
-    ready: preparation?.phase === 'ready' && status.session === session && status.ready && animations.session === session && animations.ready };
+  return { completed: status.completed, total: status.total, ready: status.session === session && status.ready };
 }

@@ -6,6 +6,8 @@ import { absMediaPath } from '../components/paths';
 import { fileUrl, preparePdfRaster, releaseUnusedPdfDocuments } from '../components/pdfRaster';
 import { clearDecodedRasters } from '../components/resourceRaster';
 import { clearGifAnimations } from '../components/GifAnimation';
+import { preparationOrder } from '../model/preparation';
+import { displayPagePixels, SCREEN_SAMPLING } from '../components/displayTargets';
 
 function preloadImage(abs: string, revision: number): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -37,65 +39,83 @@ export function useMediaPreparation(): void {
     const session = String(revision);
     const run = async () => {
       await window.api.beginRasterSession(session);
+      const displayPixels = await displayPagePixels();
       // Media may be replaced while editing; old ready records stay useful within a session.
       const initial = useStore.getState().mediaPreparation;
       const resources = initial.session === session ? { ...initial.resources } : {};
       const errors: Record<string, string> = {};
       while (!cancelled) {
         const state = useStore.getState();
-        const roots = document.querySelectorAll('.filmstrip .sv');
-        if (roots.length === state.computed.pages.length && [...roots].every((root) => root.getAttribute('data-layout-ready') === 'true')) break;
+        const front = preparationOrder(state.computed.pages.length, state.current, true).front;
+        if (front.every((i) => document.querySelector(`.filmstrip .sv[data-page-index="${i}"]`)?.getAttribute('data-layout-ready') === 'true')) break;
         await new Promise((resolve) => setTimeout(resolve, 40));
       }
       if (cancelled) return;
       const gifWidths: Record<string, number> = {};
-      for (const canvas of document.querySelectorAll<HTMLElement>('.filmstrip [data-gif-source]')) {
-        const abs = canvas.dataset.gifSource!, width = canvas.parentElement?.clientWidth ?? 0;
-        gifWidths[abs] = Math.max(gifWidths[abs] ?? 0, width);
-      }
+      const collectGifWidths = () => {
+        for (const canvas of document.querySelectorAll<HTMLElement>('.filmstrip .sv[data-layout-ready="true"] [data-gif-source]')) {
+          const abs = canvas.dataset.gifSource!, width = canvas.parentElement?.clientWidth ?? 0;
+          if (width > 0) gifWidths[abs] = Math.max(gifWidths[abs] ?? 0, width);
+        }
+      };
+      collectGifWidths();
       const assets = new Map<string, string>();
       if (deck.config.logo) assets.set(absMediaPath(folder ?? '', deck.config.logo), 'image');
-      for (const item of deck.items) if (item.kind === 'slide') for (const block of item.slide.blocks) {
+      for (const item of deck.items) if (item.kind === 'slide' && ['content', 'twoCol'].includes(item.slide.layout)) for (const block of item.slide.blocks) {
         if (!block.src || !['figure', 'video'].includes(block.type)) continue;
         const abs = absMediaPath(folder ?? '', block.src);
         assets.set(abs, block.type === 'video' ? 'video' : block.src.toLowerCase().endsWith('.pdf') ? 'pdf' : block.src.toLowerCase().endsWith('.eps') ? 'eps' : 'image');
       }
       let completed = 0;
-      const publish = (phase: MediaPreparation['phase']) => {
-        if (!cancelled && useStore.getState().mediaRevision === revision) useStore.getState().setMediaPreparation({ session, phase, completed, total: assets.size, resources: { ...resources }, errors: { ...errors }, assetSignature, gifWidths });
+      const done = new Set<string>(), started = new Set<string>();
+      const pageAssets = useStore.getState().computed.pages.map((page) => new Set((page.slide && ['content', 'twoCol'].includes(page.slide.layout) ? page.slide.blocks : []).filter((block) => block.src).map((block) => absMediaPath(folder ?? '', block.src!))));
+      const first = new Set(preparationOrder(pageAssets.length, useStore.getState().current, true).front.flatMap((i) => [...pageAssets[i]]));
+      if (deck.config.logo) first.add(absMediaPath(folder ?? '', deck.config.logo));
+      const foregroundReady = () => [...first].every((abs) => !assets.has(abs) || done.has(abs));
+      const publish = (_phase: MediaPreparation['phase']) => {
+        collectGifWidths();
+        const phase = foregroundReady() ? 'ready' : 'preparing';
+        if (!cancelled && useStore.getState().mediaRevision === revision) useStore.getState().setMediaPreparation({ session, phase, completed, total: assets.size, resources: { ...resources }, errors: { ...errors }, assetSignature, gifWidths: { ...gifWidths } });
       };
       const needed = [...assets].some(([abs, kind]) => (kind === 'pdf' || kind === 'eps') && !resources[kind === 'eps' ? epsTarget(abs) ?? abs : abs]);
       if (!needed && initial.phase === 'ready' && initial.assetSignature === assetSignature) return;
       publish('preparing');
-      // Native pictures retain their original encoding/animation; preload is bounded to two.
-      const native = [...assets].filter(([, kind]) => kind === 'image');
-      let cursor = 0;
-      await Promise.all([0, 1].map(async () => {
-        while (!cancelled && cursor < native.length) {
-          const [abs] = native[cursor++];
-          try {
-            if (mediaFailure(abs)) throw new Error(mediaFailure(abs));
-            // GIF geometry/first frame already came from the static tree; its
-            // complete animation is prepared by the display Worker, once.
-            if (!/\.gif$/i.test(abs)) await preloadImage(abs, revision);
-          }
-          catch (error) { errors[abs] = String(error); }
-          completed++; publish('preparing');
+      const take = (native: boolean) => {
+        const current = useStore.getState().current;
+        const near = new Set(preparationOrder(pageAssets.length, current).front.flatMap((i) => [...pageAssets[i]]));
+        let selected: [string, string] | undefined, best = Infinity;
+        for (const item of assets) {
+          const [abs, kind] = item;
+          if (started.has(abs) || (kind === 'image') !== native) continue;
+          const score = pageAssets[current]?.has(abs) ? 0 : !foregroundReady() && first.has(abs) ? 1 : near.has(abs) ? 2 : 3;
+          if (score < best) { selected = item; best = score; }
         }
-      }));
-      const vector = [...assets].filter(([, kind]) => kind !== 'image');
-      let vectorCursor = 0;
-      await Promise.all([0, 1].map(async () => {
-        while (!cancelled && vectorCursor < vector.length) {
-          const [abs, kind] = vector[vectorCursor++];
-          if (kind !== 'video') {
-            const target = kind === 'eps' ? epsTarget(abs) : abs;
-            try {
+        if (selected) started.add(selected[0]);
+        return selected;
+      };
+      await Promise.all([true, true, false, false].map(async (native) => {
+        let item: [string, string] | undefined;
+        while (!cancelled && (item = take(native))) {
+          const [abs, kind] = item;
+          try {
+            if (native) {
+              if (mediaFailure(abs)) throw new Error(mediaFailure(abs));
+              if (/\.gif$/i.test(abs)) {
+                while (!cancelled && !gifWidths[abs] && !mediaFailure(abs)) {
+                  collectGifWidths();
+                  if (!gifWidths[abs]) await new Promise((resolve) => setTimeout(resolve, 40));
+                }
+                if (mediaFailure(abs)) throw new Error(mediaFailure(abs));
+              } else await preloadImage(abs, revision);
+            } else if (kind !== 'video') {
+              const target = kind === 'eps' ? epsTarget(abs) : abs;
               if (!target) throw new Error('EPS 转换失败');
               if (mediaFailure(target)) throw new Error(mediaFailure(target));
-              resources[target] ??= await preparePdfRaster(target, session);
-            } catch (error) { errors[abs] = String(error); }
+              resources[target] = await preparePdfRaster(target, session, displayPixels * SCREEN_SAMPLING, 1);
+            }
           }
+          catch (error) { errors[abs] = String(error); }
+          done.add(abs);
           completed++; publish('preparing');
         }
       }));
