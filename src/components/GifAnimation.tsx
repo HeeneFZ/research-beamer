@@ -5,14 +5,16 @@ import { useStore } from '../state/store';
 import { mediaAspect } from '../model/mediaGeometry';
 import { fileUrl } from './pdfRaster';
 interface Frame { raster: ImageData; duration: number }
-interface Animation { key: string; id: number; width: number; aspect: number; loops: number; duration: number; frames: Frame[]; bytes: number; users: number; retired: boolean; done: boolean; pending: Promise<void>; resolve: () => void; reject: (error: Error) => void }
+interface Animation { key: string; id: number; worker: Worker; width: number; aspect: number; loops: number; duration: number; frames: Frame[]; bytes: number; users: number; retired: boolean; done: boolean; pending: Promise<void>; resolve: () => void; reject: (error: Error) => void }
 interface Message { type: 'metadata' | 'frame' | 'prepared' | 'error'; id: number; data?: ArrayBuffer; height?: number; duration?: number; width?: number; aspect?: number; loops?: number; bytes?: number; error?: string }
-let worker: Worker | null = null, session = -1, nextId = 0, bytes = 0;
+const WORKER_COUNT = Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
+const workers: (Worker | null)[] = Array(WORKER_COUNT).fill(null);
+let session = -1, nextId = 0, bytes = 0;
 let budget: Promise<number> | null = null;
 const cache = new Map<string, Animation>(), requests = new Map<number, Animation>();
 function close(entry: Animation): void {
   if (!entry.done && requests.get(entry.id) === entry) {
-    requests.delete(entry.id); worker?.postMessage({ type: 'remove', id: entry.id }); entry.reject(new Error('资源请求已取消'));
+    requests.delete(entry.id); entry.worker.postMessage({ type: 'remove', id: entry.id }); entry.reject(new Error('资源请求已取消'));
   }
   entry.frames = []; bytes -= entry.bytes; entry.bytes = 0;
 }
@@ -26,7 +28,7 @@ function room(cost: number): void {
 let memoryLimit = 1024 ** 3;
 export function clearGifAnimations(revision?: number): void {
   if (revision != null && session === revision) return;
-  worker?.terminate(); worker = null;
+  workers.forEach((worker) => worker?.terminate()); workers.fill(null);
   for (const entry of new Set([...cache.values(), ...requests.values()])) {
     entry.retired = true; if (!entry.done) entry.reject(new Error('资源会话已结束')); if (!entry.users) close(entry);
   }
@@ -34,9 +36,13 @@ export function clearGifAnimations(revision?: number): void {
 }
 function decoderWorker(revision: number): Worker {
   if (session !== revision) clearGifAnimations(revision);
+  const counts = workers.map((worker) => [...requests.values()].filter((entry) => entry.worker === worker).length);
+  const index = counts.indexOf(Math.min(...counts));
+  let worker = workers[index];
   if (!worker) {
     budget ??= window.api.displayMemoryBudget();
     worker = new Worker(new URL('./gif.worker.ts', import.meta.url), { type: 'module' });
+    workers[index] = worker;
     const instance = worker;
     worker.onmessage = async ({ data }: MessageEvent<Message>) => {
       const entry = requests.get(data.id);
@@ -62,22 +68,26 @@ function decoderWorker(revision: number): Worker {
     };
     worker.onerror = (event) => {
       for (const entry of [...requests.values()]) {
+        if (entry.worker !== instance) continue;
         entry.retired = true; if (cache.get(entry.key) === entry) cache.delete(entry.key);
+        requests.delete(entry.id);
         entry.reject(new Error(event.message)); if (!entry.users) close(entry);
       }
-      requests.clear(); instance.terminate(); if (worker === instance) worker = null;
+      instance.terminate(); if (workers[index] === instance) workers[index] = null;
     };
   }
   return worker;
 }
 function lease(abs: string, revision: number, width: number): Animation {
-  const instance = decoderWorker(revision), key = revision + '|' + abs;
+  if (session !== revision) clearGifAnimations(revision);
+  const key = revision + '|' + abs;
   let entry = cache.get(key);
   if (!entry || entry.width < width) {
+    const instance = decoderWorker(revision);
     if (entry) { entry.retired = true; if (!entry.users) close(entry); }
     let resolve!: () => void, reject!: (error: Error) => void;
     const pending = new Promise<void>((r, j) => { resolve = r; reject = j; });
-    entry = { key, id: ++nextId, width, aspect: mediaAspect(abs) ?? 0, loops: Infinity, duration: 0, frames: [], bytes: 0, users: 0, retired: false, done: false, pending, resolve, reject };
+    entry = { key, id: ++nextId, worker: instance, width, aspect: mediaAspect(abs) ?? 0, loops: Infinity, duration: 0, frames: [], bytes: 0, users: 0, retired: false, done: false, pending, resolve, reject };
     requests.set(entry.id, entry); cache.set(key, entry);
     instance.postMessage({ type: 'prepare', id: entry.id, url: fileUrl(abs), width, aspect: entry.aspect });
   }
@@ -88,6 +98,14 @@ function release(entry: Animation): void {
   entry.users--;
   if (!entry.users && !entry.done) { entry.retired = true; if (cache.get(entry.key) === entry) cache.delete(entry.key); }
   if (!entry.users && entry.retired) close(entry);
+}
+export async function warmGifAnimation(abs: string, revision: number, width: number, signal?: AbortSignal): Promise<void> {
+  const entry = lease(abs, revision, width);
+  let released = false;
+  const free = () => { if (!released) { released = true; release(entry); } };
+  signal?.addEventListener('abort', free, { once: true });
+  if (signal?.aborted) free();
+  try { await entry.pending; } finally { signal?.removeEventListener('abort', free); free(); }
 }
 
 export function GifAnimation({ abs, active = true, onAspect, onError }: { abs: string; active?: boolean; onAspect: (aspect: number) => void; onError: () => void }) {

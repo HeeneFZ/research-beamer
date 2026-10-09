@@ -11,7 +11,7 @@ import type { AnchorRect } from '../OrderPicker';
 export function SectionBreadcrumb({ slide, path, computed }: {
   slide: Slide; path: Section[]; computed: Computed;
 }) {
-  const editing = useStore((s) => s.editing);
+  const editing = useStore((s) => s.editing?.slideId === slide.id && s.editing.field === 'section' ? s.editing : null);
   const setEditing = useStore((s) => s.setEditing);
   const config = useStore((s) => s.deck.config);
   const [menu, setMenu] = useState<{ anchor: AnchorRect; section?: Section } | null>(null);

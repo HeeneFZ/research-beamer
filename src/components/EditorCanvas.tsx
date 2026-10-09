@@ -6,18 +6,19 @@
 // - 抖动防护：scrollbar-gutter:stable + fit 变化阈值
 // - 滚轮：Ctrl 缩放（不再用滚轮翻页——易误触）
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { ReadySlideStage } from './ReadySlideStage';
 import { useScreenPreparation } from '../hooks/useScreenPreparation';
 import { IcoZoomIn, IcoZoomOut, IcoReset } from './icons';
 import { PAGE_SIZE } from '../model/types';
 import { onOverlay } from './overlays';
+import { emptyViewPreparation, type ViewPreparation } from '../model/mediaResources';
 
 const PAD_W = 72;  // 左右滚动条/边距预留
 const PAD_H = 100; // 上下边距 + zoom 条预留
 
-export function EditorCanvas() {
+export function EditorCanvas({ active = true, onPreparation }: { active?: boolean; onPreparation?: (state: ViewPreparation) => void }) {
   const deck = useStore((s) => s.deck);
   const computed = useStore((s) => s.computed);
   const current = useStore((s) => s.current);
@@ -28,6 +29,8 @@ export function EditorCanvas() {
   const setFlash = useStore((s) => s.setFlash);
   const flash = useStore((s) => s.flash);
   const preparation = useStore((s) => s.mediaPreparation);
+  const revision = useStore((s) => s.mediaRevision);
+  const [stage, setStage] = useState(emptyViewPreparation);
 
   const boxRef = useRef<HTMLDivElement>(null);
   const [fit, setFit] = useState(0);
@@ -62,7 +65,11 @@ export function EditorCanvas() {
 
   const page = computed.pages[current];
   const scale = fit * zoom;
-  const screen = useScreenPreparation(computed.pages, current, folder ?? '', preparation, pxW * scale, pxH * scale);
+  const screen = useScreenPreparation(computed.pages, current, folder ?? '', preparation, pxW * scale, pxH * scale, true, pxW);
+  useLayoutEffect(() => {
+    onPreparation?.({ scope: String(revision), targetKey: stage.targetKey, ready: screen.ready && (!page || stage.scope === String(revision) && stage.ready),
+      currentReady: !page || stage.currentReady, completed: screen.completed + (page ? stage.completed : 0), total: screen.total + (page ? stage.total : 0) });
+  }, [revision, !!page, screen.ready, screen.completed, screen.total, stage, onPreparation]);
 
   const onRef = useCallback((label: string) => {
     useStore.getState().jumpToRef(label);
@@ -119,6 +126,8 @@ export function EditorCanvas() {
             style={{ width: pxW, height: pxH, transform: `scale(${scale})`, transformOrigin: 'top left' }}
           >
             <ReadySlideStage
+              active={active}
+              onPreparation={setStage}
               preloadPages={computed.pages}
               page={page}
               deck={deck}
@@ -132,10 +141,6 @@ export function EditorCanvas() {
           </div>
         </div>
       )}
-      {!screen.ready && preparation.phase === 'ready' && <div className="screen-preparing" role="status">
-        <span>正在准备编辑画面 {screen.completed}/{screen.total}</span>
-        <progress value={screen.completed} max={Math.max(1, screen.total)} />
-      </div>}
     </div>
   );
 }

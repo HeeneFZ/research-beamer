@@ -2,11 +2,14 @@
 // 缩放用 page-sizer 模式（外层缩放后尺寸占位，内层 transform origin top-left），
 // 修复内容跑出容器的问题；滚轮翻页。
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { pageOrders, useStore } from '../state/store';
 import { ReadySlideStage } from './ReadySlideStage';
 import { useScreenPreparation } from '../hooks/useScreenPreparation';
 import { PAGE_SIZE } from '../model/types';
+import { emptyViewPreparation, type ViewPreparation } from '../model/mediaResources';
+
+export type PresenterSnapshot = Pick<ReturnType<typeof useStore.getState>, 'deck' | 'computed' | 'current' | 'folder' | 'revealStep' | 'flash' | 'presentStart' | 'mediaPreparation' | 'mediaRevision' | 'pageLayout'>;
 
 /** 容器适页缩放（ResizeObserver 跟踪） */
 function useFitScale(pageWmm: number, pageHmm: number, pad = 8) {
@@ -31,20 +34,15 @@ function fmt(sec: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-export function PresenterView() {
-  const deck = useStore((s) => s.deck);
-  const computed = useStore((s) => s.computed);
-  const current = useStore((s) => s.current);
-  const folder = useStore((s) => s.folder);
-  const revealStep = useStore((s) => s.revealStep);
-  const presentStart = useStore((s) => s.presentStart);
-  const flash = useStore((s) => s.flash);
+export const PresenterView = memo(function PresenterView({ active, snapshot, onPreparation }: { active: boolean; snapshot: PresenterSnapshot; onPreparation?: (state: ViewPreparation) => void }) {
+  const { deck, computed, current, folder, revealStep, presentStart, flash, mediaPreparation: preparation, mediaRevision: revision, pageLayout } = snapshot;
   const endPresent = useStore((s) => s.endPresent);
   const presentRecording = useStore((s) => s.presentRecording);
   const presentAdvance = useStore((s) => s.presentAdvance);
   const presentReverse = useStore((s) => s.presentReverse);
   const jumpToRef = useStore((s) => s.jumpToRef);
-  const preparation = useStore((s) => s.mediaPreparation);
+  const [mainStage, setMainStage] = useState(emptyViewPreparation);
+  const [nextStage, setNextStage] = useState(emptyViewPreparation);
 
   const page = computed.pages[current];
   const nextPage = computed.pages[current + 1];
@@ -60,14 +58,22 @@ export function PresenterView() {
 
   const main = useFitScale(size.w, size.h);
   const next = useFitScale(size.w, size.h, 16);
-  const screen = useScreenPreparation(computed.pages, current, folder ?? '', preparation, pxW * main.scale, pxH * main.scale);
+  const screen = useScreenPreparation(computed.pages, current, folder ?? '', preparation, pxW * main.scale, pxH * main.scale, active, pxW);
+  useLayoutEffect(() => {
+    const scope = String(revision);
+    const rightReady = !previewPage || nextStage.scope === scope && nextStage.ready;
+    onPreparation?.({ scope, targetKey: mainStage.targetKey, ready: screen.ready && (!page || mainStage.scope === scope && mainStage.ready && rightReady),
+      currentReady: !page || mainStage.currentReady, completed: screen.completed + mainStage.completed + (previewPage ? nextStage.completed : 0),
+      total: screen.total + mainStage.total + (previewPage ? nextStage.total : 0) });
+  }, [revision, screen.ready, screen.completed, screen.total, mainStage, nextStage, !!page, !!previewPage, onPreparation]);
 
   // 计时器 + 钟点
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
+    if (!active) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [active]);
   const elapsed = presentStart ? Math.max(0, Math.floor((now - presentStart) / 1000)) : 0;
   const clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false });
 
@@ -79,7 +85,7 @@ export function PresenterView() {
     <div
       className="presenter"
       onWheel={(e) => {
-        if (e.ctrlKey) return;
+        if (e.ctrlKey || !active) return;
         if (e.deltaY > 0) presentAdvance();
         else if (e.deltaY < 0) presentReverse();
       }}
@@ -92,7 +98,11 @@ export function PresenterView() {
               style={{ width: pxW, height: pxH, transform: `scale(${main.scale})`, transformOrigin: 'top left' }}
             >
               <ReadySlideStage
-                preloadPages={computed.pages}
+                active={active}
+                onPreparation={setMainStage}
+                layoutSnapshot={pageLayout}
+                mediaSnapshot={revision}
+                resourceSnapshot={preparation}
                 page={page}
                 deck={deck}
                 computed={computed}
@@ -128,7 +138,7 @@ export function PresenterView() {
                 <div
                   style={{ width: pxW, height: pxH, transform: `scale(${next.scale})`, transformOrigin: 'top left', opacity: 0.9 }}
                 >
-                  <ReadySlideStage preloadPages={computed.pages} page={previewPage} deck={deck} computed={computed} folder={folder ?? ''} mode="preview" revealed={previewRevealed} />
+                  <ReadySlideStage active={active} onPreparation={setNextStage} layoutSnapshot={pageLayout} mediaSnapshot={revision} resourceSnapshot={preparation} page={previewPage} deck={deck} computed={computed} folder={folder ?? ''} mode="preview" revealed={previewRevealed} />
                 </div>
               </div>
             ) : (
@@ -162,10 +172,6 @@ export function PresenterView() {
           </button>
         </div>
       </div>
-      {!screen.ready && preparation.phase === 'ready' && <div className="screen-preparing" role="status">
-        <span>正在准备监看画面 {screen.completed}/{screen.total}</span>
-        <progress value={screen.completed} max={Math.max(1, screen.total)} />
-      </div>}
     </div>
   );
-}
+});

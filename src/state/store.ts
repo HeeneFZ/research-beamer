@@ -489,7 +489,10 @@ export const useStore = create<StoreState>((set, get) => {
     },
 
     startPresent: async () => {
-      set({ presenting: true, revealStep: 0, presentStart: Date.now(), editing: null, lightbox: null });
+      // Buffered modal fields must be explicitly committed before changing mode.
+      if (document.querySelector('.modal-mask, .field-popover') || get().lightbox) return;
+      if (get().mediaPreparation.phase !== 'ready') return;
+      set({ presenting: true, revealStep: 0, presentStart: 0, editing: null, lightbox: null });
       await window.api.openPresent();
     },
 
@@ -577,6 +580,7 @@ export const useStore = create<StoreState>((set, get) => {
     setMediaPreparation: (mediaPreparation) => set({ mediaPreparation }),
 
     newProject: () => {
+      if (get().presenting) get().endPresent();
       projectSession++;
       loadRequest++;
       clearHistory();
@@ -604,6 +608,7 @@ export const useStore = create<StoreState>((set, get) => {
       try {
         const deck = parseMarkdown(md);
         const computed = computeDeck(deck);
+        if (get().presenting) get().endPresent();
         projectSession++;
         loadRequest++;
         clearHistory();

@@ -1,12 +1,12 @@
 // 图片 / PDF / EPS / SVG / 视频渲染
-// PDF/EPS 矢量最高 1200DPI，单图与缓存均限制内存；CSS 几何不受位图精度影响。
+// PDF/EPS 页面最高 300DPI，放大预览/打印最高 1200DPI；CSS 几何独立于位图精度。
 // 编辑态支持边缘拖拽调宽（EdgeResizeHandles）：指针靠近图左/右缘出现拖拽条
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Block, Palette } from '../model/types';
 import { Computed } from '../model/numbering';
 import { InlineText } from './InlineText';
-import { cancelCanvasRender, ensurePdfAspect, fileUrl, pdfAspectSync, PDF_DPI_SCALE, PDF_PREVIEW_WIDTH } from './pdfRaster';
+import { cancelCanvasRender, ensurePdfAspect, fileUrl, pdfAspectSync, preparePdfRaster, PDF_DPI_SCALE, PDF_SLIDE_SCALE, PDF_PREVIEW_WIDTH } from './pdfRaster';
 import { epsTarget, mediaAspect, mediaFailure, mediaRevision, rememberEpsTarget, rememberMediaAspect, rememberMediaFailure } from '../model/mediaGeometry';
 import { absMediaPath } from './paths';
 import { useStore } from '../state/store';
@@ -97,6 +97,13 @@ export function PdfCanvas({ abs, thumbnail = false, print = false, preparation: 
     }
   }, [abs]);
 
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !error) return;
+    canvas.dataset.mediaError = error; delete canvas.dataset.mediaPending;
+    canvas.dispatchEvent(new Event('mediaready', { bubbles: true }));
+  }, [abs, error]);
+
   useEffect(() => {
     let alive = true;
     ensurePdfAspect(abs)
@@ -119,13 +126,17 @@ export function PdfCanvas({ abs, thumbnail = false, print = false, preparation: 
       if (w > 0) {
         const precision = print ? PDF_DPI_SCALE : thumbnail
           ? Math.max(PDF_PREVIEW_WIDTH / w, (box.getBoundingClientRect().width / w) * (window.devicePixelRatio || 1))
-          : (box.getBoundingClientRect().width / w) * (window.devicePixelRatio || 1);
+          : PDF_SLIDE_SCALE;
         const width = Math.max(1, Math.ceil(w * precision));
         if (width === drawnWidth) return;
         drawnWidth = width;
         const token = ++drawing;
         if (!canvas.width) canvas.dataset.mediaPending = 'true';
-        void drawPreparedRaster(resource, canvas, width, () => !cancelled && token === drawing, print ? 'print' : thumbnail ? 'thumb' : 'screen')
+        const valid = () => !cancelled && token === drawing;
+        const rendered = print ? preparePdfRaster(abs, preparation.session, w, PDF_DPI_SCALE)
+          .then((ready) => drawPreparedRaster(ready, canvas, width, valid, 'print'))
+          : drawPreparedRaster(resource, canvas, width, valid, thumbnail ? 'thumb' : 'screen');
+        void rendered
           .catch((error) => { if (!cancelled) { canvas.dataset.mediaError = String(error); delete canvas.dataset.mediaPending; canvas.dispatchEvent(new Event('error')); } });
       }
     };
@@ -186,7 +197,7 @@ export function EpsFigure({ abs, thumbnail = false, print = false, preparation }
 /** GIF 静帧（缩略图用）：离屏 Image 解码、drawImage 取首帧入 canvas——图片不进 DOM
  *  即不起 Chromium 动画循环（对动画图 drawImage 恒画默认帧=首帧）。胶片缩略图渲染
  *  全部页，几十张 GIF 同时持续播放/解码会拖垮编辑帧率（用户实测卡顿报障）；
- *  画布与放映仍用 <img> 原生播放；排版等待固有宽高比，而不是位图精度。 */
+ *  画布与放映复用 Worker 预备帧；排版等待固有宽高比，而不是位图精度。 */
 export function GifStillFrame({ abs, onAspect, onError, print = false }: { abs: string; onAspect: (a: number) => void; onError: () => void; print?: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -213,7 +224,7 @@ export function GifStillFrame({ abs, onAspect, onError, print = false }: { abs: 
     };
     return () => { alive = false; im.onload = null; im.onerror = null; };
   }, [abs, onAspect, onError, print]);
-  return <canvas ref={ref} className="gif-still" width={0} height={0} />;
+  return <canvas ref={ref} className="gif-still" data-gif-source={abs} width={0} height={0} />;
 }
 export function FigureView({
   block, folder, computed, lang, palette, onRef, onZoom, onWidthChange, still, print, preparation, active,

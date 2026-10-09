@@ -35,7 +35,10 @@ function createWindow() {
   mainWindow.loadFile(indexPath, { hash: process.env.E2E_EXAMPLE ? `example=${process.env.E2E_EXAMPLE}` : '' });
   // 关闭后置空：放映窗存活时主窗先关（window-all-closed 不触发），second-instance
   // 再进 if (mainWindow) 会对已销毁窗口调 isMinimized() 抛 "Object has been destroyed"
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    if (presentWin && !presentWin.isDestroyed() && !presentWin.isVisible()) presentWin.close();
+  });
   // 首帧后再显示（配合 show:false 防白屏）；⚠ 此行丢失 = 窗口永不显示（第卅三轮实测事故）
   mainWindow.once('ready-to-show', () => mainWindow?.show());
   let reloaded = false;
@@ -386,7 +389,9 @@ ipcMain.handle('present:open', async () => {
   if (presentWin && !presentWin.isDestroyed()) {
     closeGen++; // 使挂起的延迟关闭作废（结束→立刻重开：复用的窗不能被旧 close 杀掉）
     presentClosing = false;
-    presentWin.focus();
+    presentWin.webContents.send('present:ctrl', { type: 'resume' });
+    presentWin.show(); presentWin.focus();
+    mainWindow?.webContents.send('present:event', { type: 'ready' });
     return { ok: true };
   }
   const { screen } = require('electron');
@@ -456,7 +461,7 @@ let presentClosing = false;
 let closeGen = 0;
 let flushWaiter = null;
 
-ipcMain.handle('present:close', async () => {
+async function closePresentation() {
   if (!presentWin || presentWin.isDestroyed()) return;
   if (presentClosing) return;
   const gen = ++closeGen;
@@ -465,6 +470,7 @@ ipcMain.handle('present:close', async () => {
     if (presentRecording) {
       presentWin.webContents.send('present:ctrl', { type: 'rec-stop' });
     }
+    presentWin.webContents.send('present:ctrl', { type: 'suspend' });
     if (presentFlushing) {
       await new Promise((resolve) => {
         const t = setTimeout(() => { flushWaiter = null; resolve(); }, 30000);
@@ -474,13 +480,17 @@ ipcMain.handle('present:close', async () => {
   } catch (_) { /* 窗口已销毁 */ }
   presentClosing = false;
   if (gen !== closeGen) return; // 等待期间放映被重新打开：放弃关闭
-  if (presentWin && !presentWin.isDestroyed()) presentWin.close();
-});
+  if (presentWin && !presentWin.isDestroyed()) {
+    if (mainWindow && !mainWindow.isDestroyed()) presentWin.hide();
+    else presentWin.close();
+  }
+}
+ipcMain.handle('present:close', closePresentation);
 
 // 交换放映窗与主窗（监看）所在屏幕：多屏演讲时放映/监看互换
 // Windows 下直接搬全屏窗会保留旧屏尺寸/DPI——先退全屏、setBounds 到目标屏、再进全屏
 ipcMain.handle('present:swapScreens', async () => {
-  if (!presentWin || presentWin.isDestroyed()) return { ok: false, error: 'no-present-window' };
+  if (!presentWin || presentWin.isDestroyed() || !presentWin.isVisible()) return { ok: false, error: 'no-present-window' };
   if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, error: 'no-main-window' };
   const { screen } = require('electron');
   const displays = screen.getAllDisplays();
@@ -540,7 +550,7 @@ ipcMain.on('present:event', (_e, evt) => {
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('present:event', evt);
-  }
+  } else if (evt?.type === 'end') void closePresentation();
 });
 
 // 编辑器 → 放映窗：控制命令（放映台的录制/停止按钮等，录制设备在放映窗持有）

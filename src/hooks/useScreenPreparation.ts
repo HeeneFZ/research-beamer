@@ -1,12 +1,13 @@
 // Decode for this window before interaction; keep +/-5 pages warm afterwards.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Page } from '../model/types';
 import type { MediaPreparation, RasterResource } from '../model/mediaResources';
 import { epsTarget } from '../model/mediaGeometry';
 import { absMediaPath } from '../components/paths';
-import { pinScreenRasters, SCREEN_RASTER_LIMIT, screenRasterReady, screenRasterWidth, warmScreenRaster } from '../components/resourceRaster';
+import { pinScreenRasters, prepareScreenBudget, SCREEN_RASTER_LIMIT, screenRasterReady, warmScreenRaster } from '../components/resourceRaster';
+import { warmGifAnimation } from '../components/GifAnimation';
 
-export function useScreenPreparation(pages: Page[], current: number, folder: string, preparation: MediaPreparation | undefined, displayWidth: number, displayHeight: number) {
+export function useScreenPreparation(pages: Page[], current: number, folder: string, preparation: MediaPreparation | undefined, displayWidth: number, displayHeight: number, enabled = true, logicalWidth = 160 * 96 / 25.4) {
   const [dpr, setDpr] = useState(window.devicePixelRatio || 1);
   useEffect(() => {
     const update = () => setDpr(window.devicePixelRatio || 1);
@@ -18,6 +19,22 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
   const physicalWidth = displayWidth * dpr, physicalHeight = displayHeight * dpr;
   const session = preparation?.session ?? '';
   const [status, setStatus] = useState({ session: '', ready: false, completed: 0, total: 0 });
+  const [animations, setAnimations] = useState({ session: '', ready: false, completed: 0, total: 0 });
+  const animationPlan = Object.entries(preparation?.gifWidths ?? {}).map(([abs, width]) => ({ abs, width: Math.max(1, Math.ceil(width * physicalWidth / logicalWidth / 128) * 128) }));
+  const animationSignature = JSON.stringify(animationPlan);
+  useEffect(() => {
+    if (!enabled || !preparation || preparation.phase === 'waiting' || physicalWidth <= 0) return;
+    let alive = true, completed = 0;
+    const abort = new AbortController();
+    const total = animationPlan.length;
+    const publish = (ready: boolean) => { if (alive) setAnimations({ session, ready, completed, total }); };
+    publish(false);
+    void Promise.all(animationPlan.map(async ({ abs, width }) => {
+      await warmGifAnimation(abs, Number(session), width, abort.signal).catch(() => undefined);
+      completed++; publish(completed === total);
+    })).then(() => publish(true));
+    return () => { alive = false; abort.abort(); };
+  }, [enabled, session, animationSignature, physicalWidth > 0, preparation?.phase === 'waiting']);
   const plan = useMemo(() => {
     if (!preparation || physicalWidth <= 0 || physicalHeight <= 0) return null;
     const pageResources = pages.map((page) => {
@@ -38,18 +55,17 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
     const requests = ordered.flatMap((index, position) => (pageResources[index] ?? []).flatMap((resource) => {
       if (seen.has(resource.id)) return [];
       seen.add(resource.id);
-      // A figure cannot exceed the page in either dimension; avoid allocating a
-      // page-wide raster of a very tall/narrow PDF.
-      const width = screenRasterWidth(resource, Math.min(physicalWidth, physicalHeight * resource.aspect));
+      // Retain the final high-DPI raster, independent of monitor scaling.
+      const width = resource.width;
       return [{ resource, width, near: position < near.length }];
     }));
     const cost = requests.reduce((sum, request) => sum + request.width * Math.round(request.width / request.resource.aspect) * 4, 0);
-    return { requests, fits: cost <= SCREEN_RASTER_LIMIT };
+    return { requests, cost };
   }, [pages, current, folder, preparation, physicalWidth, physicalHeight]);
   const signature = JSON.stringify(plan?.requests.map(({ resource, width, near }) => [resource.id, resource.version, width, near]));
 
   useEffect(() => {
-    if (!plan || preparation?.phase !== 'ready') return;
+    if (!enabled || !plan || preparation?.phase !== 'ready') return;
     let alive = true;
     pinScreenRasters(plan.requests.filter((request) => request.near));
     if (plan.requests.every((request) => screenRasterReady(request.resource, request.width))) {
@@ -57,6 +73,10 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
       return;
     }
     void (async () => {
+      await prepareScreenBudget();
+      if (!alive) return;
+      pinScreenRasters(plan.requests.filter((request) => request.near));
+      const fits = plan.cost <= SCREEN_RASTER_LIMIT;
       let completed = 0;
       const publish = (ready: boolean) => {
         if (alive) setStatus((previous) => ({ session, ready: ready || (previous.session === session && previous.ready), completed, total: plan.requests.length }));
@@ -64,15 +84,21 @@ export function useScreenPreparation(pages: Page[], current: number, folder: str
       publish(false);
       for (const request of plan.requests) {
         if (!alive) return;
-        if (!plan.fits && !request.near) publish(true);
+        if (!fits && !request.near) publish(true);
         await warmScreenRaster(request.resource, request.width, request.near ? 10 : 30).catch(() => undefined);
         completed++; publish(false);
       }
       publish(true);
     })();
     return () => { alive = false; };
-  }, [signature, session, preparation?.phase]);
+  }, [enabled, signature, session, preparation?.phase]);
 
-  useEffect(() => { window.dispatchEvent(new Event('raster-scale')); }, [physicalWidth, physicalHeight]);
-  return { ...status, ready: preparation?.phase === 'ready' && status.session === session && status.ready };
+  const lastScale = useRef({ width: 0, height: 0 });
+  useEffect(() => {
+    if (!enabled || lastScale.current.width === physicalWidth && lastScale.current.height === physicalHeight) return;
+    lastScale.current = { width: physicalWidth, height: physicalHeight };
+    window.dispatchEvent(new Event('raster-scale'));
+  }, [enabled, physicalWidth, physicalHeight]);
+  return { completed: status.completed + animations.completed, total: status.total + animations.total,
+    ready: preparation?.phase === 'ready' && status.session === session && status.ready && animations.session === session && animations.ready };
 }

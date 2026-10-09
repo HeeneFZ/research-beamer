@@ -1,24 +1,27 @@
 // Prepare a bounded pool once, then switch visibility without rebuilding page DOM.
 // Small decks fit in the pool; larger decks prioritise the current +/-5 pages.
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { SlideView, referenceSignature } from './SlideView';
 import type { SlideViewProps } from './slide/types';
 import type { Page } from '../model/types';
+import type { ViewPreparation } from '../model/mediaResources';
+import { pageMediaReady } from './slide/useMediaReady';
 
 const EMPTY_REVEALED = new Set<number>();
 const PAGE_CACHE_LIMIT = 32;
 const pageKey = (page: Page) => page.slide?.id ?? page.section?.id ?? page.no;
 
-export function ReadySlideStage({ preloadPages, onPrepared, ...props }: SlideViewProps & { preloadPages?: Page[]; onPrepared?: (ready: boolean) => void }) {
-  const revision = useStore((state) => state.mediaRevision);
-  const layouts = useStore((state) => state.pageLayout);
-  const resources = useStore((state) => state.mediaPreparation);
+export function ReadySlideStage({ preloadPages, onPrepared, onPreparation, preparationKey, active: viewActive = true, ...props }: SlideViewProps & { preloadPages?: Page[]; onPrepared?: (ready: boolean) => void; onPreparation?: (state: ViewPreparation) => void; preparationKey?: string; active?: boolean }) {
+  const revision = useStore((state) => props.mediaSnapshot ?? state.mediaRevision);
+  const layouts = useStore((state) => props.layoutSnapshot ?? state.pageLayout);
+  const resources = useStore((state) => props.resourceSnapshot ?? state.mediaPreparation);
   const scope = String(props.mediaSnapshot ?? revision);
   const identity = `${scope}|${pageKey(props.page)}`;
   const [active, setActive] = useState<string | null>(null);
   const [pool, setPool] = useState<string[]>([]);
   const [painting, setPainting] = useState<string | null>(null);
+  const [readinessTick, setReadinessTick] = useState(0);
   const [progress, setProgress] = useState({ scope: '', ready: false, completed: 0, total: 0 });
   const snapshots = useRef(new Map<string, SlideViewProps>());
   const callbacks = useRef(new Map<string, (ready: boolean) => void>());
@@ -33,12 +36,17 @@ export function ReadySlideStage({ preloadPages, onPrepared, ...props }: SlideVie
   const current = active?.startsWith(scope + '|') ? active : null;
   const transitioning = current !== identity;
   const keys = [...new Set([...pool.filter((key) => key.startsWith(scope + '|')), ...(current ? [current] : []), identity])];
-  const pages = preloadPages ?? [props.page];
+  const pages = useMemo(() => preloadPages ?? [props.page], [preloadPages, props.page]);
   const pageIds = pages.map(pageKey).join('|');
   const reference = referenceSignature(props.computed);
   const warming = progress.scope !== scope || !progress.ready;
 
   useEffect(() => { onPrepared?.(!warming); }, [warming, onPrepared]);
+  useLayoutEffect(() => {
+    const root = layers.current.get(identity)?.querySelector<HTMLElement>('.sv');
+    const currentReady = !transitioning && !!root && root.dataset.slideReady === 'true' && pageMediaReady(root);
+    onPreparation?.({ scope, targetKey: preparationKey ?? identity, ready: !warming, currentReady, completed: progress.completed, total: progress.total });
+  }, [scope, identity, preparationKey, warming, transitioning, readinessTick, progress.completed, progress.total, onPreparation]);
   useEffect(() => {
     let alive = true;
     const index = pages.findIndex((page) => pageKey(page) === pageKey(props.page));
@@ -77,7 +85,7 @@ export function ReadySlideStage({ preloadPages, onPrepared, ...props }: SlideVie
         });
         while (alive && !readyPages.current.has(key)) await new Promise((resolve) => setTimeout(resolve, 20));
         if (!alive) return;
-        if (warming) {
+        if (warming && viewActive) {
           // Decode/layout readiness alone does not warm Chromium's first paint.
           // Paint behind the startup progress layer before releasing interaction.
           setPainting(key);
@@ -96,8 +104,7 @@ export function ReadySlideStage({ preloadPages, onPrepared, ...props }: SlideVie
 
   useLayoutEffect(() => {
     const root = layers.current.get(identity)?.querySelector<HTMLElement>('.sv');
-    if (root?.dataset.slideReady === 'true' && !root.querySelector('[data-media-pending], [data-eps-pending]')
-      && [...root.querySelectorAll('img')].every((image) => image.complete)) setActive(identity);
+    if (root?.dataset.slideReady === 'true' && pageMediaReady(root)) setActive(identity);
   }, [identity, layouts, resources]);
 
   // Deleted pages must release their DOM/media even while the pool is below its limit.
@@ -116,7 +123,9 @@ export function ReadySlideStage({ preloadPages, onPrepared, ...props }: SlideVie
       let notify = callbacks.current.get(key);
       if (!notify) {
         notify = (ready) => {
+          const changed = readyPages.current.has(key) !== ready;
           if (ready) readyPages.current.add(key); else readyPages.current.delete(key);
+          if (changed) setReadinessTick((tick) => tick + 1);
           if (ready && latest.current === key) setActive(key);
         };
         callbacks.current.set(key, notify);
@@ -124,12 +133,11 @@ export function ReadySlideStage({ preloadPages, onPrepared, ...props }: SlideVie
       const visible = key === current;
       const animated = frame.page.slide?.blocks.some((block) => block.type === 'video' || /\.gif$/i.test(block.src ?? ''));
       return <div key={key} className="ready-slide-layer" data-stage-visible={visible || undefined} aria-hidden={!visible || undefined}
-        ref={(node) => { if (node) { const inert = !visible || transitioning || warming; if (node.inert !== inert) node.inert = inert; layers.current.set(key, node); } else layers.current.delete(key); }}
-        style={{ visibility: visible || warming && painting === key ? 'visible' : 'hidden', zIndex: warming && painting === key ? 1 : undefined, pointerEvents: !visible || transitioning || warming ? 'none' : undefined }}>
+        ref={(node) => { if (node) { const inert = !viewActive || !visible || transitioning || warming; if (node.inert !== inert) node.inert = inert; layers.current.set(key, node); } else layers.current.delete(key); }}
+        style={{ visibility: visible || warming && painting === key ? 'visible' : 'hidden', zIndex: warming && painting === key ? 1 : undefined, pointerEvents: !viewActive || !visible || transitioning || warming ? 'none' : undefined }}>
         <SlideView {...frame} resourceSnapshot={props.resourceSnapshot ?? resources} layoutSnapshot={props.layoutSnapshot ?? layouts}
-          mediaActive={animated ? visible && !warming : undefined} onReady={notify} />
+          mediaActive={animated ? viewActive && visible && !warming : undefined} onReady={notify} />
       </div>;
     })}
-    {(!current || warming) && <div className="stage-preparing" role="status"><span>正在准备页面 {progress.completed}/{progress.total}</span><progress value={progress.completed} max={Math.max(1, progress.total)} /></div>}
   </div>;
 }

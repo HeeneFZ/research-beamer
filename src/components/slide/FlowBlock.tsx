@@ -1,6 +1,6 @@
 // 单个流式块：编辑态/展示态分发 + 块点击进编辑 + BlockToolbar 挂载
 
-import { CSSProperties, useState } from 'react';
+import { CSSProperties, memo, useState } from 'react';
 import { Block, Deck, Slide } from '../../model/types';
 import { Computed } from '../../model/numbering';
 import { InlineText } from '../InlineText';
@@ -20,7 +20,7 @@ import { SlideMode } from './types';
 import { defaultAnnoState } from '../../model/anno';
 import { MediaPreparation } from '../../model/mediaResources';
 
-export function FlowBlock({
+export const FlowBlock = memo(function FlowBlock({
   block, slide, deck, folder, computed, mode, revealed, onRef, highlight, onZoom, resourceSnapshot, mediaActive,
 }: {
   block: Block;
@@ -38,11 +38,10 @@ export function FlowBlock({
 }) {
   const { config } = deck;
   const lang = config.language;
-  const editing = useStore((s) => mode === 'edit' ? s.editing : null);
+  const isEditing = useStore((s) => mode === 'edit' && s.editing?.blockId === block.id && s.editing?.slideId === slide?.id);
   const setEditing = useStore((s) => s.setEditing);
   const jumpToRef = useStore((s) => s.jumpToRef);
   const updateBlock = useStore((s) => s.updateBlock);
-  const isEditing = mode === 'edit' && editing != null && editing.blockId === block.id && editing.slideId === slide?.id;
   const cls = 'fblock' + (highlight ? ' flash-hl' : '') + (mode === 'edit' ? ' editable' : '');
   // 编辑态：图/视频边缘拖拽调宽（直接操作，写入 block.width 即显式设定）
   const onWidthChange = mode === 'edit' && slide
@@ -227,4 +226,4 @@ export function FlowBlock({
       {panel}
     </div>
   );
-}
+});

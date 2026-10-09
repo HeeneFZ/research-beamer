@@ -13,7 +13,7 @@ import { SlideView } from './components/SlideView';
 import { ReadySlideStage } from './components/ReadySlideStage';
 import { useScreenPreparation } from './hooks/useScreenPreparation';
 import { LightboxInner } from './components/Lightbox';
-import { MediaPreparation } from './model/mediaResources';
+import { MediaPreparation, emptyMediaPreparation, emptyViewPreparation, presentationPreparationKey } from './model/mediaResources';
 import { clearDecodedRasters } from './components/resourceRaster';
 import { clearGifAnimations } from './components/GifAnimation';
 import { releaseUnusedPdfDocuments } from './components/pdfRaster';
@@ -37,6 +37,9 @@ interface PresentState {
   /** 页级排版状态（编辑器窗扫描产物；放映窗据此渲染，保证两边一致） */
   pageLayout?: Record<string, PageLayout>;
   nonce: number;
+  deckVersion?: string;
+  layoutVersion?: string;
+  resourceVersion?: string;
 }
 
 type PresentStateUpdate = Omit<PresentState, 'deck'> & { deck?: Deck };
@@ -100,6 +103,11 @@ function PIcon({ children }: { children: React.ReactNode }) {
 
 export default function Present() {
   const [st, setSt] = useState<PresentState | null>(null);
+  const stateRef = useRef<PresentState | null>(null);
+  const [sessionActive, setSessionActive] = useState(true);
+  const [awaitingState, setAwaitingState] = useState(true);
+  const [bootReady, setBootReady] = useState(false);
+  const [stagePreparation, setStagePreparation] = useState(emptyViewPreparation);
   const [laser, setLaser] = useState(false);
   const [laserColorIdx, setLaserColorIdx] = useState(0);
   const [zoomState, setZoomState] = useState<ZoomState>(FREE1);
@@ -109,7 +117,6 @@ export default function Present() {
   const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight });
   const [ctrlHover, setCtrlHover] = useState(false);
   const screenReady = useRef(false);
-  const [pagesPrepared, setPagesPrepared] = useState(false);
   const laserDot = useRef<HTMLDivElement>(null);
   const zsRef = useRef(zoomState);
   zsRef.current = zoomState;
@@ -134,8 +141,11 @@ export default function Present() {
   // 双击/连点两次 rec-toggle 会看到空 ref 走两条采集流，第二条覆盖 ref 后第一条
   // 永不停（屏幕采集指示灯常亮）且两路分片写进同一数组（webm 损坏）
   const recStartingRef = useRef(false);
+  const recGenerationRef = useRef(0);
+  const activeSessionRef = useRef(true);
 
   const stopRecording = () => {
+    recGenerationRef.current++; recStartingRef.current = false;
     const rec = recorderRef.current;
     if (rec && rec.state !== 'inactive') rec.stop();
     recorderRef.current = null;
@@ -143,23 +153,32 @@ export default function Present() {
   };
 
   const startRecording = async () => {
-    if (recStartingRef.current || (recorderRef.current && recorderRef.current.state !== 'inactive')) return;
+    if (!activeSessionRef.current || !screenReady.current || recStartingRef.current || (recorderRef.current && recorderRef.current.state !== 'inactive')) return;
+    const generation = ++recGenerationRef.current;
+    const valid = () => activeSessionRef.current && recGenerationRef.current === generation;
     recStartingRef.current = true;
     setRecErr(null);
+    let disp: MediaStream | null = null, mic: MediaStream | null = null, ctx: AudioContext | null = null;
+    let ownedByRecorder = false;
+    const releaseCapture = () => {
+      disp?.getTracks().forEach((track) => track.stop()); mic?.getTracks().forEach((track) => track.stop());
+      if (ctx && ctx.state !== 'closed') void ctx.close();
+    };
     try {
       // 屏幕视频 + 系统声音：main.cjs 的 setDisplayMediaRequestHandler 自动选放映屏 + loopback
-      const disp = await navigator.mediaDevices.getDisplayMedia({
+      disp = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 60 } },
         audio: true,
       });
+      if (!valid()) return;
       // 麦克风人声：失败（无麦/拒绝）不阻断录制——系统声已可用
-      let mic: MediaStream | null = null;
       try {
         mic = await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch { /* 无麦克风或被拒绝：仅系统声 */ }
+      if (!valid()) return;
       // 混音：WebAudio 声明周期与 recorder 绑定，停止时一并断开
       const tracks = [disp.getVideoTracks()[0]];
-      const ctx = new AudioContext();
+      ctx = new AudioContext();
       const dest = ctx.createMediaStreamDestination();
       let mixed = false;
       if (disp.getAudioTracks().length) {
@@ -184,8 +203,7 @@ export default function Present() {
           const blob = new Blob(chunks, { type: mime || 'video/webm' });
           // 释放采集设备
           stream.getTracks().forEach((t) => t.stop());
-          mic?.getTracks().forEach((t) => t.stop());
-          void ctx.close();
+          releaseCapture();
           if (blob.size === 0) return;
           const ts = new Date();
           const pad = (n: number) => String(n).padStart(2, '0');
@@ -204,15 +222,17 @@ export default function Present() {
       };
       // 用户从浏览器级「停止共享」栏结束录制（不经控件按钮）
       disp.getVideoTracks()[0].addEventListener('ended', () => {
-        if (recorderRef.current && recorderRef.current.state !== 'inactive') stopRecording();
+        if (recorderRef.current === rec && rec.state !== 'inactive') stopRecording();
       });
       recorderRef.current = rec;
       rec.start(1000); // 1s 分片：长录制内存峰值受控
+      ownedByRecorder = true;
       setRecording(true);
     } catch (e) {
-      setRecErr('录制启动失败：' + String(e));
+      if (valid()) setRecErr('录制启动失败：' + String(e));
     } finally {
-      recStartingRef.current = false;
+      if (!ownedByRecorder) releaseCapture();
+      if (recGenerationRef.current === generation) recStartingRef.current = false;
     }
   };
 
@@ -220,7 +240,7 @@ export default function Present() {
   // mount 时 st=null，直捕首帧闭包会把录像存到 folder=null 的错误位置）
   const recCtlRef = useRef<() => void>(() => {});
   recCtlRef.current = () => {
-    if (recorderRef.current && recorderRef.current.state !== 'inactive') stopRecording();
+    if (recStartingRef.current || recorderRef.current && recorderRef.current.state !== 'inactive') stopRecording();
     else void startRecording();
   };
 
@@ -228,21 +248,20 @@ export default function Present() {
     // 同步编辑器窗的页级排版状态到本窗 store（SlideView 从本窗 store 读取排版变量）
     const off = window.api.onPresentState((p: unknown) => {
       const ps = p as PresentStateUpdate;
-      const changedProject = useStore.getState().mediaRevision !== ps.mediaRevision;
+      const previous = stateRef.current;
+      if (!previous && !ps.deck) return;
+      const changedProject = previous?.mediaRevision !== ps.mediaRevision;
       setMediaRevision(ps.mediaRevision);
       if (changedProject) { clearDecodedRasters(); clearGifAnimations(ps.mediaRevision); releaseUnusedPdfDocuments(); }
-      const pageLayout = ps.pageLayout ?? (ps.deck ? {} : undefined);
-      if (pageLayout) useStore.setState({ pageLayout, mediaRevision: ps.mediaRevision });
-      if (ps.mediaPreparation) {
-        useStore.setState({ mediaPreparation: ps.mediaPreparation });
-        for (const [abs, resource] of Object.entries(ps.mediaPreparation.resources)) rememberMediaAspect(abs, resource.aspect);
-      }
-      setSt((previous) => {
-        if (!previous && !ps.deck) return null;
-        const revealed = previous && previous.revealed.length === ps.revealed.length
-          && previous.revealed.every((order, i) => order === ps.revealed[i]) ? previous.revealed : ps.revealed;
-        return { ...ps, deck: ps.deck ?? previous!.deck, pageLayout: pageLayout ?? previous?.pageLayout, mediaPreparation: ps.mediaPreparation ?? previous?.mediaPreparation, revealed };
-      });
+      const same = (key: 'deckVersion' | 'layoutVersion' | 'resourceVersion') => !changedProject && !!ps[key] && ps[key] === previous?.[key];
+      const pageLayout = same('layoutVersion') ? previous?.pageLayout : ps.pageLayout ?? previous?.pageLayout ?? {};
+      const mediaPreparation = same('resourceVersion') ? previous?.mediaPreparation : ps.mediaPreparation ?? previous?.mediaPreparation;
+      const revealed = previous && previous.revealed.length === ps.revealed.length && previous.revealed.every((order, i) => order === ps.revealed[i]) ? previous.revealed : ps.revealed;
+      const next: PresentState = { ...ps, deck: same('deckVersion') ? previous!.deck : ps.deck ?? previous!.deck, pageLayout, mediaPreparation, revealed };
+      stateRef.current = next;
+      useStore.setState({ pageLayout, mediaRevision: ps.mediaRevision, ...(mediaPreparation ? { mediaPreparation } : {}) });
+      if (mediaPreparation) for (const [abs, resource] of Object.entries(mediaPreparation.resources)) rememberMediaAspect(abs, resource.aspect);
+      setSt(next); setAwaitingState(false);
     });
     window.api.sendPresentEvent({ type: 'ready' });
     // 放映台（主窗 PresenterView）与主进程（结束放映先停录）的控制命令：
@@ -252,6 +271,18 @@ export default function Present() {
       if (c.type === 'rec-toggle') recCtlRef.current();
       // 主进程结束放映前的停录命令（present:close 检测到录制中先停录再关窗）
       else if (c.type === 'rec-stop') stopRecording();
+      else if (c.type === 'suspend') { activeSessionRef.current = false; stopRecording(); setSessionActive(false); }
+      else if (c.type === 'resume') {
+        stopRecording(); activeSessionRef.current = true;
+        setSessionActive(true); setAwaitingState(true); setBootReady(false);
+        setZoomState(FREE1); setBlank(null); setSorter(false); setLaser(false); setLightbox(null); setRecErr(null);
+        dragRef.current = null; suppressClick.current = false; setDragging(false); setMouse({ x: 0.5, y: 0.5 });
+      } else if (c.type === 'clear-project') {
+        activeSessionRef.current = false; stopRecording();
+        setSessionActive(false); setAwaitingState(true); setBootReady(false);
+        stateRef.current = null; setSt(null); clearDecodedRasters(); clearGifAnimations(); releaseUnusedPdfDocuments();
+        useStore.setState({ pageLayout: {}, mediaPreparation: emptyMediaPreparation() });
+      }
     });
     return () => { off(); offCtrl(); };
   }, []);
@@ -263,6 +294,7 @@ export default function Present() {
 
   // 卸载守卫：放映窗直接关闭时停掉录制（closed 前 stop，onstop 落盘链路仍可用）
   useEffect(() => () => {
+    activeSessionRef.current = false; recGenerationRef.current++; recStartingRef.current = false;
     const rec = recorderRef.current;
     if (rec && rec.state !== 'inactive') rec.stop();
     recorderRef.current = null;
@@ -303,8 +335,19 @@ export default function Present() {
   const displayAspect = st?.deck.config.aspect === '4:3' ? 4 / 3 : 16 / 9;
   const displayWidth = Math.min(vp.w, vp.h * displayAspect);
   const rasterZoom = zoomState.mode === 'free' ? zoomState.z : 1;
-  const screen = useScreenPreparation(computed?.pages ?? [], st?.current ?? 0, st?.folder ?? '', st?.mediaPreparation, displayWidth * rasterZoom, displayWidth / displayAspect * rasterZoom);
-  screenReady.current = screen.ready && pagesPrepared;
+  const logicalWidth = PAGE_SIZE[st?.deck.config.aspect ?? '16:9'].w * 96 / 25.4;
+  const screen = useScreenPreparation(computed?.pages ?? [], st?.current ?? 0, st?.folder ?? '', st?.mediaPreparation, displayWidth * rasterZoom, displayWidth / displayAspect * rasterZoom, sessionActive, logicalWidth);
+  const requestedPreparationKey = st ? presentationPreparationKey(st.mediaRevision, st.deckVersion, st.layoutVersion, st.resourceVersion, st.current) : '';
+  useEffect(() => {
+    if (sessionActive && !awaitingState && screen.ready && (computed?.pages.length === 0 || stagePreparation.targetKey === requestedPreparationKey && stagePreparation.ready && stagePreparation.currentReady)) setBootReady(true);
+  }, [sessionActive, awaitingState, screen.ready, stagePreparation, requestedPreparationKey, computed?.pages.length]);
+  screenReady.current = sessionActive && bootReady;
+  useEffect(() => {
+    if (!sessionActive || !st) return;
+    window.api.sendPresentEvent({ type: 'preparation', label: JSON.stringify({ scope: String(st.mediaRevision), targetKey: requestedPreparationKey,
+      ready: bootReady && !awaitingState, currentReady: computed?.pages.length === 0 || stagePreparation.currentReady,
+      completed: screen.completed + stagePreparation.completed, total: screen.total + stagePreparation.total }) });
+  }, [sessionActive, st?.mediaRevision, requestedPreparationKey, bootReady, awaitingState, computed?.pages.length, stagePreparation.currentReady, stagePreparation.completed, stagePreparation.total, screen.completed, screen.total]);
   // 返回引用跳转原处（Alt+← / Backspace / 鼠标后退侧键，与编辑器共用输入层）
   useBackNav(useCallback(() => send({ type: 'back' }), [send]));
 
@@ -566,8 +609,10 @@ export default function Present() {
         >
           <div style={{ width: pxW, height: pxH, transform: `scale(${base})`, transformOrigin: 'top left' }}>
             <ReadySlideStage
+              active={sessionActive && bootReady}
+              preparationKey={requestedPreparationKey}
               preloadPages={computed.pages}
-              onPrepared={setPagesPrepared}
+              onPreparation={setStagePreparation}
               page={page}
               deck={st.deck}
               computed={computed}
@@ -588,9 +633,9 @@ export default function Present() {
         )}
       </div>
 
-      {!screen.ready && <div className="screen-preparing projection-preparing" role="status">
-        <span>正在准备放映画面 {screen.completed}/{screen.total}</span>
-        <progress value={screen.completed} max={Math.max(1, screen.total)} />
+      {sessionActive && (awaitingState || !bootReady) && <div className="project-loading projection-preparing" role="status">
+        <span>正在准备放映 {screen.completed + stagePreparation.completed}/{screen.total + stagePreparation.total}</span>
+        <progress value={screen.completed + stagePreparation.completed} max={Math.max(1, screen.total + stagePreparation.total)} />
       </div>}
 
       {laser && (

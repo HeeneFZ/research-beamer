@@ -34,7 +34,7 @@ function createRasterCache(memoryLimit = MEMORY_LIMIT) {
   async function putImpl({ session: key, abs, data, width, height, aspect, stamp }) {
     const session = current;
     if (!session || session.closed || session.key !== key) throw new Error('Resource session expired');
-    if (!(width > 0 && height > 0 && width * height <= 16 * 1024 * 1024 && aspect > 0)) throw new Error('Invalid raster geometry');
+    if (!(width > 0 && height > 0 && width <= 16384 && height <= 16384 && width * height <= 64 * 1024 * 1024 && aspect > 0)) throw new Error('Invalid raster geometry');
     const stats = await fs.promises.stat(abs);
     const actualStamp = `${stats.size}:${stats.mtimeMs}`;
     if (stamp && stamp !== actualStamp) throw new Error('素材在预备过程中发生变化，请重新打开工程');

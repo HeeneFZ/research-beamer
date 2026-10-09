@@ -1,7 +1,7 @@
 import { RefObject, useLayoutEffect, useState } from 'react';
 
 export function pageMediaReady(root: HTMLElement): boolean {
-  return !root.querySelector('[data-eps-pending], [data-media-pending]')
+  return ![...root.querySelectorAll('[data-eps-pending], [data-media-pending]')].some((node) => !node.closest('[data-media-error]'))
     && [...root.querySelectorAll('img')].every((image) => image.complete)
     && [...root.querySelectorAll('.pdf-fig canvas')].every((canvas) => !!canvas.closest('[data-media-error]') || (canvas as HTMLCanvasElement).width > 0)
     && [...root.querySelectorAll('video')].every((video) => video.readyState >= 2 || !!video.error);

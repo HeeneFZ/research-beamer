@@ -48,6 +48,11 @@ export function useMediaPreparation(): void {
         await new Promise((resolve) => setTimeout(resolve, 40));
       }
       if (cancelled) return;
+      const gifWidths: Record<string, number> = {};
+      for (const canvas of document.querySelectorAll<HTMLElement>('.filmstrip [data-gif-source]')) {
+        const abs = canvas.dataset.gifSource!, width = canvas.parentElement?.clientWidth ?? 0;
+        gifWidths[abs] = Math.max(gifWidths[abs] ?? 0, width);
+      }
       const assets = new Map<string, string>();
       if (deck.config.logo) assets.set(absMediaPath(folder ?? '', deck.config.logo), 'image');
       for (const item of deck.items) if (item.kind === 'slide') for (const block of item.slide.blocks) {
@@ -57,7 +62,7 @@ export function useMediaPreparation(): void {
       }
       let completed = 0;
       const publish = (phase: MediaPreparation['phase']) => {
-        if (!cancelled && useStore.getState().mediaRevision === revision) useStore.getState().setMediaPreparation({ session, phase, completed, total: assets.size, resources: { ...resources }, errors: { ...errors }, assetSignature });
+        if (!cancelled && useStore.getState().mediaRevision === revision) useStore.getState().setMediaPreparation({ session, phase, completed, total: assets.size, resources: { ...resources }, errors: { ...errors }, assetSignature, gifWidths });
       };
       const needed = [...assets].some(([abs, kind]) => (kind === 'pdf' || kind === 'eps') && !resources[kind === 'eps' ? epsTarget(abs) ?? abs : abs]);
       if (!needed && initial.phase === 'ready' && initial.assetSignature === assetSignature) return;
@@ -78,18 +83,22 @@ export function useMediaPreparation(): void {
           completed++; publish('preparing');
         }
       }));
-      for (const [abs, kind] of assets) {
-        if (cancelled) return;
-        if (kind === 'image') continue;
-        if (kind === 'video') { completed++; continue; } // Static video nodes already waited for metadata/data.
-        const target = kind === 'eps' ? epsTarget(abs) : abs;
-        try {
-          if (!target) throw new Error('EPS 转换失败');
-          if (mediaFailure(target)) throw new Error(mediaFailure(target));
-          resources[target] ??= await preparePdfRaster(target, session);
-        } catch (error) { errors[abs] = String(error); }
-        completed++; publish('preparing');
-      }
+      const vector = [...assets].filter(([, kind]) => kind !== 'image');
+      let vectorCursor = 0;
+      await Promise.all([0, 1].map(async () => {
+        while (!cancelled && vectorCursor < vector.length) {
+          const [abs, kind] = vector[vectorCursor++];
+          if (kind !== 'video') {
+            const target = kind === 'eps' ? epsTarget(abs) : abs;
+            try {
+              if (!target) throw new Error('EPS 转换失败');
+              if (mediaFailure(target)) throw new Error(mediaFailure(target));
+              resources[target] ??= await preparePdfRaster(target, session);
+            } catch (error) { errors[abs] = String(error); }
+          }
+          completed++; publish('preparing');
+        }
+      }));
       publish('ready');
     };
     void run().catch((error) => {

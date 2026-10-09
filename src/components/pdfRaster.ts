@@ -1,5 +1,5 @@
-// Lazy PDF worker and leased documents; generate one final PNG per source for Main's
-// shared compressed cache. Visible views never receive a low-resolution substitute.
+// Lazy PDF worker and leased documents. Ordinary pages prepare 300DPI;
+// an explicit preview/print may upgrade the same source, up to 1200DPI.
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { mediaAspect, mediaFailure, mediaRevision, rememberMediaAspect, rememberMediaFailure } from '../model/mediaGeometry';
 
@@ -93,29 +93,42 @@ export async function ensurePdfAspect(abs: string): Promise<number> {
 }
 
 export const PDF_DPI_SCALE = 1200 / 96;
+export const PDF_SLIDE_SCALE = 300 / 96;
 export const PDF_PREVIEW_WIDTH = 512;
-const MAX_PIXELS = 16 * 1024 * 1024;
+const MAX_PIXELS = 64 * 1024 * 1024;
 const CANONICAL_CSS_WIDTH = 160 * 96 / 25.4 * 0.9;
-let preparation = Promise.resolve();
+const rasterWidth = (width: number, aspect: number) => Math.max(1, Math.min(Math.floor(width), Math.floor(Math.sqrt(MAX_PIXELS * aspect)), 16384, Math.floor(16384 * aspect)));
+let activePreparations = 0;
+const preparationWaiters: (() => void)[] = [];
+async function withPreparationSlot<T>(run: () => Promise<T>): Promise<T> {
+  if (activePreparations < 2) activePreparations++;
+  else await new Promise<void>((resolve) => preparationWaiters.push(resolve));
+  try { return await run(); }
+  finally { const next = preparationWaiters.shift(); if (next) next(); else activePreparations--; }
+}
 const preparing = new Map<string, Promise<import('../model/mediaResources').RasterResource>>();
 const finalResources = new Map<string, import('../model/mediaResources').RasterResource>();
 let resourceSession = '';
 
 /** One lossless final raster per source. A later explicit zoom may replace it with a larger one. */
-export function preparePdfRaster(abs: string, session: string, cssWidth = CANONICAL_CSS_WIDTH): Promise<import('../model/mediaResources').RasterResource> {
+export function preparePdfRaster(abs: string, session: string, cssWidth = CANONICAL_CSS_WIDTH, pixelScale = PDF_SLIDE_SCALE): Promise<import('../model/mediaResources').RasterResource> {
   const version = mediaRevision();
   if (resourceSession !== session) { finalResources.clear(); resourceSession = session; }
-  const widthRequest = Math.max(cssWidth, CANONICAL_CSS_WIDTH);
+  const widthRequest = Math.max(cssWidth * pixelScale, CANONICAL_CSS_WIDTH * PDF_SLIDE_SCALE);
+  const previous = finalResources.get(`${session}|${abs}`);
+  if (previous && previous.width >= rasterWidth(widthRequest, previous.aspect)) return Promise.resolve(previous);
   const key = `${session}|${abs}|${widthRequest}`;
   const hit = preparing.get(key);
   if (hit) return hit;
-  const task = preparation.catch(() => {}).then(() => withPdfDoc(abs, async (doc, stamp) => {
+  const task = withPreparationSlot(async () => {
+    if (version !== mediaRevision()) throw new Error('Resource session expired');
+    return withPdfDoc(abs, async (doc, stamp) => {
     if (version !== mediaRevision()) throw new Error('Resource session expired');
     const page = await doc.getPage(1), base = page.getViewport({ scale: 1 });
     const aspect = base.width / base.height;
     if (!(aspect > 0 && Number.isFinite(aspect))) throw new Error('PDF 页面尺寸无效');
     const bitmap = document.createElement('canvas');
-    bitmap.width = Math.max(1, Math.min(Math.floor(widthRequest * PDF_DPI_SCALE), Math.floor(Math.sqrt(MAX_PIXELS * aspect)), 16384));
+    bitmap.width = rasterWidth(widthRequest, aspect);
     bitmap.height = Math.max(1, Math.floor(bitmap.width / aspect));
     const context = bitmap.getContext('2d');
     if (!context) throw new Error('Canvas 2D 不可用');
@@ -128,9 +141,9 @@ export function preparePdfRaster(abs: string, session: string, cssWidth = CANONI
       finalResources.set(`${session}|${abs}`, resource);
       return resource;
     } finally { bitmap.width = bitmap.height = 0; }
-  }));
+    });
+  });
   preparing.set(key, task);
-  preparation = task.then(() => {}, () => {});
   void task.finally(() => preparing.delete(key)).catch(() => {});
   return task;
 }
@@ -148,9 +161,9 @@ export function renderPdfToCanvas(abs: string, canvas: HTMLCanvasElement, cssWid
   cancelCanvasRender(canvas);
   const task = { cancelled: false, key }; canvasTasks.set(canvas, task);
   canvas.dataset.mediaPending = 'true';
-  const target = record ? Math.max(1, Math.min(width, Math.floor(Math.sqrt(MAX_PIXELS * record.aspect)), 16384)) : width;
+  const target = record ? rasterWidth(width, record.aspect) : width;
   const resource = record && record.width >= target ? Promise.resolve(record)
-    : preparePdfRaster(abs, preparation.session, width / PDF_DPI_SCALE);
+    : preparePdfRaster(abs, preparation.session, width / PDF_DPI_SCALE, PDF_DPI_SCALE);
   void resource.then((ready) => drawPreparedRaster(ready, canvas, width, () => !task.cancelled)).catch((error) => {
     if (task.cancelled) return;
     canvas.dataset.mediaError = String(error); delete canvas.dataset.mediaPending;

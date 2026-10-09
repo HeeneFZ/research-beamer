@@ -5,7 +5,8 @@ import { Filmstrip } from './components/Filmstrip';
 import { EditorCanvas } from './components/EditorCanvas';
 import { Lightbox } from './components/Lightbox';
 import { NotesPane } from './components/NotesPane';
-import { PresenterView } from './components/PresenterView';
+import { PresenterView, type PresenterSnapshot } from './components/PresenterView';
+import { emptyViewPreparation, presentationPreparationKey } from './model/mediaResources';
 import { useBackNav } from './hooks/useBackNav';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useMediaPreparation } from './hooks/useMediaPreparation';
@@ -100,8 +101,32 @@ export default function App() {
   const pageLayout = useStore((s) => s.pageLayout);
   const mediaRevision = useStore((s) => s.mediaRevision);
   const mediaPreparation = useStore((s) => s.mediaPreparation);
+  const [editorPreparation, setEditorPreparation] = useState(emptyViewPreparation);
+  const [monitorPreparation, setMonitorPreparation] = useState(emptyViewPreparation);
+  const [projectionPreparation, setProjectionPreparation] = useState(emptyViewPreparation);
+  const monitorSnapshot = useRef<PresenterSnapshot | null>(null);
+  if (presenting) monitorSnapshot.current = { deck, computed, current, folder, revealStep, flash, mediaPreparation, mediaRevision, pageLayout, presentStart: useStore.getState().presentStart };
+  else if (monitorSnapshot.current?.mediaRevision !== mediaRevision) monitorSnapshot.current = null;
+  const viewPreparation = presenting ? monitorPreparation : editorPreparation;
+  const projectionReady = projectionPreparation.scope === String(mediaRevision) && projectionPreparation.ready
+    && (useStore.getState().presentStart > 0 || projectionPreparation.currentReady);
+  const loading = mediaPreparation.phase !== 'ready' || viewPreparation.scope !== String(mediaRevision) || !viewPreparation.ready || presenting && !projectionReady;
+  const projectionCurrent = presenting && projectionPreparation.scope === String(mediaRevision);
+  const completed = mediaPreparation.completed + (viewPreparation.scope === String(mediaRevision) ? viewPreparation.completed : 0) + (projectionCurrent ? projectionPreparation.completed : 0);
+  const total = mediaPreparation.total + (viewPreparation.scope === String(mediaRevision) ? viewPreparation.total : 0) + (projectionCurrent ? projectionPreparation.total : 0);
   const [presentNonce, setPresentNonce] = useState(0);
   const lastPresentState = useRef<{ deck: typeof deck; pageLayout: typeof pageLayout; mediaPreparation: typeof mediaPreparation; ready: number } | null>(null);
+  const versions = useRef({ deck, pageLayout, mediaPreparation, deckId: 0, layoutId: 0, resourceId: 0 });
+  if (versions.current.deck !== deck) { versions.current.deck = deck; versions.current.deckId++; }
+  if (versions.current.pageLayout !== pageLayout) { versions.current.pageLayout = pageLayout; versions.current.layoutId++; }
+  if (versions.current.mediaPreparation !== mediaPreparation) { versions.current.mediaPreparation = mediaPreparation; versions.current.resourceId++; }
+  const deckVersion = `${performance.timeOrigin}:${versions.current.deckId}`;
+  const layoutVersion = `${performance.timeOrigin}:${versions.current.layoutId}`;
+  const resourceVersion = `${performance.timeOrigin}:${versions.current.resourceId}`;
+  const expectedProjectionKey = useRef('');
+  expectedProjectionKey.current = presentationPreparationKey(mediaRevision, deckVersion, layoutVersion, resourceVersion, current);
+  useEffect(() => { window.api.sendPresentCtrl({ type: 'clear-project' }); }, [mediaRevision]);
+  useEffect(() => { if (!presenting) setProjectionPreparation(emptyViewPreparation()); }, [presenting]);
 
   useEffect(() => {
     if (!presenting) { lastPresentState.current = null; return; }
@@ -113,6 +138,7 @@ export default function App() {
       ...(full ? { deck } : {}),
       folder: folder ?? '',
       mediaRevision,
+      deckVersion, layoutVersion, resourceVersion,
       ...(full || previous?.mediaPreparation !== mediaPreparation ? { mediaPreparation } : {}),
       current,
       revealed: orders.slice(0, revealStep),
@@ -140,6 +166,13 @@ export default function App() {
         else if (evt.type === 'back') s.backJump();
       }
       if (evt.type === 'recState') useStore.setState({ presentRecording: evt.label === 'on' });
+      else if (evt.type === 'preparation' && evt.label && s.presenting) {
+        const progress = JSON.parse(evt.label) as ReturnType<typeof emptyViewPreparation>;
+        if (progress.scope === String(s.mediaRevision) && (s.presentStart || progress.targetKey === expectedProjectionKey.current)) {
+          setProjectionPreparation(progress);
+          if (progress.ready && progress.currentReady && progress.targetKey === expectedProjectionKey.current && !s.presentStart) useStore.setState({ presentStart: Date.now() });
+        }
+      }
       else if (evt.type === 'recSaved' && evt.label) s.setFlashMsg('录像已保存 → ' + evt.label);
       else if (evt.type === 'end') s.endPresent();
       else if (evt.type === 'ready') setPresentNonce((n) => n + 1); // 放映窗就绪：重播状态
@@ -151,16 +184,19 @@ export default function App() {
       <MenuBar />
       <Toolbar />
       <div className="main">
-        {mediaPreparation.phase !== 'ready' && <div className="project-loading" role="status"><span>正在准备汇报资源 {mediaPreparation.completed}/{mediaPreparation.total}</span><progress value={mediaPreparation.completed} max={Math.max(1, mediaPreparation.total)} /></div>}
+        {loading && <div className="project-loading" role="status"><span>{presenting ? '正在准备放映' : '正在准备工程'} {completed}/{total}</span><progress value={total ? completed : undefined} max={Math.max(1, total)} /></div>}
         <Filmstrip />
-        {presenting ? (
-          <PresenterView />
-        ) : (
-          <div className="editor-col">
-            <EditorCanvas />
+        <div className="workspace-view">
+          <div className="workspace-layer editor-col" aria-hidden={presenting || undefined}
+            ref={(node) => { if (node) node.inert = presenting; }} style={{ visibility: presenting ? 'hidden' : 'visible', pointerEvents: presenting ? 'none' : undefined }}>
+            <EditorCanvas active={!presenting} onPreparation={setEditorPreparation} />
             <NotesPane />
           </div>
-        )}
+          {monitorSnapshot.current && <div className="workspace-layer" aria-hidden={!presenting || undefined}
+            ref={(node) => { if (node) node.inert = !presenting; }} style={{ visibility: presenting ? 'visible' : 'hidden', pointerEvents: presenting ? undefined : 'none' }}>
+            <PresenterView active={presenting} snapshot={monitorSnapshot.current} onPreparation={setMonitorPreparation} />
+          </div>}
+        </div>
       </div>
       {flashMsg && <div className="toast">{flashMsg}</div>}
       <Lightbox />

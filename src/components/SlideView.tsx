@@ -12,7 +12,7 @@
 // 各部件已移至 ./slide/*（types / useLayoutScan / FlowBlock /
 // SectionBreadcrumb / StaticPages），纯搬移无行为变化。
 
-import { CSSProperties, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Block, PAGE_SIZE, Slide } from '../model/types';
 import { paletteVars } from '../model/palette';
@@ -107,7 +107,7 @@ export const SlideView = memo(function SlideView({
   const tocSig = layout === 'toc'
     ? '|toc:' + deck.items.filter((it) => it.kind === 'section').map((it) => (it.kind === 'section' ? it.section.title : '')).join('|')
     : '';
-  const editing = useStore((s) => mode === 'edit' ? s.editing : null);
+  const editing = useStore((s) => mode === 'edit' && s.editing?.slideId === slide0?.id ? s.editing : null);
   // All visible modes consume the finalized static thumbnail layout.
   const editingThisSlide = mode === 'edit' && editing != null && editing.slideId === slide0?.id;
   const layoutSignature = blockSig + tocSig + referenceSignature(computed) + `|media:${mediaRevision}`;
@@ -122,15 +122,15 @@ export const SlideView = memo(function SlideView({
   const setConfig = useStore((s) => s.setConfig);
 
   const setLightbox = useStore((s) => s.setLightbox);
-  const onZoomFig = (abs: string, ext: string, caption?: string) => setLightbox({ abs, ext, caption });
+  const onZoomFig = useCallback((abs: string, ext: string, caption?: string) => setLightbox({ abs, ext, caption }), [setLightbox]);
   const hl = (b: Block) => {
     if (highlightLabel == null || b.label == null) return false;
     // label 已归一化带前缀（eq:x），flash.label 是裸键（x）——按后缀匹配
     return b.label === highlightLabel || b.label.endsWith(':' + highlightLabel);
   };
-  const flowProps = { deck, folder, computed, mode, revealed, onRef, resourceSnapshot, mediaActive, onZoom: onZoom ?? onZoomFig };
+  const flowProps = { deck, folder, computed, mode, revealed, onRef, resourceSnapshot, onZoom: onZoom ?? onZoomFig };
   const renderFlow = (blocks: Block[]) => blocks.map((b) => (
-    <FlowBlock key={b.id} block={b} slide={page.slide} {...flowProps} highlight={hl(b)} />
+    <FlowBlock key={b.id} block={b} slide={page.slide} {...flowProps} highlight={hl(b)} mediaActive={b.type === 'figure' || b.type === 'video' ? mediaActive : undefined} />
   ));
 
   const renderSegments = (blocks: Block[]) => {

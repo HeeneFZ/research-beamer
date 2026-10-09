@@ -11,7 +11,14 @@ export interface MediaPreparation {
   resources: Record<string, RasterResource>;
   errors: Record<string, string>;
   assetSignature?: string;
+  /** Finalized figure widths in the deck's logical CSS coordinates. */
+  gifWidths?: Record<string, number>;
 }
+export interface ViewPreparation {
+  scope: string; targetKey: string; ready: boolean; currentReady: boolean; completed: number; total: number;
+}
+export const emptyViewPreparation = (): ViewPreparation => ({ scope: '', targetKey: '', ready: false, currentReady: false, completed: 0, total: 0 });
+export const presentationPreparationKey = (revision: number, deckVersion: string | undefined, layoutVersion: string | undefined, resourceVersion: string | undefined, current: number): string => [revision, deckVersion, layoutVersion, resourceVersion, current].join('|');
 export const emptyMediaPreparation = (): MediaPreparation => ({ session: '', phase: 'waiting', completed: 0, total: 0, resources: {}, errors: {} });
 export function mediaAssetSignature(deck: Deck): string {
   const assets = new Set(deck.items.flatMap((item) => item.kind === 'slide'

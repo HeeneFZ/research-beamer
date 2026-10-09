@@ -7,7 +7,14 @@ interface DisplayRaster { canvas?: HTMLCanvasElement; width: number; pending?: P
 const decoded = new Map<string, Decoded>();
 const LIMIT = 96 * 1024 * 1024;
 let bytes = 0;
-export const SCREEN_RASTER_LIMIT = 192 * 1024 * 1024;
+export let SCREEN_RASTER_LIMIT = 512 * 1024 * 1024;
+let screenBudget: Promise<void> | null = null;
+export function prepareScreenBudget(): Promise<void> {
+  return screenBudget ??= window.api.displayMemoryBudget().then((budget) => {
+    SCREEN_RASTER_LIMIT = Math.max(256 * 1024 * 1024, Math.min(1024 * 1024 * 1024, budget / 4));
+    rebuildPins(); trimDisplay(screens, SCREEN_RASTER_LIMIT);
+  });
+}
 const THUMB_LIMIT = 16 * 1024 * 1024;
 const screens = new Map<string, DisplayRaster>();
 const thumbs = new Map<string, DisplayRaster>();
@@ -155,6 +162,7 @@ function paint(source: CanvasImageSource & { width: number; height: number }, ca
   canvas.height = Math.max(1, Math.round(canvas.width * source.height / source.width));
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Canvas 2D 不可用');
+  context.imageSmoothingQuality = 'high';
   context.drawImage(source, 0, 0, canvas.width, canvas.height);
   delete canvas.dataset.mediaPending; delete canvas.dataset.mediaError;
   canvas.dispatchEvent(new Event('mediaready', { bubbles: true }));
