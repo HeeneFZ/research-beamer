@@ -13,7 +13,7 @@ function trackFileOperation(task) {
   return task;
 }
 // Split the display cache allowance between two renderers; leave room for transient decode.
-ipcMain.handle('display:memory-budget', () => Math.min(4.5 * 1024 ** 3, Math.max(256 * 1024 ** 2, Math.floor(require('os').totalmem() / 8))));
+ipcMain.handle('display:memory-budget', () => Math.min(8 * 1024 ** 3, Math.max(256 * 1024 ** 2, Math.floor(require('os').totalmem() / 8))));
 ipcMain.handle('display:targets', () => require('electron').screen.getAllDisplays().map((display) => ({
   width: display.bounds.width, height: display.bounds.height, scaleFactor: display.scaleFactor,
 })));
@@ -263,7 +263,7 @@ function createWindow() {
           // 放映窗评估：主窗 eval 中 startPresent 后，对 presentWin 执行
           if (process.env.E2E_EVAL_PRESENT) {
             if (presentWin && !presentWin.isDestroyed()) {
-              const rp = await presentWin.webContents.executeJavaScript(process.env.E2E_EVAL_PRESENT);
+              const rp = await presentWin.webContents.executeJavaScript(process.env.E2E_EVAL_PRESENT, true);
               if (rp !== undefined && rp !== null) console.log('E2E_PRESENT_RESULT=' + JSON.stringify(rp));
               await shoot(presentWin.webContents, 'present');
             } else {
@@ -844,27 +844,13 @@ ipcMain.handle('history:write', async (_e, { folder, json }) => {
 
 // ---------- 放映录制 ----------
 function setupRecordingHandlers() {
-  const { session, desktopCapturer } = require('electron');
-  // getDisplayMedia 自动选源（无系统选择器）：放映窗所在屏幕 + 系统声音 loopback。
-  // 渲染进程 getDisplayMedia({video:{frameRate:60}, audio:true}) 直达这里。
-  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
-    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
-      let src = sources[0];
-      try {
-        if (presentWin && !presentWin.isDestroyed()) {
-          const b = presentWin.getBounds();
-          const cx = b.x + b.width / 2;
-          const cy = b.y + b.height / 2;
-          const { screen } = require('electron');
-          const d = screen.getAllDisplays().find((dd) =>
-            cx >= dd.bounds.x && cx < dd.bounds.x + dd.bounds.width
-            && cy >= dd.bounds.y && cy < dd.bounds.y + dd.bounds.height);
-          if (d) src = sources.find((s) => s.display_id === String(d.id)) || src;
-        }
-      } catch (_) { /* 定位失败退回主屏 */ }
-      // audio: 'loopback' = Windows 系统声音回环采集（放映中的视频/音效）
-      callback(src ? { video: src, audio: 'loopback' } : {});
-    }).catch(() => callback({}));
+  const { session } = require('electron');
+  // Capture the projector's compositor, independent of monitor identity and DPI.
+  // Only its own top-level frame may request this stream.
+  session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    if (!presentWin || presentWin.isDestroyed() || presentWin.webContents.isDestroyed()
+      || request.frame !== presentWin.webContents.mainFrame) { callback({}); return; }
+    callback({ video: request.frame, ...(request.audioRequested ? { audio: 'loopback' } : {}) });
   });
   // 麦克风（用户人声）授权：仅放行 media，其余权限维持默认拒绝
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {

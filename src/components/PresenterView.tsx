@@ -63,8 +63,8 @@ export const PresenterView = memo(function PresenterView({ active, snapshot, onP
     const scope = String(revision);
     const rightReady = !previewPage || nextStage.scope === scope && nextStage.ready;
     onPreparation?.({ scope, targetKey: mainStage.targetKey, ready: screen.ready && (!page || mainStage.scope === scope && mainStage.ready && rightReady),
-      currentReady: !page || mainStage.currentReady, completed: screen.completed + mainStage.completed + (previewPage ? nextStage.completed : 0),
-      total: screen.total + mainStage.total + (previewPage ? nextStage.total : 0) });
+      currentReady: !page || mainStage.currentReady, completed: mainStage.completed + nextStage.completed,
+      total: mainStage.total + nextStage.total });
   }, [revision, screen.ready, screen.completed, screen.total, mainStage, nextStage, !!page, !!previewPage, onPreparation]);
 
   // 计时器 + 钟点
@@ -99,6 +99,7 @@ export const PresenterView = memo(function PresenterView({ active, snapshot, onP
             >
               <ReadySlideStage
                 active={active}
+                preloadPages={computed.pages}
                 onPreparation={setMainStage}
                 layoutSnapshot={pageLayout}
                 mediaSnapshot={revision}
@@ -133,17 +134,16 @@ export const PresenterView = memo(function PresenterView({ active, snapshot, onP
         <div className="presenter-block">
           <div className="presenter-label">{hasNextAnimation ? '下一步动画' : '下一页'} <span className="pt-page">{(page?.no ?? 0)} / {computed.pages.length}</span></div>
           <div className="presenter-next" ref={next.ref}>
-            {previewPage && next.scale > 0 ? (
-              <div className="page-sizer" style={{ width: pxW * next.scale, height: pxH * next.scale }}>
+            {page && next.scale > 0 && (
+              <div className="page-sizer" aria-hidden={!previewPage || undefined} style={{ width: pxW * next.scale, height: pxH * next.scale, visibility: previewPage ? 'visible' : 'hidden' }}>
                 <div
                   style={{ width: pxW, height: pxH, transform: `scale(${next.scale})`, transformOrigin: 'top left', opacity: 0.9 }}
                 >
-                  <ReadySlideStage active={active} onPreparation={setNextStage} layoutSnapshot={pageLayout} mediaSnapshot={revision} resourceSnapshot={preparation} page={previewPage} deck={deck} computed={computed} folder={folder ?? ''} mode="preview" revealed={previewRevealed} />
+                  <ReadySlideStage active={active && !!previewPage} preloadPages={computed.pages} onPreparation={setNextStage} layoutSnapshot={pageLayout} mediaSnapshot={revision} resourceSnapshot={preparation} page={previewPage ?? page} deck={deck} computed={computed} folder={folder ?? ''} mode="preview" revealed={previewRevealed} />
                 </div>
               </div>
-            ) : (
-              <div className="presenter-nonext">（末页）</div>
             )}
+            {!previewPage && <div className="presenter-nonext" style={{ position: 'absolute' }}>（末页）</div>}
           </div>
         </div>
         <div className="presenter-timer">

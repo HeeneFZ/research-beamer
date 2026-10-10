@@ -132,7 +132,10 @@ export function PdfCanvas({ abs, thumbnail = false, print = false, preparation: 
     let cancelled = false;
     let drawing = 0;
     let drawnWidth = 0;
+    const layer = canvas.closest('.ready-slide-layer');
     const draw = () => {
+      // Warm a hidden page once; zoom/pan only upgrades the displayed page.
+      if (!print && !thumbnail && canvas.width && layer && !layer.hasAttribute('data-stage-visible')) return;
       const w = box.clientWidth;
       if (w > 0) {
         const precision = print ? PDF_DPI_SCALE : thumbnail
@@ -155,6 +158,7 @@ export function PdfCanvas({ abs, thumbnail = false, print = false, preparation: 
     const onError = () => setFailure({ abs, message: canvas.dataset.mediaError || 'PDF 绘制失败' });
     canvas.addEventListener('error', onError);
     window.addEventListener('raster-scale', draw);
+    layer?.addEventListener('raster-scale', draw);
     draw();
     let timer = 0;
     const ro = new ResizeObserver(() => {
@@ -168,6 +172,7 @@ export function PdfCanvas({ abs, thumbnail = false, print = false, preparation: 
       clearTimeout(timer);
       canvas.removeEventListener('error', onError);
       window.removeEventListener('raster-scale', draw);
+      layer?.removeEventListener('raster-scale', draw);
       cancelCanvasRender(canvas);
     };
   }, [abs, aspect, thumbnail, print, error, resource]);

@@ -4,7 +4,7 @@
 // - 外层 .page-sizer 用缩放后的显式尺寸占位，内部 transform origin top-left：
 //   放大后滚动范围正确
 // - 抖动防护：scrollbar-gutter:stable + fit 变化阈值
-// - 滚轮：Ctrl 缩放（不再用滚轮翻页——易误触）
+// - 滚轮：普通滚轮翻页；放大时优先滚动画布，到边缘再翻页；Ctrl 缩放
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
@@ -70,7 +70,7 @@ export function EditorCanvas({ active = true, onPreparation }: { active?: boolea
   const screen = useScreenPreparation(computed.pages, current, folder ?? '', preparation, pxW * scale, pxH * scale, active, pxW, true);
   useLayoutEffect(() => {
     onPreparation?.({ scope: String(revision), targetKey: stage.targetKey, ready: screen.ready && (!page || stage.scope === String(revision) && stage.ready),
-      currentReady: !page || stage.currentReady, completed: screen.completed + (page ? stage.completed : 0), total: screen.total + (page ? stage.total : 0) });
+      currentReady: !page || stage.currentReady, completed: page ? stage.completed : 0, total: page ? stage.total : 0 });
   }, [revision, !!page, screen.ready, screen.completed, screen.total, stage, onPreparation]);
 
   const onRef = useCallback((label: string) => {
@@ -79,19 +79,34 @@ export function EditorCanvas({ active = true, onPreparation }: { active?: boolea
   const onSlideJump = useCallback((index: number) => gotoPage(index, true), [gotoPage]);
 
   // Ctrl+滚轮缩放：React 18 的 onWheel 是 passive 监听（preventDefault 静默无效且控制台报错），
-  // 改原生非 passive 绑定；普通滚轮只滚动画布，不翻页
+  // 改原生非 passive 绑定；输入/浮层保有滚轮，放大的画布先滚到边缘。
   useEffect(() => {
     const box = boxRef.current;
     if (!box) return;
+    let lastPageWheel = -Infinity;
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
-      e.preventDefault();
+      if (!active || onOverlay(e.target)) return;
       const s = useStore.getState();
-      s.setZoom(s.zoom * (e.deltaY < 0 ? 1.1 : 0.9));
+      if (s.projectExiting || s.presenting || document.querySelector('.modal-mask, .field-popover, .math-float, .lb-overlay')) return;
+      if (e.ctrlKey) {
+        e.preventDefault();
+        s.setZoom(s.zoom * (e.deltaY < 0 ? 1.1 : 0.9));
+        return;
+      }
+      if (e.shiftKey || !e.deltaY || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      const input = 'input, textarea, select, [contenteditable="true"]';
+      if ((e.target instanceof Element && e.target.closest(input)) || document.activeElement?.closest(input)) return;
+      const canScroll = s.zoom > 1 && (e.deltaY < 0 ? box.scrollTop > 1 : box.scrollTop < box.scrollHeight - box.clientHeight - 1);
+      if (canScroll) return;
+      e.preventDefault();
+      const now = performance.now();
+      if (now - lastPageWheel < 180) return;
+      lastPageWheel = now;
+      s.gotoPage(s.current + (e.deltaY > 0 ? 1 : -1));
     };
     box.addEventListener('wheel', onWheel, { passive: false });
     return () => box.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [active]);
 
   return (
     <div

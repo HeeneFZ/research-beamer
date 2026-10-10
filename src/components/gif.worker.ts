@@ -51,7 +51,9 @@ async function prepare(job: Job): Promise<void> {
           if (!await allowed || job.cancelled) return;
         }
         if (!raster) {
-          raster = new OffscreenCanvas(width, height); context = raster.getContext('2d');
+          // Keep the full frame cache in system RAM. GPU-backed bitmaps for every
+          // frame can exhaust VRAM and restart the shared GPU process while flipping.
+          raster = new OffscreenCanvas(width, height); context = raster.getContext('2d', { willReadFrequently: true });
           if (!context) throw new Error('Canvas 2D 不可用');
           context.imageSmoothingQuality = 'high';
         }

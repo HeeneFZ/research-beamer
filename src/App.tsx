@@ -165,6 +165,7 @@ export default function App() {
   const projectionCurrent = presenting && projectionPreparation.scope === String(mediaRevision);
   const completed = mediaPreparation.completed + (viewPreparation.scope === String(mediaRevision) ? viewPreparation.completed : 0) + (projectionCurrent ? projectionPreparation.completed : 0);
   const total = mediaPreparation.total + (viewPreparation.scope === String(mediaRevision) ? viewPreparation.total : 0) + (projectionCurrent ? projectionPreparation.total : 0);
+  // Count the bounded, retained page pools, rather than changing neighbourhoods.
   const backgroundPending = completed < total;
   const [presentNonce, setPresentNonce] = useState(0);
   const lastPresentState = useRef<{ deck: typeof deck; pageLayout: typeof pageLayout; mediaPreparation: typeof mediaPreparation; ready: number; session: string | null } | null>(null);

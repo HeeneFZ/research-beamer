@@ -118,7 +118,9 @@ export default function Present() {
   const [laser, setLaser] = useState(false);
   const [laserColorIdx, setLaserColorIdx] = useState(0);
   const [zoomState, setZoomState] = useState<ZoomState>(FREE1);
-  const [mouse, setMouse] = useState({ x: 0.5, y: 0.5 });
+  const mouse = useRef({ x: 0.5, y: 0.5 });
+  const lensRef = useRef<HTMLDivElement>(null);
+  const lensGeometry = useRef({ left: 0, top: 0, width: 0, height: 0 });
   const [blank, setBlank] = useState<null | 'black' | 'white'>(null);
   const [sorter, setSorter] = useState(false);
   const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight });
@@ -177,9 +179,9 @@ export default function Present() {
       if (ctx && ctx.state !== 'closed') void ctx.close();
     };
     try {
-      // 屏幕视频 + 系统声音：main.cjs 的 setDisplayMediaRequestHandler 自动选放映屏 + loopback
+      // 放映窗口合成帧 + 系统声音；窗口捕获不依赖显示器的缩放和交换顺序。
       disp = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 60 } },
+        video: { frameRate: { ideal: 60, max: 60 }, width: { ideal: 1920, max: 1920 }, height: { ideal: 1080, max: 1080 } },
         audio: true,
       });
       if (!valid()) return;
@@ -204,7 +206,7 @@ export default function Present() {
       const stream = mixed
         ? new MediaStream([...tracks, ...dest.stream.getAudioTracks()])
         : new MediaStream(tracks);
-      const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
+      const mime = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8_000_000 } : undefined);
       // 分片数组闭包在本 recorder 生命周期内（共享 ref 会让快速重启时上一录的
       // 晚到分片混进新录，交错损坏 webm）
@@ -319,7 +321,7 @@ export default function Present() {
         stopRecording(); activeSessionRef.current = true;
         setSessionActive(true); setAwaitingState(true); setBootReady(false);
         setZoomState(FREE1); setBlank(null); setSorter(false); setLaser(false); setLightbox(null); setRecErr(null);
-        dragRef.current = null; suppressClick.current = false; setDragging(false); setMouse({ x: 0.5, y: 0.5 });
+        dragRef.current = null; suppressClick.current = false; setDragging(false); mouse.current = { x: 0.5, y: 0.5 };
       } else if (c.type === 'clear-project') {
         const current = stateRef.current;
         const owner = c.owner ?? current?.deckVersion?.split(':')[0] ?? '';
@@ -360,15 +362,19 @@ export default function Present() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // 放映缩放态变化（free zoom / 透镜开关）→ KaTeX 规则线全量重算：
-  // 线的设备像素下限随累计 scale 变化，transform 不触发布局事件，须显式触发。
-  // .present-page 的 transform 有 .18s 过渡：rAF 时测到的是过渡起点（旧 scale），
-  // 220ms 过渡收敛后补一次重算才是终态口径（拖拽平移改直写后不再逐帧触发本 effect）
+  // 缩放重绘只处理当前可见页；平移不改变字形和公式的绘制分辨率。
+  // 线的设备像素下限随绘制倍率变化；等待当前页布局提交后重算。
+  const rasterZoom = zoomState.mode === 'free' ? zoomState.z : 1;
   useEffect(() => {
-    realignKatexRules();
-    const t = window.setTimeout(() => { realignKatexRules(); window.dispatchEvent(new Event('raster-scale')); }, 220);
+    const root = presentPageRef.current?.querySelector<HTMLElement>('[data-stage-visible]');
+    if (root) realignKatexRules(root);
+    const t = window.setTimeout(() => {
+      const visible = presentPageRef.current?.querySelector<HTMLElement>('[data-stage-visible]');
+      if (visible) realignKatexRules(visible);
+      window.dispatchEvent(new Event('raster-scale'));
+    }, 50);
     return () => clearTimeout(t);
-  }, [zoomState]);
+  }, [rasterZoom, st?.current, sessionActive]);
 
   const send = useCallback((evt: PresentEvent) => {
     if (!screenReady.current && ['advance', 'reverse', 'skip', 'goto', 'ref', 'back'].includes(evt.type)) return;
@@ -384,7 +390,6 @@ export default function Present() {
 
   const displayAspect = st?.deck.config.aspect === '4:3' ? 4 / 3 : 16 / 9;
   const displayWidth = Math.min(vp.w, vp.h * displayAspect);
-  const rasterZoom = zoomState.mode === 'free' ? zoomState.z : 1;
   const logicalWidth = PAGE_SIZE[st?.deck.config.aspect ?? '16:9'].w * 96 / 25.4;
   const stateOwner = st?.deckVersion?.split(':')[0] ?? '';
   const screen = useScreenPreparation(computed?.pages ?? [], st?.current ?? 0, st?.folder ?? '', st?.mediaPreparation, displayWidth * rasterZoom, displayWidth / displayAspect * rasterZoom, sessionActive, logicalWidth, false, true, stateOwner);
@@ -397,7 +402,7 @@ export default function Present() {
     if (!sessionActive || !st) return;
     window.api.sendPresentEvent({ type: 'preparation', session: st.presentSession, label: JSON.stringify({ scope: String(st.mediaRevision), targetKey: requestedPreparationKey,
       ready: bootReady && !awaitingState, currentReady: computed?.pages.length === 0 || stagePreparation.currentReady,
-      completed: screen.completed + stagePreparation.completed, total: screen.total + stagePreparation.total }) });
+      completed: stagePreparation.completed, total: stagePreparation.total }) });
   }, [sessionActive, st?.mediaRevision, requestedPreparationKey, bootReady, awaitingState, computed?.pages.length, stagePreparation.currentReady, stagePreparation.completed, stagePreparation.total, screen.completed, screen.total]);
   // 返回引用跳转原处（Alt+← / Backspace / 鼠标后退侧键，与编辑器共用输入层）
   useBackNav(useCallback(() => send({ type: 'back' }), [send]));
@@ -463,17 +468,36 @@ export default function Present() {
     return () => window.removeEventListener('keydown', onKey);
   }, [send, laser, blank, lightbox]);
 
-  // 鼠标：移动激光点/透镜跟随；放大态拖拽平移（拖拽期间禁用 transform 过渡，防追赶式加速）
+  // 鼠标跟随和放大平移每帧最多写一次，不触发页面 React 重渲染。
   useEffect(() => {
+    let frame = 0;
+    let pointer = { x: 0, y: 0 };
+    const paintPointer = () => {
+      frame = 0;
+      const e = pointer;
+      if (zsRef.current.mode === 'lens' && lensRef.current) {
+        const c = lensGeometry.current;
+        const x = Math.max(0, Math.min(e.x - c.left - c.width / 4, c.width / 2));
+        const y = Math.max(0, Math.min(e.y - c.top - c.height / 4, c.height / 2));
+        lensRef.current.style.transform = `translate(${x}px, ${y}px)`;
+      }
+      const dot = laserDot.current;
+      if (dot) dot.style.transform = `translate(${e.x}px, ${e.y}px)`;
+      const d = dragRef.current, c = dragCtx.current, el = presentPageRef.current;
+      if (d && el && c.shownW > 0 && c.z > 1) {
+        const tX = -c.ox * (c.z - 1) * c.shownW + d.panX2;
+        const tY = -c.oy * (c.z - 1) * c.shownH + d.panY2;
+        el.style.transform = `translate(${tX}px, ${tY}px)`;
+      }
+    };
     const onMove = (e: MouseEvent) => {
       // mouse 态仅透镜选框消费（激光点走 ref 直写、拖拽走 dragRef）：
       // 非透镜态不 setState，鼠标移动零重渲染（放映页含 annoeq 每帧序列化不可接受）
       if (zsRef.current.mode === 'lens') {
-        setMouse({ x: e.clientX / Math.max(1, vp.w), y: e.clientY / Math.max(1, vp.h) });
+        mouse.current = { x: e.clientX / Math.max(1, vp.w), y: e.clientY / Math.max(1, vp.h) };
       }
-      // 激光点跟随：ref 直写 transform（零重渲染）
-      const dot = laserDot.current;
-      if (dot) dot.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
+      pointer = { x: e.clientX, y: e.clientY };
+      if (!frame) frame = requestAnimationFrame(paintPointer);
       const d = dragRef.current;
       if (!d) return;
       // 越窗丢 mouseup 自愈：按钮已松（buttons===0）时按 onUp 同款收尾
@@ -484,15 +508,8 @@ export default function Present() {
       d.panX2 = d.panX + dx;
       d.panY2 = d.panY + dy;
       // 平移直写 transform（不 setState，零重渲染）；mouseup 一次提交终值。
-      // z≤1 不写：中途 Esc/0 复位缩放后 React 已写回 scale(1) 的复位 transform，
+      // z≤1 不写：中途 Esc/0 复位缩放后 React 已写回复位 transform，
       // 此处再写 pan 会把复位覆盖掉且无人恢复（React props 比较见同值跳过写回）
-      const c = dragCtx.current;
-      const el = presentPageRef.current;
-      if (el && c.shownW > 0 && c.z > 1) {
-        const tX = (0.5 - c.ox) * (c.z - 1) * c.shownW + d.panX2;
-        const tY = (0.5 - c.oy) * (c.z - 1) * c.shownH + d.panY2;
-        el.style.transform = `translate(${tX}px, ${tY}px) scale(${c.z})`;
-      }
     };
     /** 拖拽收尾（onUp 与越窗自愈共用）：suppressClick 闩带 350ms 超时兜底
      *  （mouseup 落在窗外时无 click 跟随，闩不清理会吞掉下一次真点击）；
@@ -514,7 +531,8 @@ export default function Present() {
     const onDown = (e: MouseEvent) => {
       // 放大态（自由缩放 z>1）：左键拖拽 = 平移
       const z = zsRef.current;
-      if (e.button === 0 && z.mode === 'free' && z.z > 1) {
+      const target = e.target instanceof Element ? e.target : null;
+      if (activeSessionRef.current && !target?.closest('.pctrl, .lb-overlay, .sorter-overlay, button, a, video') && e.button === 0 && z.mode === 'free' && z.z > 1) {
         dragRef.current = { x: e.clientX, y: e.clientY, panX: z.panX, panY: z.panY, panX2: z.panX, panY2: z.panY, moved: false };
         setDragging(true);
       }
@@ -536,6 +554,7 @@ export default function Present() {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mousedown', onDown);
       window.removeEventListener('mouseup', onUp);
+      if (frame) cancelAnimationFrame(frame);
     };
   }, [vp, send]);
 
@@ -586,16 +605,17 @@ export default function Present() {
   let z = 1;
   if (zoomState.mode === 'free') {
     z = zoomState.z;
-    tx = (0.5 - zoomState.ox) * (z - 1) * shownW + zoomState.panX;
-    ty = (0.5 - zoomState.oy) * (z - 1) * shownH + zoomState.panY;
+    tx = -zoomState.ox * (z - 1) * shownW + zoomState.panX;
+    ty = -zoomState.oy * (z - 1) * shownH + zoomState.panY;
   }
 
   const lensOn = zoomState.mode === 'lens';
   // 透镜选框：页宽/页高各一半（面积 1/4），跟随鼠标并夹在页面内
   const lensW = shownW / 2;
   const lensH = shownH / 2;
-  const lensLeft = Math.max(pageLeft, Math.min(mouse.x * vp.w - lensW / 2, pageLeft + shownW - lensW));
-  const lensTop = Math.max(pageTop, Math.min(mouse.y * vp.h - lensH / 2, pageTop + shownH - lensH));
+  const lensLeft = Math.max(pageLeft, Math.min(mouse.current.x * vp.w - lensW / 2, pageLeft + shownW - lensW));
+  const lensTop = Math.max(pageTop, Math.min(mouse.current.y * vp.h - lensH / 2, pageTop + shownH - lensH));
+  lensGeometry.current = { left: pageLeft, top: pageTop, width: shownW, height: shownH };
   // 拖拽直写上下文（渲染期刷新）：mouseup 提交终值后与本帧 transform 一致
   dragCtx.current = { z, ox: zoomState.mode === 'free' ? zoomState.ox : 0.5, oy: zoomState.mode === 'free' ? zoomState.oy : 0.5, shownW, shownH };
 
@@ -630,8 +650,10 @@ export default function Present() {
     if (t.closest('.fig-zoom-btn')) return; // 图片放大按钮自理
     // 透镜模式：点击放大选框区域
     if (lensOn) {
-      const cx = (lensLeft + lensW / 2 - pageLeft) / shownW;
-      const cy = (lensTop + lensH / 2 - pageTop) / shownH;
+      const left = Math.max(0, Math.min(mouse.current.x * vp.w - pageLeft - lensW / 2, shownW - lensW));
+      const top = Math.max(0, Math.min(mouse.current.y * vp.h - pageTop - lensH / 2, shownH - lensH));
+      const cx = (left + lensW / 2) / shownW;
+      const cy = (top + lensH / 2) / shownH;
       setZoomState({
         mode: 'free', z: LENS_ZOOM,
         ox: Math.max(0, Math.min(1, cx)), oy: Math.max(0, Math.min(1, cy)),
@@ -652,16 +674,18 @@ export default function Present() {
       ref={rootRef}
       onClick={stageClick}
     >
-      <div className="present-page-host">
+      <div className="present-page-host" style={{ width: shownW, height: shownH }}>
         <div
           ref={presentPageRef}
           className={'present-page' + (dragging ? ' dragging' : '')}
-          style={{ width: shownW, height: shownH, transform: `translate(${tx}px, ${ty}px) scale(${z})` }}
+          style={{ width: shownW * z, height: shownH * z, transform: `translate(${tx}px, ${ty}px)` }}
         >
-          <div style={{ width: pxW, height: pxH, transform: `scale(${base})`, transformOrigin: 'top left' }}>
+          <div className="present-page-content" style={{ width: pxW, height: pxH, zoom: base }}>
             <ReadySlideStage
               key={stateOwner}
               active={sessionActive && !awaitingState}
+              displayZoom={z}
+              backgroundActive={!bootReady || zoomState.mode === 'free' && z === 1}
               retainOutgoing={bootReady}
               preparationKey={requestedPreparationKey}
               preloadPages={computed.pages}
@@ -680,7 +704,7 @@ export default function Present() {
           </div>
         </div>
         {lensOn && (
-          <div className="lens-rect" style={{ left: lensLeft, top: lensTop, width: lensW, height: lensH }}>
+          <div ref={lensRef} className="lens-rect" style={{ left: 0, top: 0, width: lensW, height: lensH, transform: `translate(${lensLeft - pageLeft}px, ${lensTop - pageTop}px)` }}>
             <span className="lens-hint">点击放大此区域 · Esc 取消</span>
           </div>
         )}

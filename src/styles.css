@@ -810,9 +810,7 @@ body.dark .bb-sep { background: #333a44; }
   cursor: none;
 }
 .present-root:hover { cursor: default; }
-.present-page { transition: transform .18s ease; will-change: transform; }
-/* 拖拽平移期间禁用过渡：否则每帧 transform 都被 0.18s ease 追赶，体感为先慢后猛冲 */
-.present-page.dragging { transition: none; }
+.present-page { position: absolute; left: 0; top: 0; will-change: transform; }
 .present-wait {
   position: fixed; inset: 0; background: #000; color: #6b7480;
   display: flex; align-items: center; justify-content: center; font-size: 14px;
@@ -881,7 +879,7 @@ body.dark .bb-sep { background: #333a44; }
 
 /* 透镜选框（PowerPoint 放大镜式选区）：跟随鼠标的 1/4 页选框 */
 .lens-rect {
-  position: fixed; z-index: 40; pointer-events: none;
+  position: absolute; z-index: 40; pointer-events: none;
   border: 2px solid #3584e4; border-radius: 4px;
   background: rgba(53, 132, 228, .10);
   box-shadow: 0 0 0 9999px rgba(10, 14, 20, .35);
@@ -946,7 +944,7 @@ body.dark .bb-sep { background: #333a44; }
 }
 .presenter-ns button:hover { color: #fff; border-color: #3584e4; }
 .presenter-next {
-  height: 150px; display: flex; align-items: center; justify-content: center;
+  position: relative; height: 150px; display: flex; align-items: center; justify-content: center;
   overflow: hidden; border-radius: 6px; background: #0b0d10;
 }
 .presenter-nonext { color: #4a525c; font-size: 12px; }

@@ -162,9 +162,11 @@ export function GifAnimation({ abs, active = true, onAspect, onError }: { abs: s
       if (!animation) { if (enabled) prepare(true); return; }
       if (!enabled) {
         playing = false; cancelAnimationFrame(raf); index = loops = 0;
-        draw(animation.frames[0]); release(animation); animation = null;
+        // A retained page also retains its decoded animation. Releasing it here
+        // made every revisit reacquire frames and synchronously read back the GPU.
       } else if (changed || !playing) {
         playing = true; cancelAnimationFrame(raf); index = loops = 0;
+        draw(animation.frames[0]);
         due = performance.now(); raf = requestAnimationFrame(tick);
       }
     };

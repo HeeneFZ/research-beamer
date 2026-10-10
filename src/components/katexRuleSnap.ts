@@ -234,20 +234,23 @@ export function restyleRulesForPrint(): void {
 }
 
 let realignToken = 0;
+const realignRoots = new Set<Element>();
 
 /** scale 已变（画布 zoom / 窗口 resize / 放映缩放）：清旗全量重算（带宽 + 对齐都要更新）。
  *  rAF 合并（缩放风暴每帧最多一次全文档扫描）+ setTimeout 兜底（遮挡窗 rAF 暂停）。 */
-export function realignKatexRules(): void {
+export function realignKatexRules(root: Element = document.documentElement): void {
+  realignRoots.add(root);
   if (realignToken) return;
   const token = ++realignToken;
   const run = () => {
     if (realignToken !== token) return;
     realignToken = 0;
-    for (const el of document.querySelectorAll<HTMLElement>(RULE_SEL)) {
+    const roots = [...realignRoots]; realignRoots.clear();
+    for (const r of roots) for (const el of r.querySelectorAll<HTMLElement>(RULE_SEL)) {
       delete el.dataset.rsnapDy;
       el.style.transform = '';
     }
-    scheduleRestyle([document.documentElement]);
+    scheduleRestyle(roots);
   };
   requestAnimationFrame(run);
   setTimeout(run, 50);
@@ -278,7 +281,7 @@ export function installKatexRuleSnap(subscribeZoom: () => void): void {
     if (roots) scheduleRestyle(roots);
   });
   mo.observe(document.documentElement, { childList: true, subtree: true });
-  window.addEventListener('resize', realignKatexRules);
+  window.addEventListener('resize', () => realignKatexRules());
   // Windows monitor changes can alter DPR without changing the CSS viewport size.
   const watchResolution = () => {
     const query = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
