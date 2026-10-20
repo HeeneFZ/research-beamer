@@ -7,7 +7,8 @@
 // 锚定态首次拖/拉即以当前实描位置换算页百分比转入浮动态。
 // 载入/更换复用 pickMedia + importMedia 管线；非编辑态纯展示不拦截点击。
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { DeckConfig, Pos } from '../../model/types';
 import { fileUrl } from '../pdfRaster';
 import { absMediaPath } from '../paths';
@@ -35,19 +36,25 @@ export async function pickLogoFile(folder: string): Promise<string | null> {
 }
 
 /** 卡内右下「＋ Logo」占位（编辑态、未设置 logo 时显示；点击载入） */
-export function LogoAddChip() {
+export function LogoAddChip({ placement = 'title' }: { placement?: 'title' | 'end' }) {
   const folder = useStore((s) => s.folder);
   const setConfig = useStore((s) => s.setConfig);
   const setFlashMsg = useStore((s) => s.setFlashMsg);
+  const sourceKey = placement === 'end' ? 'endLogo' : 'logo';
+  const pickRequest = useRef(0);
+  useEffect(() => () => { pickRequest.current++; }, [sourceKey]);
   const add = async () => {
     if (!folder) {
       setFlashMsg('请先保存工程（需要 media/ 目录）');
       return;
     }
     const revision = useStore.getState().mediaRevision;
+    const request = ++pickRequest.current;
     const src = await pickLogoFile(folder);
-    // 只落 logo 不落 logoPos：默认锚定卡片右下，用户拖/拉后才持久化浮动态坐标
-    if (src && useStore.getState().mediaRevision === revision && useStore.getState().folder === folder) setConfig({ logo: src });
+    // 只设置当前页的图案；位置由当前页自己的配置决定。
+    const state = useStore.getState();
+    if (src && request === pickRequest.current && state.mediaRevision === revision && state.folder === folder
+      && !state.projectExiting && !state.presenting && !state.deck.config[sourceKey]) setConfig({ [sourceKey]: src });
   };
   return (
     <button className="logo-add-chip" onClick={() => { void add(); }} title="载入校徽 / 自定义图案" draggable={false}>
@@ -56,19 +63,28 @@ export function LogoAddChip() {
   );
 }
 
-export function CoverLogo({ config, folder, mode }: {
+export function CoverLogo({ config, folder, mode, placement = 'title' }: {
   config: DeckConfig;
   folder: string;
   mode: SlideMode;
+  placement?: 'title' | 'end';
 }) {
   const setConfig = useStore((s) => s.setConfig);
   const setFlashMsg = useStore((s) => s.setFlashMsg);
   const hostRef = useRef<HTMLDivElement>(null);
+  const pageRef = useRef<HTMLElement | null>(null);
+  const stopRef = useRef<(() => void) | null>(null);
   // 拖/拉期间只动本地态（拖完一次 setConfig：一条撤销记录，且不逐帧深拷贝 deck）
   const liveRef = useRef<Pos | null>(null);
   const [live, setLive] = useState<Pos | null>(null);
   const [dragging, setDragging] = useState(false);
-  if (!config.logo) return null;
+  const sourceKey = placement === 'end' ? 'endLogo' : 'logo';
+  const source = config[sourceKey];
+  const pickRequest = useRef(0);
+  useEffect(() => () => { pickRequest.current++; stopRef.current?.(); }, [sourceKey, source]);
+  if (!source) return null;
+  const positionKey = placement === 'end' ? 'endLogoPos' : 'logoPos';
+  const savedPos = config[positionKey];
 
   const startDrag = (e: React.MouseEvent, kind: 'move' | 'rz-l' | 'rz-r') => {
     if (e.button !== 0) return;
@@ -77,6 +93,10 @@ export function CoverLogo({ config, folder, mode }: {
     const host = hostRef.current;
     const page = host?.closest('.sv') as HTMLElement | null;
     if (!host || !page) return;
+    stopRef.current?.();
+    pageRef.current = page;
+    const revision = useStore.getState().mediaRevision;
+    const originPage = useStore.getState().current;
     const pr = page.getBoundingClientRect();
     const hr = host.getBoundingClientRect();
     const pw = pr.width || 1;
@@ -110,19 +130,31 @@ export function CoverLogo({ config, folder, mode }: {
       liveRef.current = next;
       setLive(next);
     };
-    const onUp = () => {
+    const finish = (commit: boolean) => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('blur', cancel);
+      window.removeEventListener('keydown', escape, true);
+      stopRef.current = null;
       document.body.style.cursor = prevCursor;
       setDragging(false);
       // 有实际位移才提交（点击空拖不动位置）；落库仅一条撤销记录
       const cur = liveRef.current;
       liveRef.current = null;
       setLive(null);
-      if (cur && (cur.x !== p0.x || cur.y !== p0.y || cur.w !== p0.w)) setConfig({ logoPos: cur });
+      const state = useStore.getState();
+      if (commit && cur && state.mediaRevision === revision && !state.projectExiting
+        && state.current === originPage && !state.presenting && state.deck.config[sourceKey] === source
+        && (cur.x !== p0.x || cur.y !== p0.y || cur.w !== p0.w)) setConfig({ [positionKey]: cur });
     };
+    const onUp = () => finish(true);
+    const cancel = () => finish(false);
+    const escape = (ev: KeyboardEvent) => { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); cancel(); } };
+    stopRef.current = cancel;
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+    window.addEventListener('blur', cancel);
+    window.addEventListener('keydown', escape, true);
   };
 
   const replace = async () => {
@@ -131,26 +163,30 @@ export function CoverLogo({ config, folder, mode }: {
       return;
     }
     const revision = useStore.getState().mediaRevision;
+    const request = ++pickRequest.current;
     const src = await pickLogoFile(folder);
-    if (src && useStore.getState().mediaRevision === revision && useStore.getState().folder === folder) setConfig({ logo: src });
+    const state = useStore.getState();
+    if (src && request === pickRequest.current && state.mediaRevision === revision && state.folder === folder
+      && !state.projectExiting && !state.presenting && state.deck.config[sourceKey] === source) setConfig({ [sourceKey]: src });
   };
 
   // 锚定态（无 logoPos）由卡片 CSS 定位；浮动态用页百分比
-  const anchored = config.logoPos == null;
-  const pos = live ?? config.logoPos ?? { x: 0, y: 0, w: 24 };
+  const anchored = savedPos == null;
+  const pos = live ?? savedPos ?? { x: 0, y: 0, w: 24 };
   const style = anchored ? undefined : { left: `${pos.x}%`, top: `${pos.y}%`, width: `${pos.w}%` };
   return (
+    <>
     <div
       ref={hostRef}
       className={(anchored ? 'logo-in-card' : 'logo-float')
         + (mode === 'edit' ? ' edit' : '')
         + (anchored ? '' : ' floating')
         + (dragging ? ' dragging' : '')}
-      style={style}
+      style={anchored && live ? { opacity: 0 } : style}
       onMouseDown={mode === 'edit' ? (e) => startDrag(e, 'move') : undefined}
       title={mode === 'edit' ? (anchored ? '拖动移出卡片角落；左右缘手柄调宽' : '拖动移动；左右缘手柄调宽') : undefined}
     >
-      <img src={fileUrl(absMediaPath(folder, config.logo))} alt="" draggable={false} />
+      <img src={fileUrl(absMediaPath(folder, source))} alt="" draggable={false} />
       {mode === 'edit' && (
         <>
           <div className="logo-tools">
@@ -159,7 +195,7 @@ export function CoverLogo({ config, folder, mode }: {
               <button
                 className="reset"
                 onMouseDown={(e) => e.stopPropagation()}
-                onClick={() => setConfig({ logoPos: undefined })}
+                onClick={() => setConfig({ [positionKey]: undefined })}
                 title="回到色块右下角"
               >
                 复位
@@ -168,7 +204,7 @@ export function CoverLogo({ config, folder, mode }: {
             <button
               className="danger"
               onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => setConfig({ logo: undefined, logoPos: undefined })}
+              onClick={() => setConfig({ [sourceKey]: undefined, [positionKey]: undefined })}
             >
               删除
             </button>
@@ -178,5 +214,11 @@ export function CoverLogo({ config, folder, mode }: {
         </>
       )}
     </div>
+    {anchored && live && pageRef.current && createPortal(
+      <div className="logo-float" style={{ left: `${pos.x}%`, top: `${pos.y}%`, width: `${pos.w}%` }}>
+        <img src={fileUrl(absMediaPath(folder, source))} alt="" draggable={false} />
+      </div>, pageRef.current,
+    )}
+    </>
   );
 }

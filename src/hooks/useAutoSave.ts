@@ -7,12 +7,13 @@ export function useAutoSave(): void {
   const dirty = useStore((s) => s.dirty);
   const folder = useStore((s) => s.folder);
   const enabled = useStore((s) => s.autoSave);
+  const external = useStore((s) => s.externalChange);
   useEffect(() => {
-    if (window.api.isE2E || !enabled || !dirty || !folder) return;
+    if (window.api.isE2E || !enabled || !dirty || !folder || external) return;
     const timer = window.setTimeout(() => {
       const s = useStore.getState();
-      if (s.autoSave && s.dirty && s.folder === folder && s.deck === deck) void s.saveProject(false);
+      if (s.autoSave && s.dirty && !s.externalChange && s.folder === folder && s.deck === deck) void s.saveProject(false);
     }, 2000);
     return () => clearTimeout(timer);
-  }, [deck, dirty, folder, enabled]);
+  }, [deck, dirty, folder, enabled, external]);
 }

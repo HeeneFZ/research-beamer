@@ -21,6 +21,11 @@ const pendingWrites = new Set<Promise<boolean>>();
 let attachment = 0;
 let edits = 0;
 
+/** Preserve an explicit reset marker across JSON, which otherwise drops undefined. */
+export function deckSnapshot(deck: Deck): string {
+  return JSON.stringify({ ...deck, config: { ...deck.config, endLogo: deck.config.endLogo ?? null, endLogoPos: deck.config.endLogoPos ?? null } });
+}
+
 function pushStack(json: string): void {
   if (undoStack[undoStack.length - 1] === json) return;
   undoStack.push(json);
@@ -31,7 +36,7 @@ function flushPending(): void {
   clearTimeout(snapshotTimer);
   snapshotTimer = undefined;
   if (!pendingDeck) return;
-  pushStack(JSON.stringify(pendingDeck));
+  pushStack(deckSnapshot(pendingDeck));
   pendingDeck = null;
 }
 
@@ -48,7 +53,7 @@ function persistNow(): boolean | Promise<boolean> {
   if (readFailed) return false;
   flushPending();
   const json = JSON.stringify({
-    current: currentDeck ? JSON.stringify(currentDeck) : null,
+    current: currentDeck ? deckSnapshot(currentDeck) : null,
     undo: undoStack, redo: redoStack,
   });
   const generation = attachment, version = edits;
@@ -100,7 +105,7 @@ export function recordHistory(deck: Deck, debounce = false, after: Deck = deck):
   } else {
     // 结构操作紧跟输入时保留输入的撤销点，随后再记录结构操作前态。
     flushPending();
-    pushStack(JSON.stringify(deck));
+    pushStack(deckSnapshot(deck));
   }
   schedulePersist();
 }
@@ -150,9 +155,17 @@ function normalizedSnapshot(json: unknown): { content: string; json: string } | 
           if (block.items != null && (!Array.isArray(block.items) || !block.items.every((value) => typeof value === 'string'))) return null;
           if (block.cells != null && (!Array.isArray(block.cells) || !block.cells.every((row) => Array.isArray(row) && row.every((value) => typeof value === 'string')))) return null;
           if (block.itemOrders != null && (!Array.isArray(block.itemOrders) || !block.itemOrders.every(order))) return null;
+          if (block.itemLabels != null && (!Array.isArray(block.itemLabels) || !block.itemLabels.every(text))) return null;
           if (block.pos != null && ![block.pos.x, block.pos.y, block.pos.w].every((value) => typeof value === 'number' && Number.isFinite(value))) return null;
         }
       } else return null;
+    }
+    // Pre-split snapshots also shared the cover position with the end page.
+    // New snapshots carry null for a reset, so later cover edits stay independent.
+    const legacyLogo = !Object.prototype.hasOwnProperty.call(deck.config, 'endLogo');
+    if (legacyLogo) deck.config.endLogo = deck.config.logo;
+    if (legacyLogo && !Object.prototype.hasOwnProperty.call(deck.config, 'endLogoPos') && deck.config.logoPos) {
+      deck.config.endLogoPos = { ...deck.config.logoPos };
     }
     const canonical = parseMarkdown(serializeMarkdown(deck));
     // Preserve the IDs and empty editing blocks that Markdown does not store.
@@ -161,7 +174,7 @@ function normalizedSnapshot(json: unknown): { content: string; json: string } | 
     for (const item of deck.items) if (item.kind === 'slide') {
       for (const block of item.slide.blocks) if (block.type === 'annoeq') block.anno = annoFromJson(JSON.stringify(block.anno));
     }
-    return { content: serializeMarkdown(canonical), json: JSON.stringify(deck) };
+    return { content: serializeMarkdown(canonical), json: deckSnapshot(deck) };
   } catch {
     return null;
   }
@@ -215,7 +228,7 @@ export function attachHistoryFolder(folder: string | null, baseJson: string, ado
               flushPending();
               // Local edits start at deck.md. Keep their current/redo branch and join
               // older disk undo states before it, including the saved baseline bridge.
-              const first = undoStack[0] ?? (currentDeck ? JSON.stringify(currentDeck) : baseJson);
+              const first = undoStack[0] ?? (currentDeck ? deckSnapshot(currentDeck) : baseJson);
               const firstContent = normalizedSnapshot(first)?.content;
               if (base && firstContent !== base.content) loaded.push(base.json);
               if (loaded.length && undoStack.length && normalizedSnapshot(loaded[loaded.length - 1])?.content === firstContent) loaded.pop();
@@ -244,7 +257,7 @@ export function takeUndo(current: Deck): Deck | null {
   flushPending();
   if (!undoStack.length) return null;
   edits++;
-  redoStack.push(JSON.stringify(current));
+  redoStack.push(deckSnapshot(current));
   if (redoStack.length > HISTORY_MAX) redoStack.shift();
   currentDeck = JSON.parse(undoStack.pop()!) as Deck;
   schedulePersist();
@@ -255,7 +268,7 @@ export function takeRedo(current: Deck): Deck | null {
   flushPending();
   if (!redoStack.length) return null;
   edits++;
-  pushStack(JSON.stringify(current));
+  pushStack(deckSnapshot(current));
   currentDeck = JSON.parse(redoStack.pop()!) as Deck;
   schedulePersist();
   return currentDeck;

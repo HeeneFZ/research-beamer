@@ -5,15 +5,19 @@ declare global {
   interface Window {
     api: {
       isE2E: boolean;
+      projectWatchEnabled: boolean;
+      watchProject(p: import('./model/projectSync').ProjectWatchRequest): Promise<{ ok?: boolean; error?: string }>;
+      unwatchProject(id: string): Promise<void>;
+      onProjectChanged(cb: (change: import('./model/projectSync').ProjectFileChange) => void): () => void;
       displayMemoryBudget(): Promise<number>;
       displayTargets(): Promise<{ width: number; height: number; scaleFactor: number }[]>;
       openProject(): Promise<{ md: string | null; folder: string; error?: string } | null>;
       loadExample(relPath: string): Promise<{ md: string | null; folder: string; error?: string } | null>;
-      saveProject(p: { folder: string | null; md: string }): Promise<{ folder: string; error?: string } | null>;
+      saveProject(p: { folder: string | null; md: string; baseMd?: string | null }): Promise<{ folder: string; error?: string; conflict?: boolean; md?: string | null } | null>;
       confirmProjectExit(p: { title: string; language: 'zh' | 'en'; reason: 'switch' | 'close' }): Promise<'save' | 'discard' | 'cancel'>;
       onWindowCloseRequest(cb: (requestId: number) => void): () => void;
       completeWindowClose(p: { requestId: number; approved: boolean }): Promise<boolean>;
-      pickMedia(): Promise<{ path: string } | null>;
+      pickMedia(options?: { background?: boolean }): Promise<{ path: string } | null>;
       importMedia(p: { srcPath: string; folder: string | null }): Promise<{ fileName: string; error?: string } | null>;
       ensureEpsPdf(p: { absPath: string }): Promise<{ pdf?: string; error?: string }>;
       readFile(absPath: string): Promise<{ data: Uint8Array; stamp?: string } | { error: string }>;

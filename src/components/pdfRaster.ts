@@ -22,8 +22,9 @@ function loadRuntime(): Promise<SharedRuntime> {
 
 export function fileUrl(absPath: string): string {
   const norm = absPath.replace(/\\/g, '/');
-  if (norm.startsWith('//')) return 'file:' + norm.split('/').map(encodeURIComponent).join('/');
-  return (norm.startsWith('/') ? 'file://' : 'file:///') + norm.split('/').map(encodeURIComponent).join('/');
+  const url = norm.startsWith('//') ? 'file:' + norm.split('/').map(encodeURIComponent).join('/')
+    : (norm.startsWith('/') ? 'file://' : 'file:///') + norm.split('/').map(encodeURIComponent).join('/');
+  return `${url}?beamer-revision=${mediaRevision()}`;
 }
 
 interface PdfEntry {

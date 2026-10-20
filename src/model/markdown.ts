@@ -18,11 +18,12 @@
 
 import yaml from 'js-yaml';
 import {
-  Block, Deck, DeckConfig, DeckItem, Layout, Palette, Pos, Slide, defaultConfig, createDefaultConfig, newId,
+  BackgroundImage, Block, Deck, DeckConfig, DeckItem, Layout, Palette, Pos, Slide, defaultConfig, createDefaultConfig, newId,
 } from './types';
 import { annoFromJson, annoToJson, defaultAnnoState } from './anno';
 import { reseedColPlaceholders } from './segments';
 import { LEGACY_PRESET_TONES, PRESETS } from './palette';
+import { clampBackgroundPos } from './background';
 const SLIDE_OPEN = /^::::+\s*(.*)$/;   // 4+ colons
 const BLOCK_OPEN = /^:::+\s*(.*)$/;    // 3+ colons（块级；在页内出现 4+ 也按块处理）
 
@@ -93,7 +94,7 @@ function q(v: string): string {
 const LAYOUTS: Layout[] = ['title', 'toc', 'section', 'content', 'twoCol', 'end'];
 
 export const LABEL_PREFIX: Partial<Record<Block['type'], string>> = {
-  equation: 'eq', figure: 'fig', table: 'tab', annoeq: 'eq', video: 'vid',
+  equation: 'eq', figure: 'fig', table: 'tab', annoeq: 'eq', video: 'vid', paragraph: 'ref', itemize: 'ref',
 };
 
 /** 裸标签补前缀：gauss -> eq:gauss（已带 xxx: 前缀的原样保留） */
@@ -147,6 +148,32 @@ function parsePosStr(v: string | undefined): Pos | undefined {
     : undefined;
 }
 
+function parseBackground(value: unknown): BackgroundImage | undefined {
+  if (typeof value === 'string') return value ? { src: value } : undefined;
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.src !== 'string' || !raw.src) return undefined;
+  const pos = typeof raw.pos === 'string' ? parsePosStr(raw.pos) : undefined;
+  return {
+    src: raw.src,
+    ...(pos ? { pos: clampBackgroundPos(pos) } : {}),
+    ...(typeof raw.opacity === 'number' && Number.isFinite(raw.opacity) ? { opacity: Math.max(0, Math.min(1, raw.opacity)) } : {}),
+  };
+}
+
+/** Text metadata is only recognised at the end, in either order. */
+function textMetadata(value: string): { text: string; label?: string; order?: number } {
+  let text = value, label: string | undefined, order: number | undefined;
+  for (;;) {
+    const match = text.match(/\s*\{(?:#((?:ref:)?[\w-]+)|order=(\d+))\}\s*$/);
+    if (!match) break;
+    if (match[1]) label = normLabel('ref', match[1]);
+    else if (Number(match[2]) >= 1) order = Number(match[2]);
+    text = text.slice(0, match.index);
+  }
+  return { text, label, order };
+}
+
 function parseFrontMatter(md: string): { config: DeckConfig; body: string } {
   // 容错：Windows 记事本/部分中文编辑器写 UTF-8 带 BOM——不剥则 ^--- 不匹配，
   // 整个前言落入正文成垃圾页且配置全部回落默认
@@ -186,6 +213,8 @@ function parseFrontMatter(md: string): { config: DeckConfig; body: string } {
     bg: str(p.bg, (presetTones ?? defaultConfig.palette).bg),
     bgAlt: str(p.bgAlt, (presetTones ?? defaultConfig.palette).bgAlt),
   };
+  const logo = typeof raw.logo === 'string' && raw.logo ? raw.logo : undefined;
+  const legacyLogo = !Object.prototype.hasOwnProperty.call(raw, 'endLogo');
   const config: DeckConfig = {
     ...defaultConfig,
     title: str(raw.title, defaultConfig.title),
@@ -201,8 +230,14 @@ function parseFrontMatter(md: string): { config: DeckConfig; body: string } {
     sectionPages: raw.sectionPages !== false,
     fontSize: (typeof raw.fontSize === 'number' && Number.isFinite(raw.fontSize) && raw.fontSize >= 10 && raw.fontSize <= 40)
       ? raw.fontSize : 16,
-    logo: typeof raw.logo === 'string' && raw.logo ? raw.logo : undefined,
+    logo,
+    // Migrate shared sources once. Explicit null keeps an end-page deletion.
+    endLogo: legacyLogo ? logo : typeof raw.endLogo === 'string' && raw.endLogo ? raw.endLogo : undefined,
     logoPos: parsePosStr(raw.logoPos != null ? String(raw.logoPos) : undefined),
+    // Old files shared one position. Migrate it once; explicit null means reset.
+    endLogoPos: parsePosStr((Object.prototype.hasOwnProperty.call(raw, 'endLogoPos') ? raw.endLogoPos : legacyLogo ? raw.logoPos : undefined)?.toString()),
+    titleBackground: parseBackground(raw.titleBackground),
+    endBackground: parseBackground(raw.endBackground),
     palette,
   };
   return { config, body: src.slice(fm[0].length) };
@@ -282,18 +317,15 @@ export function parseMarkdown(md: string): Deck {
       let para: string[] = [];
       let listItems: string[] | null = null;
       let listOrders: (number | undefined)[] = [];
+      let listLabels: (string | undefined)[] = [];
       let listBlockOrder: number | undefined;
+      let listBlockLabel: string | undefined;
       const flushPara = () => {
         if (para.length) {
           // 段落末行尾 {order=N} = 出现动画顺序（1 起；与节标题 {#sec:x} 同风格的行尾标记）
-          let order: number | undefined;
           const lastIdx = para.length - 1;
-          const om = para[lastIdx].match(/\s*\{order=(\d+)\}\s*$/);
-          if (om) {
-            const o = parseInt(om[1], 10);
-            if (o >= 1) order = o;
-            para[lastIdx] = para[lastIdx].slice(0, om.index);
-          }
+          const { text: tail, label, order } = textMetadata(para[lastIdx]);
+          para[lastIdx] = tail;
           // 硬换行（块内 Shift+Enter，块文本内为 \n）：非末行行尾反斜杠计数 m——
           // 奇数 = 硬换行标记，剥 (m+1)/2 个、保留 (m-1)/2 个字面反斜杠；
           // 偶数（含 0）= 字面量原样。序列化侧成对加倍（见 serializeSlide），
@@ -317,6 +349,7 @@ export function parseMarkdown(md: string): Deck {
           }
           const nb: Block = { id: newId(), type: 'paragraph', text };
           if (order != null) nb.order = order;
+          if (label) nb.label = label;
           slide.blocks.push(nb);
           para = [];
         }
@@ -325,12 +358,16 @@ export function parseMarkdown(md: string): Deck {
         if (listItems && listItems.length) {
           const nb: Block = { id: newId(), type: 'itemize', items: listItems };
           if (listOrders.some((o) => o != null)) nb.itemOrders = listOrders.slice();
+          if (listLabels.some(Boolean)) nb.itemLabels = listLabels.slice();
           if (listBlockOrder != null) nb.order = listBlockOrder;
+          if (listBlockLabel) nb.label = listBlockLabel;
           slide.blocks.push(nb);
         }
         listItems = null;
         listOrders = [];
+        listLabels = [];
         listBlockOrder = undefined;
+        listBlockLabel = undefined;
       };
       while (i < lines.length && !SLIDE_OPEN.test(lines[i].trim())) {
         const l = lines[i].trimEnd();
@@ -476,10 +513,10 @@ export function parseMarkdown(md: string): Deck {
           continue;
         }
         // 列表块级出现顺序：紧跟列表项后的独立 {order=N} 行
-        const som = t.match(/^\{order=(\d+)\}$/);
-        if (som && listItems && listItems.length) {
-          const o = parseInt(som[1], 10);
-          if (o >= 1) listBlockOrder = o;
+        const listMeta = textMetadata(t);
+        if (!listMeta.text && (listMeta.label || listMeta.order != null) && listItems?.length) {
+          if (listMeta.order != null) listBlockOrder = listMeta.order;
+          if (listMeta.label) listBlockLabel = listMeta.label;
           i++;
           continue;
         }
@@ -489,16 +526,10 @@ export function parseMarkdown(md: string): Deck {
         if (/^[-*](\s+|$)/.test(t)) {
           flushPara();
           if (!listItems) listItems = [];
-          let it = t.replace(/^[-*]\s*/, '');
-          const im = it.match(/\s*\{order=(\d+)\}\s*$/);
-          let io: number | undefined;
-          if (im) {
-            const o = parseInt(im[1], 10);
-            if (o >= 1) io = o;
-            it = it.slice(0, im.index).trimEnd();
-          }
-          listItems.push(it);
-          listOrders.push(io);
+          const meta = textMetadata(t.replace(/^[-*]\s*/, ''));
+          listItems.push(meta.text.trimEnd());
+          listOrders.push(meta.order);
+          listLabels.push(meta.label);
           i++;
           continue;
         }
@@ -563,6 +594,7 @@ function serializeSlide(slide: Slide): string {
           i < arr.length - 1 ? l + '\\'.repeat(tailBackslashes(l) + 1) : l
         ));
         if (b.order != null) ls[ls.length - 1] += ` {order=${b.order}}`;
+        if (b.label) ls[ls.length - 1] += ` {#${b.label}}`;
         out.push('', ...ls);
         break;
       }
@@ -570,8 +602,10 @@ function serializeSlide(slide: Slide): string {
         // 列表项不支持硬换行（每项一行）：\n 退化为空格，保证 md 可解析；
         // 逐项顺序写项尾 {order=N}；块级顺序写列表下方独立 {order=N} 行
         const ios = b.itemOrders || [];
-        out.push('', ...(b.items || []).map((it, i) => '- ' + it.replace(/\n/g, ' ') + (ios[i] != null ? ` {order=${ios[i]}}` : '')));
+        out.push('', ...(b.items || []).map((it, i) => '- ' + it.replace(/\n/g, ' ')
+          + (ios[i] != null ? ` {order=${ios[i]}}` : '') + (b.itemLabels?.[i] ? ` {#${b.itemLabels[i]}}` : '')));
         if (b.order != null) out.push(`{order=${b.order}}`);
+        if (b.label) out.push(`{#${b.label}}`);
         break;
       }
       case 'equation': {
@@ -628,6 +662,11 @@ function serializeSlide(slide: Slide): string {
 
 export function serializeMarkdown(deck: Deck): string {
   const c = deck.config;
+  const background = (value: BackgroundImage | undefined) => value ? {
+    src: value.src,
+    ...(value.pos ? { pos: `${value.pos.x},${value.pos.y},${value.pos.w}` } : {}),
+    ...(value.opacity != null ? { opacity: value.opacity } : {}),
+  } : null;
   const fm: Record<string, unknown> = {
     beamerapp: 1,
     title: c.title,
@@ -643,7 +682,11 @@ export function serializeMarkdown(deck: Deck): string {
     sectionPages: c.sectionPages,
     fontSize: c.fontSize,
     logo: c.logo || null,
+    endLogo: c.endLogo || null,
     logoPos: c.logoPos ? `${c.logoPos.x},${c.logoPos.y},${c.logoPos.w}` : null,
+    endLogoPos: c.endLogoPos ? `${c.endLogoPos.x},${c.endLogoPos.y},${c.endLogoPos.w}` : null,
+    titleBackground: background(c.titleBackground),
+    endBackground: background(c.endBackground),
     palette: (() => {
       const base: Record<string, unknown> = { ...(c.palette.preset ? { preset: c.palette.preset } : {}) };
       const pv = PRESETS[c.palette.preset ?? ''];

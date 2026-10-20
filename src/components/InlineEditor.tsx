@@ -11,7 +11,7 @@ import { Placeholder } from '@tiptap/extensions';
 import { Block, Slide } from '../model/types';
 import { useStore, slideOf } from '../state/store';
 import {
-  InlineMath, RefChip, ColorSpan, BgSpan, ListAnimationOrder, BlockKeys, bareRefKey, makePasteHandler,
+  InlineMath, RefChip, ColorSpan, BgSpan, ListAnimationOrder, ReferenceTargetLabels, BlockKeys, bareRefKey, makePasteHandler,
   textToDoc, itemsToDoc, docToText, docToItems, docToList,
 } from '../editor/schema';
 import { resolveRole } from '../model/palette';
@@ -21,7 +21,7 @@ import { insertBlockByKey, InsertKey } from './insertItems';
 
 const SLASH_ITEMS = [
   { key: 'inline-eq', label: '行内公式', hint: '$ 或 ￥', badge: '∑', cls: 'eq' },
-  { key: 'xref', label: '交叉引用', hint: '公式 / 图片 / 表格 / 节', badge: '@', cls: 'sec' },
+  { key: 'xref', label: '交叉引用', hint: '公式 / 图片 / 表格 / 节 / 文字与列表项', badge: '@', cls: 'sec' },
   { key: 'color-accent', label: '着色（强调橙）', hint: '选中文本后应用', badge: '◐', cls: 'fig' },
   { key: 'color-primary', label: '着色（主色蓝）', hint: '选中文本后应用', badge: '◐', cls: 'cite' },
   { key: 'block-eq', label: '公式块', hint: '独立编号公式', badge: 'Ω', cls: 'eq' },
@@ -35,7 +35,7 @@ const SLASH_ITEMS = [
 type SlashKey = typeof SLASH_ITEMS[number]['key'];
 
 interface RefCandidate {
-  kind: 'eq' | 'fig' | 'sec' | 'tab';
+  kind: 'eq' | 'fig' | 'sec' | 'tab' | 'ref';
   label: string;
   desc: string;
 }
@@ -65,8 +65,10 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
   slashRef.current = slash;
 
   const isList = block.type === 'itemize';
+  const blockLabel = useRef(block.label);
+  blockLabel.current = block.label;
   // 与 useEditor 的初始化边界一致；后续变更由下方外部内容同步处理。
-  const initialContent = useMemo(() => isList ? itemsToDoc(block.items ?? [], block.itemOrders) : textToDoc(block.text ?? ''), [block.id]);
+  const initialContent = useMemo(() => isList ? itemsToDoc(block.items ?? [], block.itemOrders, block.itemLabels) : textToDoc(block.text ?? '', block.label), [block.id]);
 
   const serialize = (ed: Editor): string | string[] =>
     isList ? docToItems(ed.getJSON()) : docToText(ed.getJSON());
@@ -84,6 +86,10 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
         }
       } else {
         for (const b of it.slide.blocks) {
+          if (b.label?.startsWith('ref:')) out.push({ kind: 'ref', label: b.label, desc: (b.text ?? b.items?.join(' ') ?? '').slice(0, 50) });
+          b.itemLabels?.forEach((label, i) => {
+            if (label && i < (b.items?.length ?? 0)) out.push({ kind: 'ref', label, desc: b.items![i].slice(0, 50) });
+          });
           if ((b.type === 'equation' || b.type === 'annoeq') && b.label) {
             out.push({ kind: 'eq', label: b.label, desc: `式 (${computed.equationNumByLabel.get(b.label) ?? '?'})` });
           } else if (b.type === 'figure' && b.label) {
@@ -117,6 +123,7 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
         link: false, trailingNode: false,
       }),
       Placeholder.configure({ placeholder: isList ? '列表项' : '输入文本，/ 快捷插入，@ 交叉引用' }),
+      ReferenceTargetLabels.configure({ blockLabel: isList ? undefined : () => blockLabel.current }),
       ...(isList ? [ListAnimationOrder] : []),
       InlineMath, RefChip, ColorSpan, BgSpan,
       BlockKeys.configure({
@@ -273,12 +280,17 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
     if (isList) {
       const current = block.items ?? [], previous = docToList(editor.getJSON());
       const same = current.length === previous.items.length && current.every((item, i) =>
-        item === previous.items[i] && (block.itemOrders?.[i] ?? null) === (previous.itemOrders?.[i] ?? null));
-      if (!same) editor.commands.setContent(itemsToDoc(current, block.itemOrders), { emitUpdate: false });
+        item === previous.items[i] && (block.itemOrders?.[i] ?? null) === (previous.itemOrders?.[i] ?? null)
+          && (block.itemLabels?.[i] ?? null) === (previous.itemLabels?.[i] ?? null));
+      if (!same) editor.commands.setContent(itemsToDoc(current, block.itemOrders, block.itemLabels), { emitUpdate: false });
     } else if ((block.text ?? '') !== docToText(editor.getJSON())) {
-      editor.commands.setContent(textToDoc(block.text ?? ''), { emitUpdate: false });
+      editor.commands.setContent(textToDoc(block.text ?? '', block.label), { emitUpdate: false });
+    } else if ((editor.state.doc.firstChild?.attrs.referenceLabel ?? null) !== (block.label ?? null)) {
+      editor.view.dispatch(editor.state.tr.setNodeMarkup(0, undefined, {
+        ...editor.state.doc.firstChild!.attrs, referenceLabel: block.label ?? null,
+      }).setMeta('addToHistory', false));
     }
-  }, [editor, block.text, block.items, block.itemOrders, isList]);
+  }, [editor, block.text, block.label, block.items, block.itemOrders, block.itemLabels, isList]);
 
   // 引用选择器打开时的键盘导航
   useEffect(() => {
@@ -396,13 +408,13 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
       {picker && createPortal(
         <div className="ref-picker" style={{ position: 'fixed', left: picker.left, top: picker.top }}>
           <div className="ref-picker-title">交叉引用（↑↓ 选择，Enter 插入）</div>
-          {filtered.length === 0 && <div className="ref-picker-empty">无匹配的 label{allCandidates.length === 0 ? '（还没有带 label 的公式/图片/节）' : ''}</div>}
+          {filtered.length === 0 && <div className="ref-picker-empty">无匹配的 label{allCandidates.length === 0 ? '（请先给目标块或列表项设置引用标签）' : ''}</div>}
           {filtered.slice(0, 8).map((c, i) => (
             <div key={c.kind + c.label}
               className={`ref-picker-item${i === selIdx ? ' sel' : ''}`}
               onMouseDown={(e) => { e.preventDefault(); pickRef(c); }}
               onMouseEnter={() => setSelIdx(i)}>
-              <span className={`ref-kind ref-kind-${c.kind}`}>{c.kind === 'eq' ? '式' : c.kind === 'fig' ? '图' : c.kind === 'tab' ? '表' : '节'}</span>
+              <span className={`ref-kind ref-kind-${c.kind}`}>{c.kind === 'eq' ? '式' : c.kind === 'fig' ? '图' : c.kind === 'tab' ? '表' : c.kind === 'ref' ? '文' : '节'}</span>
               <span className="ref-label">@{c.label}</span>
               <span className="ref-desc">{c.desc}</span>
             </div>

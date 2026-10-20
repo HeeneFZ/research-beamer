@@ -70,6 +70,16 @@ export const LEGACY_PRESET_TONES: Record<string, Record<'primary' | 'accent' | '
 };
 
 export const PRESET_NAMES = Object.keys(PRESETS);
+/** The selector describes the actual colours, including overrides of a named preset. */
+export function matchingPreset(p: Palette): string {
+  return PRESET_NAMES.find((name) => {
+    const preset = PRESETS[name];
+    return (['primary', 'accent', 'emphasis'] as const).every((role) =>
+      p[role].base.toLowerCase() === preset[role].base.toLowerCase()
+      && p[role].deep.toLowerCase() === preset[role].deep.toLowerCase())
+      && (['text', 'textMuted', 'bg', 'bgAlt'] as const).every((role) => p[role].toLowerCase() === preset[role].toLowerCase());
+  }) ?? '';
+}
 const grad = (t: { base: string; deep: string }) => `linear-gradient(135deg, ${t.base} 0%, ${t.deep} 100%)`;
 
 /** deck 根元素 style：CSS 变量注入

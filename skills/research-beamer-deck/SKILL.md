@@ -15,11 +15,14 @@ description: Read, explain and edit Research Beamer academic presentation projec
   media/                   相对路径引用的图片、矢量图、视频
   SKILL.md                 本说明，由应用保存工程时补充
   .beamer-history.json      可选的撤销历史，不是当前汇报内容
+  .beamer-backup.md         可选的上一版磁盘备份，不是当前汇报内容
 ```
 
 先读取 `deck.md` 的 YAML 前言，再按正文顺序识别章节与页容器，最后解析每页的内容块。需描述图像时，定位其 `src` 指向的素材；仅根据题注无法确定图中全部内容。历史、录制视频和未引用的素材不应被误认为当前幻灯片。
 
 修改以 `deck.md` 和明确需要修改的素材为准。应用打开时生成的内部 slide/block/section ID 不写入 Markdown，不要自行添加 ID 属性。标注 JSON 内的 mark/annotation ID 会落盘，须保留其对应关系。
+
+应用打开工程时会监听 `deck.md` 和已引用的素材，外部修改会自动刷新编辑与放映画面，无需重新打开工程。修改文件时先写临时文件，再原子替换目标，可减少不完整内容被读取的机会。若应用中存在未保存的编辑，会暂停自动保存并提示用户选择版本；不要通过修改历史或备份文件来更新汇报。外部写入暂时无效时保留上一幅有效画面，后续有效修改会继续同步。
 
 ## YAML 前言
 
@@ -41,7 +44,11 @@ fontEn: sans
 fontSize: 16
 sectionPages: true
 logo: "media/logo.svg"
+endLogo: "media/logo.svg"
 logoPos: null
+endLogoPos: null
+titleBackground: null
+endBackground: null
 palette:
   preset: academic-blue
 ---
@@ -61,11 +68,16 @@ palette:
 | `fontZh` / `fontEn` | `serif` 或 `sans`，中文和英文分别选择；数学仍用 KaTeX 字体 |
 | `fontSize` | PPT 等效字号，10–40；应用会根据内容进行页级压缩 |
 | `sectionPages` | 是否自动生成一级章节封面，不改变章节归属 |
-| `logo` | 可选相对路径 |
-| `logoPos` | 可选 `"x,y,w"`，以页面百分比指定浮动 Logo；空值使用卡片内锚点 |
+| `logo` | 封面 Logo 的可选相对路径；空值不显示 |
+| `endLogo` | 结尾页 Logo 的独立相对路径；空值不显示。旧文件缺少本字段时仅在读取时复制旧 `logo`，此后两页独立；只在封面显示时须显式写 `endLogo: null` |
+| `logoPos` | 封面独立的 `"x,y,w"`，以页面百分比指定 Logo 位置和宽度；空值使用封面卡片锚点 |
+| `endLogoPos` | 结尾页独立的 `"x,y,w"`；空值使用结尾卡片锚点。旧文件同时缺少 `endLogo` 和本字段时，仅在读取时继承旧 `logoPos` |
+| `titleBackground` / `endBackground` | 封面／结尾页各自的背景图片对象，含 `src`、可选 `pos: "x,y,w"` 和 `opacity`（0 透明、1 不透明）；空值不使用图片。省略位置时按原图比例居中铺满页面 |
 | `palette` | 预设或显式主题色配置 |
 
-完整配色可指定 `primary`、`accent`、`emphasis` 的 `{base, deep}`，以及 `text`、`textMuted`、`bg`、`bgAlt`。若只需沿用配色，保留原值，不必重写颜色。
+完整配色可指定 `primary`、`accent`、`emphasis` 的 `{base, deep}`，以及 `text`、`textMuted`、`bg`、`bgAlt`。`accent` 控制封面与结尾页的小横条，`emphasis` 用于另一组强调色。新建工程若需默认蓝色主题与橙黄色横条，只写 `preset: academic-blue`，不要另写绿色 `accent` 覆盖预设。显式颜色优先；自定义颜色会在界面中显示为“自定义”。修改已有工程时保留原配色，除非用户要求更换。
+
+背景图片位于卡片、文字和 Logo 下方，超出页面的部分会裁切。`pos` 的 x/y 是图像左上角相对页宽／页高的百分比，可用负值；w 是图像宽度占页宽的百分比，缩放保留原图比例。两种背景独立，调整一页不会改变另一页。封面／结尾页右下角的“设置背景”沿用“添加内容”的虚线按钮风格，悬停显示跟随页面外缘的横向快捷工具条。可选图、拖动、调宽、不透明度和数值位置，并可“铺满并居中”或移除；点击空白处或关闭按钮结束设置。图片可用 PNG、JPG、WebP、SVG、GIF、BMP、AVIF；不要将 PDF 或视频作为背景。生成新工程时只在实际提供了对应素材的情况下填写背景路径。
 
 ## 章节与页面是两个层次
 
@@ -133,9 +145,23 @@ palette:
 - `**粗体**`、`*斜体*`。
 - `[强调文字]{color=accent}`、`[文字]{color=primary}`、`[文字]{color=emphasis}`。
 - `[背景文字]{bg=accent}`。
-- `[@eq:model]`、`[@fig:result]`、`[@tab:data]`、`[@sec:model]`：交叉引用。
+- `[@eq:model]`、`[@fig:result]`、`[@tab:data]`、`[@sec:model]`、`[@ref:source]`：交叉引用。
 
 引用标签应使用英文、数字、下划线或连字符，完整标签在工程中唯一。不要把自动显示的“式(1.2)”写死成普通文本代替引用。
+
+任意文字段落、整个列表或单个列表项可作为 `ref:` 引用目标。在段落或列表项末尾写 `{#ref:名称}`；列表后的独立标记行绑定整个列表。可与 `{order=N}` 混用，先后顺序不限。例如：
+
+```markdown
+已有工作见 [@ref:gao2020]，操作条件见 [@ref:condition]。
+
+[1] GAO S, et al. Paraxial skyrmionic beams. {#ref:gao2020}
+
+- 保持输入相干。 {#ref:condition} {order=1}
+- 校准测量通道。
+{#ref:conditions}
+```
+
+所有 `ref:` 引用统一显示标签键，如 `ref:gao2020` 显示 `[gao2020]`，`ref:condition` 显示 `[condition]`；参考文献也遵循相同规则。即使目标正文以 `[10]` 开头，标签为 `abc` 的引用仍显示 `[abc]`。如果需要显示 `[10]`，将标签明确设置为 `10`。已设置的标签还在目标段落或列表项开头以上标显示，整个列表标签显示在列表起始处；编辑、缩略图、放映和 PDF 中均可见。标记由应用根据标签渲染，不要把上标文字重复写入正文。这类标签不占用公式、图、表的编号。放映时点击引用跳转并高亮目标，PDF 保留到目标页的内链。鼠标移到文本块上，点击闹钟旁的 `@` 即可设置标签；整个列表和单个列表项也有各自的 `@` 按钮。块的“插入 → 引用标签…”入口仍可使用，正文键入 `@` 可选择目标。复制块/页会清除目标标签，避免重复。
 
 ## 公式与标注公式
 

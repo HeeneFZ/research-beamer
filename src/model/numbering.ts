@@ -5,7 +5,7 @@
 
 import { Block, Deck, Page, Section, Slide } from './types';
 
-export type RefKind = 'sec' | 'eq' | 'fig' | 'tab';
+export type RefKind = 'sec' | 'eq' | 'fig' | 'tab' | 'ref';
 
 export interface Computed {
   pages: Page[];
@@ -20,6 +20,7 @@ export interface Computed {
   figureNumByLabel: Map<string, string>;
   tableNum: Map<string, string>;
   tableNumByLabel: Map<string, string>;
+  textRefByLabel: Map<string, string>;
   /** eq/fig/tab label -> 所在页 index（跳转用） */
   labelPageIndex: Map<string, number>;
   /** section id -> 该节第一页 index（含分隔页自身） */
@@ -35,12 +36,27 @@ export function patchComputedSlide(computed: Computed, before: Slide, after: Sli
     if (block.type === 'table' && block.cells != null) return 'tab';
     return null;
   };
-  const oldNumbered = before.blocks.filter((block) => kind(block) != null);
-  const newNumbered = after.blocks.filter((block) => kind(block) != null);
-  if (oldNumbered.length !== newNumbered.length) return null;
-  for (let i = 0; i < oldNumbered.length; i++) {
-    const old = oldNumbered[i], next = newNumbered[i];
-    if (old.id !== next.id || old.label !== next.label || kind(old) !== kind(next)) return null;
+  // Ordinary typing keeps the numbering maps. Only changed reference labels
+  // invalidate the global reference map; target prose never determines display.
+  let samePositions = before.blocks.length === after.blocks.length;
+  if (samePositions) {
+    for (let i = 0; i < before.blocks.length; i++) {
+      const old = before.blocks[i], next = after.blocks[i];
+      if (old === next) continue;
+      if (textTargetSignature(old) !== textTargetSignature(next)) return null;
+      const oldKind = kind(old), nextKind = kind(next);
+      if (oldKind !== nextKind || oldKind && (old.id !== next.id || old.label !== next.label)) return null;
+      if (old.id !== next.id) samePositions = false;
+    }
+  } else if (before.blocks.map(textTargetSignature).join('') !== after.blocks.map(textTargetSignature).join('')) return null;
+  if (!samePositions) {
+    const oldNumbered = before.blocks.filter((block) => kind(block) != null);
+    const newNumbered = after.blocks.filter((block) => kind(block) != null);
+    if (oldNumbered.length !== newNumbered.length) return null;
+    for (let i = 0; i < oldNumbered.length; i++) {
+      const old = oldNumbered[i], next = newNumbered[i];
+      if (old.id !== next.id || old.label !== next.label || kind(old) !== kind(next)) return null;
+    }
   }
   const at = computed.pages.findIndex((page) => page.kind === 'slide' && page.slide?.id === before.id);
   if (at < 0) return null;
@@ -56,8 +72,28 @@ export function refParts(label: string): { kind: RefKind; key: string } | null {
   const m = label.trim().match(REF_RE);
   if (!m) return null;
   const kind = m[1] as RefKind;
-  if (kind !== 'sec' && kind !== 'eq' && kind !== 'fig' && kind !== 'tab') return null;
+  if (kind !== 'sec' && kind !== 'eq' && kind !== 'fig' && kind !== 'tab' && kind !== 'ref') return null;
   return { kind, key: m[2] };
+}
+
+/** Every generic reference displays its label key, including bibliography targets. */
+export function genericRefText(label: string): string {
+  return `[${label.replace(/^ref:/, '')}]`;
+}
+
+const textTargetSignatures = new WeakMap<Block, string>();
+function textTargetSignature(block: Block): string {
+  if (!block.label?.startsWith('ref:') && !block.itemLabels) return '';
+  let signature = textTargetSignatures.get(block);
+  if (signature != null) return signature;
+  const targets: string[] = [];
+  if (block.label?.startsWith('ref:')) targets.push(block.label);
+  block.itemLabels?.forEach((label, i) => {
+    if (label && i < (block.items?.length ?? 0)) targets.push(label);
+  });
+  signature = targets.length ? JSON.stringify(targets) : '';
+  textTargetSignatures.set(block, signature);
+  return signature;
 }
 
 export function computeDeck(deck: Deck): Computed {
@@ -71,6 +107,7 @@ export function computeDeck(deck: Deck): Computed {
   const figureNumByLabel = new Map<string, string>();
   const tableNum = new Map<string, string>();
   const tableNumByLabel = new Map<string, string>();
+  const textRefByLabel = new Map<string, string>();
   const labelPageIndex = new Map<string, number>();
   const sectionPageIndex = new Map<string, number>();
 
@@ -97,6 +134,15 @@ export function computeDeck(deck: Deck): Computed {
     pushPage({ kind: 'slide', slide, sectionPath: sectionPath() });
     const pageIdx = pages.length - 1;
     for (const b of slide.blocks) {
+      if (b.label?.startsWith('ref:')) {
+        textRefByLabel.set(b.label, genericRefText(b.label));
+        labelPageIndex.set(b.label, pageIdx);
+      }
+      b.itemLabels?.forEach((label, i) => {
+        if (!label || i >= (b.items?.length ?? 0)) return;
+        textRefByLabel.set(label, genericRefText(label));
+        labelPageIndex.set(label, pageIdx);
+      });
       if ((b.type === 'equation' || b.type === 'annoeq') && b.latex != null) {
         eq++; eqSec++;
         equationNum.set(b.id, numText('eq'));
@@ -165,7 +211,7 @@ export function computeDeck(deck: Deck): Computed {
     equationNum, equationNumByLabel,
     figureNum, figureNumByLabel,
     tableNum, tableNumByLabel,
-    labelPageIndex, sectionPageIndex,
+    labelPageIndex, sectionPageIndex, textRefByLabel,
   };
 }
 
@@ -183,6 +229,7 @@ export function refPageIndex(label: string, c: Computed): number | null {
 
 /** 引用显示文本（key 为裸键，如 gauss；内部补 kind: 前缀查表）；未知返回 null */
 export function refDisplay(kind: RefKind, key: string, c: Computed, lang: 'zh' | 'en'): string | null {
+  if (kind === 'ref') return c.textRefByLabel.get(`ref:${key}`) ?? null;
   const num =
     kind === 'sec' ? c.sectionNumByLabel.get(`sec:${key}`)
     : kind === 'eq' ? c.equationNumByLabel.get(`eq:${key}`)

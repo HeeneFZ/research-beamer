@@ -8,8 +8,9 @@ import { createPortal } from 'react-dom';
 import { moveTargetOf, useStore } from '../state/store';
 import { Block, Slide } from '../model/types';
 import { colRegionAt } from '../model/segments';
-import { IcoUp, IcoDown, IcoCopy, IcoPaste, IcoPlus, IcoTrash } from './icons';
+import { IcoAt, IcoClock, IcoUp, IcoDown, IcoCopy, IcoPaste, IcoPlus, IcoTrash } from './icons';
 import { promptText } from './prompt';
+import { editReferenceLabel } from './referenceLabels';
 import { INSERT_ITEMS, insertBlockByKey, InsertKey } from './insertItems';
 
 export function BlockToolbar({ slide, block }: {
@@ -173,10 +174,15 @@ export function BlockToolbar({ slide, block }: {
             );
           })}
           <div className="ref-picker-item" onMouseDown={(e) => { e.preventDefault(); void setOrder(); setMenu(false); }}>
-            <span className="ref-kind slash-badge-cite">⏱</span>
+            <span className="ref-kind slash-badge-cite"><IcoClock /></span>
             <span>出现顺序…</span>
             <span className="slash-hint">{block.order != null ? `当前 ${block.order}` : '动画'}</span>
           </div>
+          {(block.type === 'paragraph' || block.type === 'itemize') && <div className="ref-picker-item"
+            onMouseDown={(e) => { e.preventDefault(); setMenu(false); void editReferenceLabel(slide.id, block.id); }}>
+            <span className="ref-kind slash-badge-cite"><IcoAt /></span><span>引用标签…</span>
+            <span className="slash-hint">{block.label ?? '使本块可被引用'}</span>
+          </div>}
         </div>
       )}
     </>,

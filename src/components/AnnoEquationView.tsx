@@ -34,6 +34,7 @@ export function AnnoEquationView({
   const [previewScale, setPreviewScale] = useState<number | null>(null);
 
   const wrapRef = useRef<HTMLDivElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
   const holderRef = useRef<HTMLDivElement>(null);
   const eqnRef = useRef<HTMLDivElement>(null);
   const marksRef = useRef<HTMLDivElement>(null);
@@ -52,6 +53,7 @@ export function AnnoEquationView({
         interactive: false,
         padMin: { v: 2, h: 6, m: 3 },
         labelFontCss: annoLabelFontCss(anno.labelFont, 'serif', true),
+        onVerticalCenter: (offset) => rowRef.current?.style.setProperty('--ae-number-offset', `${offset}px`),
       },
     );
     r.renderAll();
@@ -77,7 +79,7 @@ export function AnnoEquationView({
 
   return (
     <div className={'eq-outer ae-outer' + (highlight ? ' flash-hl' : '')}>
-      <div className="eq-row ae-row">
+      <div className="eq-row ae-row" ref={rowRef}>
         <div className="eq-body">
           <div className={'ae-wrap' + (onScaleChange ? ' scalable-equation' : '')} ref={wrapRef}>
             <div className="ae-holder" ref={holderRef}>

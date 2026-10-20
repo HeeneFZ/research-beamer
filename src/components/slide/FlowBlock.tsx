@@ -2,7 +2,7 @@
 
 import { CSSProperties, memo, useEffect, useState } from 'react';
 import { Block, Deck, Slide } from '../../model/types';
-import { Computed } from '../../model/numbering';
+import { Computed, genericRefText } from '../../model/numbering';
 import { InlineText } from '../InlineText';
 import { FigureView, VideoView } from '../FigureView';
 import { TableView } from '../TableView';
@@ -19,9 +19,16 @@ import { AnchorRect, OrderPicker } from '../OrderPicker';
 import { SlideMode } from './types';
 import { defaultAnnoState } from '../../model/anno';
 import { MediaPreparation } from '../../model/mediaResources';
+import { editReferenceLabel } from '../referenceLabels';
+import { IcoAt, IcoClock } from '../icons';
+
+function TargetLabel({ label, list = false, hidden = false }: { label?: string; list?: boolean; hidden?: boolean }) {
+  return label?.startsWith('ref:') ? <sup className={'ref-target-label' + (list ? ' ref-list-label' : '')}
+    data-ref-label={label} style={hidden ? { visibility: 'hidden' } : undefined}>{genericRefText(label)}</sup> : null;
+}
 
 export const FlowBlock = memo(function FlowBlock({
-  block, slide, deck, folder, computed, mode, revealed, onRef, highlight, onZoom, resourceSnapshot, mediaActive,
+  block, slide, deck, folder, computed, mode, revealed, onRef, highlight, highlightLabel, onZoom, resourceSnapshot, mediaActive,
 }: {
   block: Block;
   slide: Slide | undefined;
@@ -32,12 +39,14 @@ export const FlowBlock = memo(function FlowBlock({
   revealed?: Set<number>;
   onRef?: (label: string) => void;
   highlight?: boolean;
+  highlightLabel?: string;
   onZoom?: (abs: string, ext: string, caption?: string) => void;
   resourceSnapshot?: MediaPreparation;
   mediaActive?: boolean;
 }) {
   const { config } = deck;
   const lang = config.language;
+  const textReference = block.type === 'paragraph' || block.type === 'itemize';
   const isEditing = useStore((s) => mode === 'edit' && !s.presenting && s.computed.pages[s.current]?.slide?.id === slide?.id && s.editing?.blockId === block.id && s.editing?.slideId === slide?.id);
   const setEditing = useStore((s) => s.setEditing);
   const jumpToRef = useStore((s) => s.jumpToRef);
@@ -83,7 +92,7 @@ export const FlowBlock = memo(function FlowBlock({
         inner = <div className="para"><InlineBlockEditor slide={slide} block={block} /></div>;
         break;
       case 'itemize':
-        inner = <div className="items-edit"><InlineBlockEditor slide={slide} block={block} /></div>;
+        inner = <div className="items-edit items-block"><TargetLabel label={block.label} list /><InlineBlockEditor slide={slide} block={block} /></div>;
         break;
       case 'equation':
         inner = <EquationView block={block} computed={computed} palette={config.palette} lang={lang} onRef={onRef} highlight={highlight} />;
@@ -111,14 +120,17 @@ export const FlowBlock = memo(function FlowBlock({
   } else {
     switch (block.type) {
       case 'paragraph':
-        if (block.text) inner = <p className="para"><InlineText text={block.text} {...common} /></p>;
+        if (block.text) inner = <p className="para"><TargetLabel label={block.label} /><InlineText text={block.text} {...common} /></p>;
         // 空段落所有模式都渲染占位（空白不可见）：thumb 与画布测量口径必须一致，
         // 否则同一页两个扫描器结果不同 → pageLayout 两值来回写（可见振荡）
-        else inner = <p className="para para-empty" />;
+        else inner = <p className="para para-empty"><TargetLabel label={block.label} /></p>;
         break;
       case 'itemize':
+        const targetHidden = !!revealed && !!block.label && !(block.items?.length
+          ? block.items.some((_, i) => { const order = block.itemOrders?.[i] ?? block.order; return order == null || revealed.has(order); })
+          : block.order == null || revealed.has(block.order));
         inner = (
-          <ul className="items">
+          <div className="items-block"><TargetLabel label={block.label} list hidden={targetHidden} /><ul className="items">
             {(block.items || []).map((it, i) => {
               const io = block.itemOrders?.[i];
               const order = io ?? block.order;
@@ -129,11 +141,19 @@ export const FlowBlock = memo(function FlowBlock({
                     : { visibility: 'hidden' }
                   : undefined;
               return (
-                <li key={i} style={liAnim}>
-                  <InlineText text={it} {...common} />
-                  {mode === 'edit' && slide && (
+                <li key={i} style={liAnim} data-ref-label={block.itemLabels?.[i]}
+                  className={block.itemLabels?.[i] && block.itemLabels[i] === highlightLabel ? 'flash-hl' : undefined}>
+                  <TargetLabel label={block.itemLabels?.[i]} /><InlineText text={it} {...common} />
+                  {mode === 'edit' && activeEditor && slide && (
+                    <button className={'li-ref' + (block.itemLabels?.[i] ? ' set' : '')}
+                      aria-label="设置该项引用标签"
+                      title={block.itemLabels?.[i] ?? '设置该项的引用标签'}
+                      onClick={(e) => { e.stopPropagation(); void editReferenceLabel(slide.id, block.id, i); }}><IcoAt /></button>
+                  )}
+                  {mode === 'edit' && activeEditor && slide && (
                     <button
                       className={'li-ord' + (io != null ? ' set' : '') + (ordPick?.item === i ? ' open' : '')}
+                      aria-label="设置该项出现顺序"
                       title={io != null ? `出现顺序 ${io}（点击修改/清除）` : '设置该项出现顺序'}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -143,13 +163,13 @@ export const FlowBlock = memo(function FlowBlock({
                         setOrdPick((p) => (p?.item === i ? null : { rect, item: i }));
                       }}
                     >
-                      {io != null ? `*${io}` : '⏱'}
+                      {io != null ? `*${io}` : <IcoClock />}
                     </button>
                   )}
                 </li>
               );
             })}
-          </ul>
+          </ul></div>
         );
         break;
       case 'equation':
@@ -183,7 +203,7 @@ export const FlowBlock = memo(function FlowBlock({
       style={anim}
       onClick={(e) => {
         const t = e.target as HTMLElement;
-        if (t.closest('.ref-chip, .xref, .fig-zoom-btn, .edge-rz, .scale-handle, video, .inline-math, a, .btools-float, .btools-menu-float, .ord-badge, .ord-picker, .li-ord')) {
+        if (t.closest('.ref-chip, .xref, .fig-zoom-btn, .edge-rz, .scale-handle, video, .inline-math, a, .btools-float, .btools-menu-float, .ord-badge, .ref-badge, .ord-picker, .li-ord, .li-ref')) {
           const chip = t.closest('.ref-chip') as HTMLAnchorElement | null;
           if (chip) {
             e.preventDefault();
@@ -201,9 +221,12 @@ export const FlowBlock = memo(function FlowBlock({
       {!isEditing && (
         <BlockToolbar slide={slide} block={block} />
       )}
+      {activeEditor && <div className={'block-badges' + (block.order != null || textReference && block.label || ordPick ? ' set' : '')}
+        role="group" aria-label="块快捷设置" onClick={(e) => e.stopPropagation()}>
       <button
         className={'ord-badge' + (block.type === 'itemize' ? ' in-list' : '') + (block.order != null ? ' set' : '') + (ordPick != null && ordPick.item === null ? ' open' : '')}
         title={block.order != null ? `出现顺序 ${block.order}（点击修改/清除）` : '设置出现顺序'}
+        aria-label={block.order != null ? `出现顺序 ${block.order}，点击修改或清除` : '设置出现顺序'}
         onClick={(e) => {
           e.stopPropagation();
           // 同步取锚点：合成事件派发结束后 currentTarget 即被置 null（同 li-ord 注）
@@ -211,8 +234,16 @@ export const FlowBlock = memo(function FlowBlock({
           setOrdPick((p) => (p?.item === null ? null : { rect, item: null }));
         }}
       >
-        {block.order != null ? `*${block.order}` : '⏱'}
+        {block.order != null ? <span className="ord-value">*{block.order}</span> : <IcoClock />}
       </button>
+      {textReference && <button
+        className={'ref-badge' + (block.type === 'itemize' ? ' in-list' : '') + (block.label ? ' set' : '')}
+        aria-label={block.type === 'itemize' ? '设置整个列表的引用标签' : '设置文本块的引用标签'}
+        title={block.label ? `引用标签：${block.label.replace(/^ref:/, '')}（点击修改或清除）`
+          : block.type === 'itemize' ? '设置整个列表的引用标签' : '设置文本块的引用标签'}
+        onClick={(e) => { e.stopPropagation(); void editReferenceLabel(slide.id, block.id); }}
+      ><IcoAt /></button>}
+      </div>}
       {activeEditor && ordPick && (
         <OrderPicker
           rect={ordPick.rect}

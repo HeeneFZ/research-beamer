@@ -188,6 +188,8 @@ export interface RendererOpts {
   padMin: { v: number; h: number; m: number };
   /** 标注文字 font-family（'' = 继承主题） */
   labelFontCss: string | (() => string);
+  /** Formula centre relative to the padded annotation box, in local CSS pixels. */
+  onVerticalCenter?: (offsetPx: number) => void;
   onMarkSelect?: (id: string) => void;
   /** 双击高亮框 → 直接为该标记新建标注（快捷路径） */
   onMarkDoubleClick?: (id: string) => void;
@@ -493,13 +495,18 @@ export function createAnnoRenderer(surface: AnnoSurface, opts: RendererOpts) {
     const { v, h, m } = opts.padMin;
     const wf = parseFloat(getComputedStyle(wrap).fontSize) || 16;
     const em = (px: number) => px / wf + 'em';
-    if (!lastExtents) { wrap.style.padding = `max(${em(v)}, 1px) max(${em(h)}, 2px)`; return; }
+    if (!lastExtents) {
+      wrap.style.padding = `max(${em(v)}, 1px) max(${em(h)}, 2px)`;
+      opts.onVerticalCenter?.(0);
+      return;
+    }
     const e = lastExtents;
     const padT = Math.max(v, -e.top + m);
     const padB = Math.max(v, e.bottom - holder.offsetHeight + m);
     const padL = Math.max(h, -e.left + m);
     const padR = Math.max(h, e.right - holder.offsetWidth + m);
     wrap.style.padding = `${em(padT)} ${em(padR)} ${em(padB)} ${em(padL)}`;
+    opts.onVerticalCenter?.((padT - padB) / 2);
   }
 
   /* ---- 选区捕获（编辑态：选中公式文字 → 标注点） ---- */

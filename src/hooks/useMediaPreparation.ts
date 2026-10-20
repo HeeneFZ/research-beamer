@@ -62,7 +62,8 @@ export function useMediaPreparation(): void {
       collectGifWidths();
       const assets = new Map<string, string>();
       const figureGifs = new Set<string>();
-      if (deck.config.logo) assets.set(absMediaPath(folder ?? '', deck.config.logo), 'image');
+      for (const logo of [deck.config.logo, deck.config.endLogo]) if (logo) assets.set(absMediaPath(folder ?? '', logo), 'image');
+      for (const bg of [deck.config.titleBackground, deck.config.endBackground]) if (bg?.src) assets.set(absMediaPath(folder ?? '', bg.src), 'image');
       for (const item of deck.items) if (item.kind === 'slide' && ['content', 'twoCol'].includes(item.slide.layout)) for (const block of item.slide.blocks) {
         if (!block.src || !['figure', 'video'].includes(block.type)) continue;
         const abs = absMediaPath(folder ?? '', block.src);
@@ -73,7 +74,8 @@ export function useMediaPreparation(): void {
       const done = new Set<string>(), started = new Set<string>();
       const pageAssets = useStore.getState().computed.pages.map((page) => new Set((page.slide && ['content', 'twoCol'].includes(page.slide.layout) ? page.slide.blocks : []).filter((block) => block.src).map((block) => absMediaPath(folder ?? '', block.src!))));
       const first = new Set(preparationOrder(pageAssets.length, useStore.getState().current, true).front.flatMap((i) => [...pageAssets[i]]));
-      if (deck.config.logo) first.add(absMediaPath(folder ?? '', deck.config.logo));
+      for (const logo of [deck.config.logo, deck.config.endLogo]) if (logo) first.add(absMediaPath(folder ?? '', logo));
+      for (const bg of [deck.config.titleBackground, deck.config.endBackground]) if (bg?.src) first.add(absMediaPath(folder ?? '', bg.src));
       const foregroundReady = () => [...first].every((abs) => !assets.has(abs) || done.has(abs));
       const publish = (_phase: MediaPreparation['phase']) => {
         collectGifWidths();

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../state/store';
-import { PRESETS, PRESET_NAMES } from '../model/palette';
+import { PRESETS, PRESET_NAMES, matchingPreset } from '../model/palette';
 
 /** 全局标准字号输入：本地文本态，blur/Enter 才钳制提交。
  *  受控+onChange 立即提交会把键入中途值（如目标的 "20" 的第一字符 "2"）
@@ -99,7 +99,7 @@ export function Toolbar() {
       <label>
         配色
         <select
-          value={c.palette.preset ?? ''}
+          value={matchingPreset(c.palette)}
           onChange={(e) => {
             const name = e.target.value;
             if (name && PRESETS[name]) {
@@ -109,6 +109,7 @@ export function Toolbar() {
             }
           }}
         >
+          <option value="" disabled>自定义</option>
           {PRESET_NAMES.map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
       </label>

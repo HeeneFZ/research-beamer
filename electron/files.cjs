@@ -20,10 +20,11 @@ function serial(map, key, operation) {
   return next;
 }
 
-async function atomicImpl(target, write) {
+async function atomicImpl(target, write, beforeCommit) {
   const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${crypto.randomUUID()}.tmp`);
   try {
     await write(temporary);
+    if (beforeCommit) await beforeCommit();
     await fs.promises.rename(temporary, target);
   } finally {
     await fs.promises.unlink(temporary).catch((error) => {
@@ -60,12 +61,24 @@ function copyFileTracked(srcPath, filePath, flags = 0) {
   });
 }
 
-function saveProjectToFolder(folder, md, skillPath) {
+function saveProjectToFolder(folder, md, skillPath, expectedMd) {
   const target = path.resolve(folder, 'deck.md');
   // Register before mkdir: later saves and reads wait for the entire accepted transaction.
   return serial(writes, queueKey(target), async () => {
     await fs.promises.mkdir(path.resolve(folder, 'media'), { recursive: true });
-    await atomicImpl(target, (temporary) => fs.promises.writeFile(temporary, md, { flag: 'wx' }));
+    const readCurrent = () => fs.promises.readFile(target, 'utf8').catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
+    const changed = (value) => {
+      const error = new Error('工程文件已被外部程序修改');
+      error.code = 'PROJECT_CHANGED'; error.md = value; return error;
+    };
+    await atomicImpl(target, (temporary) => fs.promises.writeFile(temporary, md, { flag: 'wx' }), async () => {
+      const current = await readCurrent();
+      if (expectedMd !== undefined && current !== expectedMd) throw changed(current);
+      if (current != null && current !== md) await writeFileAtomic(path.resolve(folder, '.beamer-backup.md'), current);
+      // Independent writers do not share our queue. Recheck immediately before replacement.
+      const latest = await readCurrent();
+      if (latest !== current) throw changed(latest);
+    });
     await copyFileTracked(skillPath, path.resolve(folder, 'SKILL.md'), fs.constants.COPYFILE_EXCL)
       .catch((error) => { if (error.code !== 'EEXIST') throw error; });
   });

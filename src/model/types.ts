@@ -23,6 +23,14 @@ export interface Pos {
   w: number;
 }
 
+export interface BackgroundImage {
+  src: string;
+  /** Image position/width in page percentages; omitted means centred cover fit. */
+  pos?: Pos;
+  /** 0 = transparent, 1 = opaque. */
+  opacity?: number;
+}
+
 export interface Block {
   id: string;
   type: BlockType;
@@ -34,7 +42,7 @@ export interface Block {
   latex?: string;
   /** annoeq 注释公式块的标注数据（标记/标注/样式），见 model/anno.ts */
   anno?: AnnoState;
-  /** equation / annoeq / figure / table 交叉引用标签（eq:x / fig:x / tab:x） */
+  /** 交叉引用标签（eq:x / fig:x / tab:x / ref:x 等） */
   label?: string;
   /** figure / video 相对工程路径（media/xxx） */
   src?: string;
@@ -52,6 +60,8 @@ export interface Block {
   order?: number;
   /** itemize 逐项出现动画顺序（与 items 按下标对齐；项缺省=随块/恒显示） */
   itemOrders?: (number | undefined)[];
+  /** itemize 每项的引用标签，与 items 同步；不参与公式/图/表编号。 */
+  itemLabels?: (string | undefined)[];
 }
 
 export interface Slide {
@@ -116,11 +126,16 @@ export interface DeckConfig {
   fontZh: 'serif' | 'sans';
   fontEn: 'serif' | 'sans';
   sectionPages: boolean;
-  /** 封面/结尾页校徽或自定义图案（相对路径，如 media/高校logo.svg） */
+  /** 封面校徽或自定义图案（相对路径，如 media/高校logo.svg）。 */
   logo?: string;
-  /** Logo 浮动位置（拖拽/调宽后持久化）：x/y = 左上角（页宽/高百分比），w = 宽（页宽百分比）。
-   *  未设置时为锚定态——渲染在封面/结尾页色块卡片右下角（卡片相对定位，卡片高度变化恒贴合） */
+  /** 结尾页独立的图案；未设置时不显示，不在运行时回退到封面。 */
+  endLogo?: string;
+  /** 封面 Logo 位置：x/y/w 为页百分比；未设置时锚定封面卡片右下角。 */
   logoPos?: Pos;
+  /** 结尾页独立的位置与大小；未设置时锚定结尾卡片右下角。 */
+  endLogoPos?: Pos;
+  titleBackground?: BackgroundImage;
+  endBackground?: BackgroundImage;
   /** 全局标准正文字号（PPT 等效 pt，默认 16；页眉标题=×4/3、题注=×15/18、页脚=×2/3 推导；
    *  每页可用 fontScale 在 60%–150% 内调整正文区） */
   fontSize: number;

@@ -29,6 +29,7 @@ import { buildSegments } from '../model/segments';
 import { FlowBlock } from './slide/FlowBlock';
 import { SectionBreadcrumb } from './slide/SectionBreadcrumb';
 import { CoverLogo, LogoAddChip } from './slide/CoverLogo';
+import { CoverBackground } from './slide/CoverBackground';
 import { AuthorsLine, AffiliationsView, DividerView, TocView } from './slide/StaticPages';
 
 import { INSERT_ITEMS, insertBlockByKey } from './insertItems';
@@ -41,6 +42,7 @@ export function referenceSignature(computed: SlideViewProps['computed']): string
       [...computed.sectionNumByLabel], [...computed.equationNum], [...computed.equationNumByLabel],
       [...computed.figureNum], [...computed.figureNumByLabel], [...computed.tableNum], [...computed.tableNumByLabel],
       [...computed.labelPageIndex], [...computed.sectionPageIndex],
+      [...computed.textRefByLabel],
     ]);
     referenceSignatures.set(computed.labelPageIndex, signature);
   }
@@ -137,7 +139,7 @@ export const SlideView = memo(function SlideView({
   };
   const flowProps = { deck, folder, computed, mode, revealed, onRef, resourceSnapshot, onZoom: onZoom ?? onZoomFig };
   const renderFlow = (blocks: Block[]) => blocks.map((b) => (
-    <FlowBlock key={b.id} block={b} slide={page.slide} {...flowProps} highlight={hl(b)} mediaActive={b.type === 'figure' || b.type === 'video' ? mediaActive : undefined} />
+    <FlowBlock key={b.id} block={b} slide={page.slide} {...flowProps} highlight={hl(b)} highlightLabel={highlightLabel} mediaActive={b.type === 'figure' || b.type === 'video' ? mediaActive : undefined} />
   ));
 
   const renderSegments = (blocks: Block[]) => {
@@ -263,11 +265,11 @@ export const SlideView = memo(function SlideView({
                 ? <CoverFieldEditor slideId={sl!.id} value={config.shortTitle} label="结尾页副标题" preview={config.shortTitle || <span className="cover-affs-ph">＋ 副标题</span>} onCommit={(v) => setConfig({ shortTitle: v })} />
                 : config.shortTitle || (mode === 'edit' ? <span className="cover-affs-ph">＋ 副标题</span> : null)}
             </div>
-            {config.logoPos == null && <CoverLogo config={config} folder={folder} mode={mode} />}
-            {mode === 'edit' && !config.logo && <LogoAddChip />}
+            {config.endLogoPos == null && <CoverLogo config={config} folder={folder} mode={mode} placement="end" />}
+            {mode === 'edit' && !config.endLogo && <LogoAddChip placement="end" />}
           </div>
         </div>
-        {config.logoPos != null && <CoverLogo config={config} folder={folder} mode={mode} />}
+        {config.endLogoPos != null && <CoverLogo config={config} folder={folder} mode={mode} placement="end" />}
       </>
     );
   } else {
@@ -394,6 +396,8 @@ export const SlideView = memo(function SlideView({
       data-layout-wait={!layoutReady && !(editingThisSlide && layoutState) ? '' : undefined}
       style={style}
     >
+      {(layout === 'title' || layout === 'end') && <CoverBackground config={config} folder={folder} mode={mode}
+        placement={layout} slideId={page.slide?.id} active={activeEditor} editable={activeEditor && editing?.field === 'background'} />}
       {body}
     </div>
   );

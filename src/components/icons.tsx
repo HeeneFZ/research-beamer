@@ -30,6 +30,11 @@ export const IcoTrash = () => <Ico><path d="M2.8 4.5h10.4M6.2 2.2h3.6M6 7v4.2M10
 /** 关闭（✕） */
 export const IcoClose = () => <Ico><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></Ico>;
 
+export const IcoImage = () => <Ico><rect x="2" y="2.5" width="12" height="11" rx="1.5" {...S} /><circle cx="5.5" cy="6" r="1" {...S} /><path d="m3 12 4-4 2.5 2 2-3L14 10" {...S} /></Ico>;
+export const IcoMove = () => <Ico><path d="M8 1.5v13M1.5 8h13M5.5 4 8 1.5 10.5 4M5.5 12 8 14.5 10.5 12M4 5.5 1.5 8 4 10.5M12 5.5 14.5 8 12 10.5" {...S} /></Ico>;
+export const IcoClock = () => <Ico><circle cx="8" cy="8" r="5.5" {...S} /><path d="M8 4.5V8l2.5 1.5" {...S} /></Ico>;
+export const IcoAt = () => <Ico><circle cx="7.5" cy="8" r="2.5" {...S} /><path d="M10 5.5v4c0 .8.5 1.3 1.3 1.3 1.4 0 2.2-1.4 2.2-3A5.5 5.5 0 1 0 10.6 12.7" {...S} /></Ico>;
+
 /** 重置（⟳） */
 export const IcoReset = () => <Ico><path d="M13 8A5 5 0 1 1 8 3c1.9 0 3.5 1 4.3 2.6" {...S} /><path d="M12.9 2.4v3.2h-3.2" {...S} /></Ico>;
 

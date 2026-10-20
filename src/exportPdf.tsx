@@ -1,7 +1,7 @@
 // PDF 导出：隐藏打印容器渲染全部页 → printToPDF（@page 随比例；引用内链保留）
 
 import { createRoot } from 'react-dom/client';
-import { useStore } from './state/store';
+import { flushProjectDrafts, useStore } from './state/store';
 import { SlideView } from './components/SlideView';
 import { restyleRulesForPrint, VINCULUM_RE } from './components/katexRuleSnap';
 import { PAGE_SIZE } from './model/types';
@@ -61,6 +61,7 @@ async function capturePrintSnapshot(mediaRevision: number): Promise<ReturnType<t
 
 export async function exportPDF(): Promise<void> {
   if (exporting) return;
+  flushProjectDrafts();
   exporting = true;
   const mediaRevision = useStore.getState().mediaRevision;
   const host = document.createElement('div');

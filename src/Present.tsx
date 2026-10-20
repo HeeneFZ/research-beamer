@@ -279,7 +279,7 @@ export default function Present() {
       setMediaRevision(ps.mediaRevision, changedOwner);
       if (changedProject) {
         screenReady.current = false;
-        stopRecording();
+        if (changedOwner || previous?.presentSession !== ps.presentSession || previous?.folder !== ps.folder) stopRecording();
         setBootReady(false);
         clearDecodedRasters();
         if (changedOwner) clearGifAnimations();

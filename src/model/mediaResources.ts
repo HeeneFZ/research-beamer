@@ -25,5 +25,5 @@ export const emptyMediaPreparation = (): MediaPreparation => ({ session: '', pha
 export function mediaAssetSignature(deck: Deck): string {
   const assets = new Set(deck.items.flatMap((item) => item.kind === 'slide'
     ? item.slide.blocks.filter((block) => block.src).map((block) => `${block.type}\0${block.src}`) : []));
-  return JSON.stringify([deck.config.logo, [...assets].sort()]);
+  return JSON.stringify([deck.config.logo, deck.config.endLogo, deck.config.titleBackground?.src, deck.config.endBackground?.src, [...assets].sort()]);
 }

@@ -4,6 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const { writeFileAtomic, writeGeneratedAtomic, copyFileTracked, saveProjectToFolder, readFileAfterWrites, readFileStamped, drainFileWrites, readProjectFromFolder, importMedia } = require('./files.cjs');
 const { createRasterCache } = require('./raster-cache.cjs');
+const { createProjectWatcher } = require('./project-watch.cjs');
+const projectWatcher = createProjectWatcher((change) => {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('project:changed', change);
+});
 const rasterCache = createRasterCache();
 const pendingFileOps = new Set();
 function trackFileOperation(task) {
@@ -121,8 +125,10 @@ function createWindow() {
       else waitForMainCloseReady();
     }
   });
-  mainWindow.webContents.on('did-start-loading', () => {
-    if (mainWindow !== createdMainWindow) return;
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    // Hash links and child frames keep the same App and its close listener.
+    if (mainWindow !== createdMainWindow || !isMainFrame || isInPlace) return;
+    projectWatcher.stop();
     // The reloaded editor owns a new store/session; retire its predecessor's projection.
     if (presentWin && !presentWin.isDestroyed()) void closePresentation();
     mainCloseReady = false;
@@ -138,6 +144,7 @@ function createWindow() {
   // 关闭后置空：放映窗存活时主窗先关（window-all-closed 不触发），second-instance
   // 再进 if (mainWindow) 会对已销毁窗口调 isMinimized() 抛 "Object has been destroyed"
   mainWindow.on('closed', () => {
+    projectWatcher.stop();
     mainWindow = null;
     mainClosePending = null;
     cancelMainCloseFallback();
@@ -447,7 +454,15 @@ ipcMain.handle('project:confirm-exit', async (event, { title, language, reason }
   return ['save', 'discard', 'cancel'][choice.response] ?? 'cancel';
 });
 
-async function saveProjectToDisk({ folder, md }) {
+ipcMain.handle('project:watch', (event, payload) => {
+  if (event.sender !== mainWindow?.webContents) return { error: 'Unknown editor' };
+  projectWatcher.watch(payload); return { ok: true };
+});
+ipcMain.handle('project:unwatch', (event, id) => {
+  if (event.sender === mainWindow?.webContents) projectWatcher.stop(id);
+});
+
+async function saveProjectToDisk({ folder, md, baseMd }) {
   try {
     if (!folder) {
       const r = await dialog.showOpenDialog(mainWindow, {
@@ -457,9 +472,11 @@ async function saveProjectToDisk({ folder, md }) {
       if (r.canceled || !r.filePaths[0]) return null;
       folder = r.filePaths[0];
     }
-    await saveProjectToFolder(folder, md, path.join(__dirname, '..', 'skills', 'research-beamer-deck', 'SKILL.md'));
+    await saveProjectToFolder(folder, md, path.join(__dirname, '..', 'skills', 'research-beamer-deck', 'SKILL.md'), baseMd);
+    projectWatcher.saved(folder, baseMd, md);
     return { folder };
   } catch (e) {
+    if (e.code === 'PROJECT_CHANGED') return { folder, conflict: true, md: e.md };
     return { error: String(e) };
   }
 }
@@ -479,14 +496,16 @@ ipcMain.handle('media:import', async (_e, { srcPath, folder }) => {
   }
 });
 
-ipcMain.handle('media:pick', async () => {
+ipcMain.handle('media:pick', async (_event, options) => {
+  const images = ['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp', 'bmp', 'avif'];
+  const background = options?.background === true;
   const r = await dialog.showOpenDialog(mainWindow, {
-    title: '选择图片或视频',
+    title: background ? '选择背景图片' : '选择图片或视频',
     properties: ['openFile'],
     filters: [
       {
-        name: '图片 / 视频',
-        extensions: ['png', 'jpg', 'jpeg', 'svg', 'pdf', 'eps', 'mp4', 'webm', 'mov', 'gif'],
+        name: background ? '背景图片' : '图片 / 视频',
+        extensions: background ? images : [...images, 'pdf', 'eps', 'mp4', 'webm', 'mov'],
       },
     ],
   });

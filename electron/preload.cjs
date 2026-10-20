@@ -1,8 +1,17 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const e2e = !!(process.env.E2E_SCREENSHOT || process.env.E2E_PDF || process.env.E2E_EVAL);
 
 contextBridge.exposeInMainWorld('api', {
   // e2e 测试模式下禁用自动保存，避免污染示例工程
-  isE2E: !!(process.env.E2E_SCREENSHOT || process.env.E2E_PDF || process.env.E2E_EVAL),
+  isE2E: e2e,
+  projectWatchEnabled: !e2e || process.env.E2E_WATCH === '1',
+  watchProject: (payload) => ipcRenderer.invoke('project:watch', payload),
+  unwatchProject: (id) => ipcRenderer.invoke('project:unwatch', id),
+  onProjectChanged: (cb) => {
+    const listener = (_event, change) => cb(change);
+    ipcRenderer.on('project:changed', listener);
+    return () => ipcRenderer.removeListener('project:changed', listener);
+  },
   openProject: () => ipcRenderer.invoke('project:open'),
   loadExample: (relPath) => ipcRenderer.invoke('project:loadPath', relPath),
   saveProject: (payload) => ipcRenderer.invoke('project:save', payload),
@@ -14,7 +23,7 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('win:close-request', listener);
   },
   completeWindowClose: (payload) => ipcRenderer.invoke('win:close-result', payload),
-  pickMedia: () => ipcRenderer.invoke('media:pick'),
+  pickMedia: (options) => ipcRenderer.invoke('media:pick', options),
   importMedia: (payload) => ipcRenderer.invoke('media:import', payload),
   ensureEpsPdf: (payload) => ipcRenderer.invoke('media:ensureEpsPdf', payload),
   readFile: (absPath) => ipcRenderer.invoke('file:read', absPath),

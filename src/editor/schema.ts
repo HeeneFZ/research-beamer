@@ -6,10 +6,12 @@
 
 import { Node, InputRule, Extension, Mark } from '@tiptap/core';
 import type { EditorView } from '@tiptap/pm/view';
-import { Plugin } from '@tiptap/pm/state';
+import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
 import { Fragment, Slice, Node as PMNode } from '@tiptap/pm/model';
 import { InlineToken, tokenizeInline } from '../model/inline';
+import { genericRefText } from '../model/numbering';
 import { InlineMathView, RefChipView } from '../components/ChipViews';
 
 // ---------- custom nodes ----------
@@ -40,6 +42,66 @@ export const ListAnimationOrder = Extension.create({
       return transaction.docChanged ? transaction.setMeta('addToHistory', false) : null;
     },
   })],
+});
+
+const referenceTargets = new PluginKey<DecorationSet>('referenceTargets');
+function referenceDecorations(doc: PMNode): DecorationSet {
+  const decorations: Decoration[] = [];
+  doc.descendants((node, position) => {
+    const label = node.attrs.referenceLabel;
+    if (node.type.name !== 'paragraph' || typeof label !== 'string' || !label.startsWith('ref:')) return;
+    decorations.push(Decoration.widget(position + 1, () => {
+      const marker = document.createElement('sup');
+      marker.className = 'ref-target-label'; marker.dataset.refLabel = label;
+      marker.textContent = genericRefText(label); marker.contentEditable = 'false';
+      return marker;
+    }, { side: -1, key: `ref-target:${position}:${label}`, ignoreSelection: true }));
+  });
+  return DecorationSet.create(doc, decorations);
+}
+
+/** Prefixes are display decorations, not editable prose or duplicated Markdown. */
+export const ReferenceTargetLabels = Extension.create<{ blockLabel?: () => string | undefined }>({
+  name: 'referenceTargetLabels',
+  addOptions: () => ({ blockLabel: undefined }),
+  addGlobalAttributes: () => [{
+    types: ['listItem', 'paragraph'],
+    attributes: { referenceLabel: { default: null, keepOnSplit: false, rendered: false, parseHTML: () => null } },
+  }],
+  addProseMirrorPlugins() {
+    const blockLabel = this.options.blockLabel;
+    return [new Plugin({
+    key: referenceTargets,
+    state: {
+      init: (_config, state) => referenceDecorations(state.doc),
+      apply: (transaction, previous) => transaction.docChanged ? referenceDecorations(transaction.doc) : previous,
+    },
+    props: { decorations: (state) => referenceTargets.getState(state) },
+    appendTransaction(transactions, _previous, state) {
+      if (!transactions.some((transaction) => transaction.docChanged)) return null;
+      const transaction = state.tr;
+      // Native paste can replace paragraph attributes. The block owns its label.
+      if (blockLabel) state.doc.forEach((node, position, index) => {
+        if (node.type.name !== 'paragraph') return;
+        const label = index === 0 ? blockLabel() ?? null : null;
+        if (node.attrs.referenceLabel !== label) transaction.setNodeMarkup(position, undefined, { ...node.attrs, referenceLabel: label });
+      });
+      state.doc.descendants((node, position) => {
+        if (node.type.name !== 'listItem') return;
+        let first = true;
+        node.forEach((child, offset) => {
+          if (child.type.name !== 'paragraph') return;
+          const referenceLabel = first ? node.attrs.referenceLabel : null;
+          first = false;
+          if (child.attrs.referenceLabel !== referenceLabel) {
+            transaction.setNodeMarkup(position + 1 + offset, undefined, { ...child.attrs, referenceLabel });
+          }
+        });
+      });
+      return transaction.docChanged ? transaction.setMeta('addToHistory', false) : null;
+    },
+    })];
+  },
 });
 
 export const InlineMath = Node.create({
@@ -113,7 +175,7 @@ export const RefChip = Node.create({
     return [
       // 完整输入 [@eq:x] 自动转芯片（label 归一为裸键，双重前缀同样剥除）
       new InputRule({
-        find: /\[@(eq|fig|sec|tab):([A-Za-z0-9_:-]+)\]$/,
+        find: /\[@(eq|fig|sec|tab|ref):([A-Za-z0-9_:-]+)\]$/,
         handler: ({ range, match, chain }) => {
           chain().insertContentAt(range, { type: 'refChip', attrs: { kind: match[1], label: bareRefKey(match[1], match[2]) } }).run();
         },
@@ -154,7 +216,7 @@ interface PmNode {
   type: string;
   content?: PmNode[];
   text?: string;
-  attrs?: { latex?: string; kind?: string; label?: string; animationOrder?: number | null };
+  attrs?: { latex?: string; kind?: string; label?: string; animationOrder?: number | null; referenceLabel?: string | null };
   marks?: { type: string; attrs?: Record<string, string> }[];
 }
 type PmMark = NonNullable<PmNode['marks']>[number];
@@ -214,19 +276,19 @@ function textToInlineNodes(text: string): PmNode[] {
   return out;
 }
 
-export function textToDoc(text: string): object {
-  return { type: 'doc', content: [{ type: 'paragraph', content: text ? textToInlineNodes(text) : undefined }] };
+export function textToDoc(text: string, label?: string): object {
+  return { type: 'doc', content: [{ type: 'paragraph', ...(label ? { attrs: { referenceLabel: label } } : {}), content: text ? textToInlineNodes(text) : undefined }] };
 }
 
-export function itemsToDoc(items: string[], itemOrders?: (number | undefined)[]): object {
+export function itemsToDoc(items: string[], itemOrders?: (number | undefined)[], itemLabels?: (string | undefined)[]): object {
   return {
     type: 'doc',
     content: [{
       type: 'bulletList',
       content: (items.length ? items : ['']).map((t, i) => ({
         type: 'listItem',
-        attrs: { animationOrder: itemOrders?.[i] ?? null },
-        content: [{ type: 'paragraph', attrs: { animationOrder: itemOrders?.[i] ?? null }, content: t ? textToInlineNodes(t) : undefined }],
+        attrs: { animationOrder: itemOrders?.[i] ?? null, referenceLabel: itemLabels?.[i] ?? null },
+        content: [{ type: 'paragraph', attrs: { animationOrder: itemOrders?.[i] ?? null, referenceLabel: itemLabels?.[i] ?? null }, content: t ? textToInlineNodes(t) : undefined }],
       })),
     }],
   };
@@ -286,21 +348,23 @@ export function docToText(doc: { content?: unknown[] }): string {
 }
 
 /** Markdown 列表为扁平数组；粘贴的嵌套列表及多段项按阅读顺序展开，保全内容。 */
-export function docToList(doc: { content?: unknown[] }): { items: string[]; itemOrders?: (number | undefined)[] } {
+export function docToList(doc: { content?: unknown[] }): { items: string[]; itemOrders?: (number | undefined)[]; itemLabels?: (string | undefined)[] } {
   const items: string[] = [], orders: (number | undefined)[] = [];
-  const push = (text: string, order?: number) => { items.push(text); orders.push(order); };
-  const visit = (nodes: PmNode[], order?: number) => {
+  const labels: (string | undefined)[] = [];
+  const push = (text: string, order?: number, label?: string) => { items.push(text); orders.push(order); labels.push(label); };
+  const visit = (nodes: PmNode[], order?: number, label?: string) => {
     for (const node of nodes) {
-      if (node.type === 'paragraph') push(inlineNodesToText(node.content), node.attrs?.animationOrder ?? order);
+      if (node.type === 'paragraph') { push(inlineNodesToText(node.content), node.attrs?.animationOrder ?? order, node.attrs?.referenceLabel ?? label); label = undefined; }
       else if (node.type === 'listItem') {
         const itemOrder = node.attrs?.animationOrder ?? undefined;
-        if (node.content?.length) visit(node.content, itemOrder);
-        else push('', itemOrder);
-      } else if (node.content) visit(node.content, order);
+        const itemLabel = node.attrs?.referenceLabel ?? undefined;
+        if (node.content?.length) visit(node.content, itemOrder, itemLabel);
+        else push('', itemOrder, itemLabel);
+      } else if (node.content) visit(node.content, order, label);
     }
   };
   visit((doc?.content ?? []) as PmNode[]);
-  return { items, itemOrders: orders.some((order) => order != null) ? orders : undefined };
+  return { items, itemOrders: orders.some((order) => order != null) ? orders : undefined, itemLabels: labels.some(Boolean) ? labels : undefined };
 }
 
 export function docToItems(doc: { content?: unknown[] }): string[] {

@@ -10,12 +10,15 @@ import { PresenterView, type PresenterSnapshot } from './components/PresenterVie
 import { emptyViewPreparation, presentationPreparationKey } from './model/mediaResources';
 import { useBackNav } from './hooks/useBackNav';
 import { useAutoSave } from './hooks/useAutoSave';
+import { useExternalProject } from './hooks/useExternalProject';
+import { ProjectSyncNotice } from './components/ProjectSyncNotice';
 import { useMediaPreparation } from './hooks/useMediaPreparation';
 import { exportPDF } from './exportPdf';
 import { useStore, pageOrders, PROJECT_DRAFT_FLUSH } from './state/store';
 
 export default function App() {
   useMediaPreparation();
+  useExternalProject();
   const darkMode = useStore((s) => s.darkMode);
   const flashMsg = useStore((s) => s.flashMsg);
   const setFlashMsg = useStore((s) => s.setFlashMsg);
@@ -151,6 +154,7 @@ export default function App() {
   const folder = useStore((s) => s.folder);
   const pageLayout = useStore((s) => s.pageLayout);
   const mediaRevision = useStore((s) => s.mediaRevision);
+  const projectId = useStore((s) => s.projectId);
   const mediaPreparation = useStore((s) => s.mediaPreparation);
   const [editorPreparation, setEditorPreparation] = useState(emptyViewPreparation);
   const [monitorPreparation, setMonitorPreparation] = useState(emptyViewPreparation);
@@ -178,7 +182,7 @@ export default function App() {
   const resourceVersion = `${performance.timeOrigin}:${versions.current.resourceId}`;
   const expectedProjectionKey = useRef('');
   expectedProjectionKey.current = presentationPreparationKey(mediaRevision, deckVersion, layoutVersion, resourceVersion, current);
-  useEffect(() => { window.api.sendPresentCtrl({ type: 'clear-project', mediaRevision, owner: String(performance.timeOrigin) }); }, [mediaRevision]);
+  useEffect(() => { window.api.sendPresentCtrl({ type: 'clear-project', mediaRevision, owner: String(performance.timeOrigin) }); }, [projectId]);
   useEffect(() => { if (!presenting) setProjectionPreparation(emptyViewPreparation()); }, [presenting]);
 
   useEffect(() => {
@@ -240,6 +244,7 @@ export default function App() {
     <div className="app">
       <MenuBar />
       <Toolbar />
+      <ProjectSyncNotice />
       <div className="main">
         {(loading || backgroundPending) && <div className="resource-progress" data-blocking={loading || undefined} role="status"><span>{loading ? presenting ? '准备当前放映页面' : '准备前 10 页' : '后台准备资源'} {completed}/{total}</span><progress value={total ? completed : undefined} max={Math.max(1, total)} /></div>}
         <Filmstrip />

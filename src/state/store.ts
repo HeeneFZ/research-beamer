@@ -11,14 +11,20 @@ export { stripOrphanSections } from '../model/outline';
 import { computeDeck, Computed, patchComputedSlide, refPageIndex, refParts } from '../model/numbering';
 import { colEndPlan, colRegionAt, reseedColPlaceholders, stripEmptyColRegions } from '../model/segments';
 import { serializeMarkdown, parseMarkdown, normLabel, LABEL_PREFIX, dedupeRefLabel } from '../model/markdown';
-import { attachHistoryFolder, clearHistory, flushHistory, recordHistory, takeRedo, takeUndo } from './history';
+import { attachHistoryFolder, clearHistory, deckSnapshot, flushHistory, recordHistory, takeRedo, takeUndo } from './history';
+import { mediaAssetSignature } from '../model/mediaResources';
+import { pageIdentity, reconcileDeck, reuseComputedPages } from '../model/reconcile';
+import type { ProjectFileChange } from '../model/projectSync';
 
 export const PROJECT_DRAFT_FLUSH = 'beamer:flush-project-drafts';
 
 /** UI editors commit synchronously before a persistence or project boundary. */
 export function flushProjectDrafts(): void {
   if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-    window.dispatchEvent(new Event(PROJECT_DRAFT_FLUSH));
+    // A Window-targeted event runs its listeners in registration order. Target
+    // Document so child editors' Window capture handlers precede App's teardown.
+    const target = typeof document !== 'undefined' ? document : window;
+    target.dispatchEvent(new Event(PROJECT_DRAFT_FLUSH, { bubbles: true }));
   }
 }
 
@@ -33,7 +39,7 @@ export interface FlashState {
 export interface EditState {
   slideId: string;
   blockId?: string;
-  field?: 'title' | 'section' | 'footer' | 'coverTitle' | 'coverAuthors' | 'coverAff' | 'coverDate' | 'coverSub';
+  field?: 'title' | 'section' | 'footer' | 'coverTitle' | 'coverAuthors' | 'coverAff' | 'coverDate' | 'coverSub' | 'background';
   sectionId?: string;
   sectionLevel?: 1 | 2 | 3;
 }
@@ -49,6 +55,10 @@ interface StoreState {
   deck: Deck;
   computed: Computed;
   folder: string | null;
+  projectId: string;
+  /** Exact bytes decoded from disk, distinct from canonical editor Markdown. */
+  diskMd: string | null;
+  externalChange: { md: string | null; deck?: Deck; error?: string } | null;
   mediaRevision: number;
   mediaPreparation: MediaPreparation;
   current: number; // 当前页 index（computed.pages）
@@ -124,6 +134,9 @@ interface StoreState {
   loadProjectData(p: { md: string; folder: string }, refreshFromDisk?: boolean): void | Promise<void>;
   loadExample(relPath: string): Promise<void>;
   saveProject(flushDrafts?: boolean): Promise<boolean>;
+  receiveProjectChange(change: ProjectFileChange): void;
+  retryProjectChanges(): void;
+  resolveProjectChange(choice: 'external' | 'local'): Promise<void>;
   undo(): void;
   redo(): void;
 }
@@ -159,8 +172,38 @@ export const useStore = create<StoreState>((set, get) => {
   let projectSession = 0;
   let loadRequest = 0;
   let saveTask: Promise<boolean> | null = null;
+  let resolvingProjectChange = false;
   let leaveTask: Promise<boolean> | null = null;
   let presentRequest = 0;
+  let diskDeck: Deck | null = null;
+  let pendingMedia = false;
+  const projectId = () => `${performance.timeOrigin}:${projectSession}`;
+
+  const applyExternal = (change: NonNullable<StoreState['externalChange']>) => {
+    if (!change.deck || change.md == null) return;
+    const state = get(), deck = reconcileDeck(state.deck, change.deck);
+    const computed = reuseComputedPages(state.computed, computeDeck(deck));
+    const indices = new Map(computed.pages.map((page) => [pageIdentity(page), page.index]));
+    const remap = (index: number) => {
+      const old = state.computed.pages[index];
+      return (old && indices.get(pageIdentity(old))) ?? (old?.section && computed.sectionPageIndex.get(old.section.id))
+        ?? Math.max(0, Math.min(index, computed.pages.length - 1));
+    };
+    const current = remap(state.current), oldPage = state.computed.pages[state.current], nextPage = computed.pages[current];
+    const mediaChanged = pendingMedia || mediaAssetSignature(state.deck) !== mediaAssetSignature(deck);
+    const mediaRevision = state.mediaRevision + (mediaChanged ? 1 : 0);
+    const slides = new Set(computed.pages.flatMap((page) => page.slide ? [page.slide.id] : []));
+    if (deck !== state.deck) recordHistory(state.deck, false, deck);
+    diskDeck = deck; pendingMedia = false;
+    if (mediaChanged) setMediaRevision(mediaRevision);
+    set({ deck, computed, diskMd: change.md, externalChange: null, dirty: false, current,
+      jumpStack: state.jumpStack.map(remap), editing: null, focusId: null, flash: null,
+      revealStep: oldPage && nextPage && pageIdentity(oldPage) === pageIdentity(nextPage) ? Math.min(state.revealStep, pageOrders(nextPage).length) : 0,
+      mediaRevision, mediaPreparation: mediaChanged ? emptyMediaPreparation() : state.mediaPreparation,
+      pageLayout: mediaChanged ? {} : Object.fromEntries(Object.entries(state.pageLayout).filter(([key]) => slides.has(key.split('|')[0]))),
+      lightbox: mediaChanged ? null : state.lightbox,
+      flashMsg: state.dirty ? '已载入外部修改；本地编辑可通过撤销恢复' : null });
+  };
 
   /** 结构变更只复制根与 items；各内容操作负责复制被修改的分支。 */
   const mutate = (fn: (d: Deck) => void | false, debounce = true, compute?: (deck: Deck, previous: Computed) => Computed) => {
@@ -194,6 +237,7 @@ export const useStore = create<StoreState>((set, get) => {
     deck: initial,
     computed: computeDeck(initial),
     folder: null,
+    projectId: projectId(), diskMd: null, externalChange: null,
     current: 0,
     dirty: false,
     projectExiting: false,
@@ -233,7 +277,7 @@ export const useStore = create<StoreState>((set, get) => {
       const s = get();
       if (!s.clipBlock || !slideOf(s.deck, slideId)) return null;
       const id = newId();
-      const { label: _l, pos: _p, ...rest } = s.clipBlock;
+      const { label: _l, itemLabels: _il, pos: _p, ...rest } = s.clipBlock;
       const copy: Block = { ...JSON.parse(JSON.stringify(rest)), id };
       if (copy.src && s.clipBlockFolder !== s.folder) copy.src = absMediaPath(s.clipBlockFolder ?? '', copy.src);
       mutateSlide(slideId, (sl) => {
@@ -285,10 +329,13 @@ export const useStore = create<StoreState>((set, get) => {
             if (normed !== patch.label) patch = { ...patch, label: normed };
           }
         }
-        // items 变更后 itemOrders 重对齐：公共前缀 + 公共后缀对齐（中部增删/改写段
-        // 置 undefined）——纯按下标前缀对齐会在「删首项/中部插入」时把后续项顺序
-        // 整体错一档；编辑器每次提交全量 items，无法携带对齐信息
-        if (patch.items && prev.itemOrders && !Object.prototype.hasOwnProperty.call(patch, 'itemOrders')) {
+        if (patch.itemLabels) patch = { ...patch, itemLabels: patch.itemLabels.map((label) =>
+          label?.trim() ? normLabel('ref', dedupeRefLabel(label.trim())) : undefined) };
+        // Native editing supplies metadata explicitly. A same-length text edit
+        // keeps its positions; identifiable moves use content alignment instead.
+        const alignFields = (['itemOrders', 'itemLabels'] as const).filter((field) =>
+          prev[field] && !Object.prototype.hasOwnProperty.call(patch, field));
+        if (patch.items && alignFields.length) {
           const oldItems = prev.items || [];
           const neu = patch.items;
           let p = 0;
@@ -298,12 +345,23 @@ export const useStore = create<StoreState>((set, get) => {
             sfx < oldItems.length - p && sfx < neu.length - p &&
             oldItems[oldItems.length - 1 - sfx] === neu[neu.length - 1 - sfx]
           ) sfx++;
-          const norm = neu.map((_, k) => (
-            neu.length === oldItems.length || k < p ? prev.itemOrders![k]
-              : k >= neu.length - sfx ? prev.itemOrders![oldItems.length - (neu.length - k)]
-                : undefined
-          ));
-          patch = { ...patch, itemOrders: norm.some((o) => o != null) ? norm : undefined };
+          const oldMiddle = new Map<string, number | null>(), newCounts = new Map<string, number>();
+          for (let k = p; k < oldItems.length - sfx; k++) {
+            const text = oldItems[k];
+            oldMiddle.set(text, oldMiddle.has(text) ? null : k);
+          }
+          for (let k = p; k < neu.length - sfx; k++) newCounts.set(neu[k], (newCounts.get(neu[k]) ?? 0) + 1);
+          const positionalEdit = oldItems.length === neu.length && !neu.some((text, k) => {
+            const source = oldMiddle.get(text);
+            return source != null && source !== k;
+          });
+          const sourceIndices = neu.map((text, k) => positionalEdit || k < p ? k : k >= neu.length - sfx
+            ? oldItems.length - (neu.length - k) : newCounts.get(text) === 1 ? oldMiddle.get(text) : undefined);
+          for (const field of alignFields) {
+            const values = prev[field]!;
+            const aligned = sourceIndices.map((index) => index != null ? values[index] : undefined);
+            patch = { ...patch, [field]: aligned.some((value) => value != null) ? aligned : undefined };
+          }
         }
         if (!patchChanges(prev, patch)) return false;
         sl.blocks[i] = { ...prev, ...patch };
@@ -352,7 +410,9 @@ export const useStore = create<StoreState>((set, get) => {
         const at = slide.blocks.findIndex((block) => block.id === blockId);
         const previous = slide.blocks[at - 1];
         if (at < 1 || previous.type !== 'paragraph' || slide.blocks[at].type !== 'paragraph') return false;
-        slide.blocks[at - 1] = { ...previous, text: (previous.text ?? '') + text };
+        const label = slide.blocks[at].label;
+        if (label && previous.label) return false;
+        slide.blocks[at - 1] = { ...previous, label: previous.label ?? label, text: (previous.text ?? '') + text };
         slide.blocks.splice(at, 1);
         target = previous.id;
       }, false);
@@ -434,7 +494,7 @@ export const useStore = create<StoreState>((set, get) => {
       // 复制页须剥除交叉引用标签：label 是全 deck 唯一键（编号/跳转按 label 索引，
       // 重复后者覆盖前者，[@fig:x] 会静默指向副本），副本块不带走原标签
       const reId = (b: Block): Block => {
-        const { label: _stripped, ...rest } = b;
+        const { label: _stripped, itemLabels: _itemLabels, ...rest } = b;
         return { ...rest, id: newId() };
       };
       copy.id = newId();
@@ -542,7 +602,7 @@ export const useStore = create<StoreState>((set, get) => {
       if (target == null) return;
       get().gotoPage(target, true);
       const parts = refParts(label.includes(':') ? label : `eq:${label}`);
-      set({ flash: { page: target, label: parts?.key, nonce: Date.now() } });
+      set({ flash: { page: target, label: parts ? `${parts.kind}:${parts.key}` : undefined, nonce: Date.now() } });
     },
 
     startPresent: async () => {
@@ -550,6 +610,7 @@ export const useStore = create<StoreState>((set, get) => {
       if (document.querySelector('.modal-mask, .field-popover, .math-float') || get().lightbox) return;
       if (get().mediaPreparation.phase !== 'ready') return;
       if (get().presenting) return;
+      flushProjectDrafts();
       const request = ++presentRequest;
       const presentSession = `${performance.timeOrigin}:${request}`;
       set({ presenting: true, presentSession, revealStep: 0, presentStart: 0, editing: null, lightbox: null });
@@ -698,13 +759,14 @@ export const useStore = create<StoreState>((set, get) => {
         if (request !== loadRequest) return;
         if (get().presenting) get().endPresent();
         projectSession++;
+        diskDeck = null; pendingMedia = false;
         loadRequest++;
         clearHistory();
         attachHistoryFolder(null, '');
         const d = freshDeck();
         const mediaRevision = get().mediaRevision + 1;
         setMediaRevision(mediaRevision);
-        set({ deck: d, computed: computeDeck(d), folder: null, dirty: false, projectExiting: false, ...projectViewDefaults, mediaRevision, mediaPreparation: emptyMediaPreparation() });
+        set({ deck: d, computed: computeDeck(d), folder: null, projectId: projectId(), diskMd: null, externalChange: null, dirty: false, projectExiting: false, ...projectViewDefaults, mediaRevision, mediaPreparation: emptyMediaPreparation() });
       };
       const allowed = get().prepareProjectExit();
       if (typeof allowed === 'boolean') {
@@ -735,17 +797,18 @@ export const useStore = create<StoreState>((set, get) => {
         const initialDeck = refresh ? null : parseMarkdown(md);
         const initialComputed = initialDeck ? computeDeck(initialDeck) : null;
         const request = ++loadRequest;
-        const apply = (deck: Deck, computed: Computed) => {
+        const apply = (deck: Deck, computed: Computed, source: string) => {
           if (request !== loadRequest) return;
           if (get().presenting) get().endPresent();
           projectSession++;
+          diskDeck = deck; pendingMedia = false;
           loadRequest++;
           clearHistory();
           // 历史 adopt：读回该工程目录下的 .beamer-history.json 恢复撤销栈
-          attachHistoryFolder(folder, JSON.stringify(deck));
+          attachHistoryFolder(folder, deckSnapshot(deck));
           const mediaRevision = get().mediaRevision + 1;
           setMediaRevision(mediaRevision);
-          set({ deck, computed, folder, dirty: false, projectExiting: false, ...projectViewDefaults, mediaRevision, mediaPreparation: emptyMediaPreparation() });
+          set({ deck, computed, folder, projectId: projectId(), diskMd: source, externalChange: null, dirty: false, projectExiting: false, ...projectViewDefaults, mediaRevision, mediaPreparation: emptyMediaPreparation() });
         };
         const allowed = get().prepareProjectExit();
         if (refresh) {
@@ -756,17 +819,18 @@ export const useStore = create<StoreState>((set, get) => {
             const result = await window.api.readFile(absMediaPath(folder, 'deck.md'));
             if (request !== loadRequest) return;
             if ('error' in result) throw new Error(result.error);
-            const deck = parseMarkdown(new TextDecoder('utf-8', { fatal: true }).decode(result.data));
-            apply(deck, computeDeck(deck));
+            const source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(result.data);
+            const deck = parseMarkdown(source);
+            apply(deck, computeDeck(deck), source);
           })().catch((error) => {
             if (request === loadRequest) set({ flashMsg: '工程读取失败：' + String(error) });
           }).finally(() => { if (request === loadRequest) get().finishProjectExit(); });
         }
         if (typeof allowed === 'boolean') {
-          try { if (allowed) apply(initialDeck!, initialComputed!); } finally { get().finishProjectExit(); }
+          try { if (allowed) apply(initialDeck!, initialComputed!, md); } finally { get().finishProjectExit(); }
           return;
         }
-        return allowed.then((ok) => { if (ok) apply(initialDeck!, initialComputed!); }).finally(() => get().finishProjectExit());
+        return allowed.then((ok) => { if (ok) apply(initialDeck!, initialComputed!, md); }).finally(() => get().finishProjectExit());
       } catch (e) {
         set({ flashMsg: '工程解析失败：' + String(e) });
       }
@@ -790,29 +854,104 @@ export const useStore = create<StoreState>((set, get) => {
 
     saveProject: async (flushDrafts = true) => {
       if (flushDrafts) flushProjectDrafts();
+      if (get().externalChange) { set({ flashMsg: '工程有外部修改，请先选择载入外部或用本地覆盖' }); return false; }
       const session = projectSession;
       while (saveTask) {
         if (!await saveTask || session !== projectSession) return false;
         if (!get().dirty && get().folder) return true;
       }
-      const task = (async () => {
-        const s = get();
+      if (get().externalChange) { set({ flashMsg: '工程有外部修改，请先选择载入外部或用本地覆盖' }); return false; }
+      const s = get(), md = serializeMarkdown(s.deck);
+      // Register the task before invoking IPC, including reentrant callers.
+      const task = Promise.resolve().then(async () => {
         try {
-          const r = await window.api.saveProject({ folder: s.folder, md: serializeMarkdown(s.deck) });
+          const r = await window.api.saveProject({ folder: s.folder, md, ...(s.folder ? { baseMd: s.diskMd } : {}) });
           if (session !== projectSession) return false;
+          if (r?.conflict) {
+            get().receiveProjectChange({ id: s.projectId, folder: s.folder!, md: r.md ?? null });
+            set({ flashMsg: '磁盘文件已被外部修改，本地编辑已保留' }); return false;
+          }
           if (r?.error) { set({ flashMsg: '保存失败：' + r.error }); return false; }
           if (!r?.folder) return false;
-          if (s.folder !== r.folder) attachHistoryFolder(r.folder, JSON.stringify(s.deck), false);
-          set({ folder: r.folder, dirty: get().deck !== s.deck, flashMsg: '已保存 → ' + r.folder });
+          if (s.folder !== r.folder) attachHistoryFolder(r.folder, deckSnapshot(s.deck), false);
+          diskDeck = s.deck;
+          const pending = get().externalChange;
+          const same = pending?.deck && reconcileDeck(s.deck, pending.deck) === s.deck;
+          if (pending && !same && (pending.md !== md || pending.error)) {
+            set({ folder: r.folder, diskMd: md, dirty: true, flashMsg: '保存期间文件被外部修改，本地编辑已保留' }); return false;
+          }
+          set({ folder: r.folder, diskMd: same ? pending!.md : md, externalChange: null,
+            dirty: get().deck !== s.deck, flashMsg: '已保存 → ' + r.folder });
           return true;
         } catch (e) {
           if (session === projectSession) set({ flashMsg: '保存失败：' + String(e) });
           return false;
         }
-      })();
+      });
       saveTask = task;
       try { return await task; }
-      finally { if (saveTask === task) saveTask = null; }
+      finally { if (saveTask === task) { saveTask = null; get().retryProjectChanges(); } }
+    },
+
+    receiveProjectChange: (change) => {
+      const state = get();
+      if (change.id !== state.projectId || change.folder !== state.folder) return;
+      pendingMedia ||= !!change.media;
+      if (Object.prototype.hasOwnProperty.call(change, 'md')) {
+        let pending: StoreState['externalChange'];
+        if (change.md == null || change.error) pending = { md: change.md ?? null, error: change.error ?? 'deck.md 暂时不存在，等待外部程序写入完成' };
+        else {
+          try { pending = { md: change.md, deck: parseMarkdown(change.md) }; }
+          catch (error) { pending = { md: change.md, error: String(error) }; }
+        }
+        set({ externalChange: pending });
+      }
+      get().retryProjectChanges();
+    },
+    retryProjectChanges: () => {
+      if (saveTask || resolvingProjectChange || get().projectExiting) return;
+      const state = get(), change = state.externalChange;
+      if (change?.deck && change.md != null) {
+        const sameDisk = diskDeck && reconcileDeck(diskDeck, change.deck) === diskDeck;
+        const sameCurrent = reconcileDeck(state.deck, change.deck) === state.deck;
+        if (sameDisk || sameCurrent) {
+          if (sameCurrent) diskDeck = state.deck;
+          set({ diskMd: change.md, externalChange: null, ...(sameCurrent ? { dirty: false } : {}) });
+        } else if (!state.dirty) {
+          flushProjectDrafts();
+          if (get().projectId === state.projectId && get().externalChange === change && !get().dirty && !get().projectExiting && !saveTask) applyExternal(change);
+        }
+      }
+      if (pendingMedia && get().projectId === state.projectId && !get().projectExiting && !saveTask) {
+        const backgroundEditing = get().editing?.field === 'background' ? get().editing : null;
+        flushProjectDrafts();
+        if (get().projectId !== state.projectId || get().projectExiting) return;
+        pendingMedia = false;
+        const mediaRevision = get().mediaRevision + 1;
+        setMediaRevision(mediaRevision);
+        set({ mediaRevision, mediaPreparation: emptyMediaPreparation(), pageLayout: {}, lightbox: null, editing: backgroundEditing, focusId: null });
+      }
+    },
+    resolveProjectChange: async (choice) => {
+      if (resolvingProjectChange) return;
+      const id = get().projectId;
+      // An explicit choice owns the pending revision while a save finishes.
+      // Its finally/retry must not auto-load that revision before this resumes.
+      resolvingProjectChange = true;
+      try {
+        if (saveTask) await saveTask;
+        if (get().projectId !== id || get().projectExiting) return;
+        flushProjectDrafts();
+        const state = get(), change = state.externalChange;
+        if (!change || state.projectId !== id) return;
+        if (choice === 'external') { if (change.deck) applyExternal(change); return; }
+        if (change.deck) recordHistory(reconcileDeck(state.deck, change.deck), false, state.deck);
+        set({ diskMd: change.md, externalChange: null, dirty: true });
+        await get().saveProject(false);
+      } finally {
+        resolvingProjectChange = false;
+        get().retryProjectChanges();
+      }
     },
 
     undo: () => {
