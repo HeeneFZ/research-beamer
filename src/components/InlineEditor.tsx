@@ -17,19 +17,20 @@ import {
 import { resolveRole } from '../model/palette';
 import { onOverlay } from './overlays';
 import { colRegionAt } from '../model/segments';
-import { insertBlockByKey, InsertKey } from './insertItems';
+import { insertBlockByKey } from './insertItems';
 
 const SLASH_ITEMS = [
   { key: 'inline-eq', label: '行内公式', hint: '$ 或 ￥', badge: '∑', cls: 'eq' },
   { key: 'xref', label: '交叉引用', hint: '公式 / 图片 / 表格 / 节 / 文字与列表项', badge: '@', cls: 'sec' },
   { key: 'color-accent', label: '着色（强调橙）', hint: '选中文本后应用', badge: '◐', cls: 'fig' },
   { key: 'color-primary', label: '着色（主色蓝）', hint: '选中文本后应用', badge: '◐', cls: 'cite' },
-  { key: 'block-eq', label: '公式块', hint: '独立编号公式', badge: 'Ω', cls: 'eq' },
-  { key: 'block-fig', label: '图片块', hint: '弹窗选择图片', badge: '▣', cls: 'fig' },
-  { key: 'block-video', label: '视频块', hint: '弹窗选择视频', badge: '▶', cls: 'fig' },
-  { key: 'block-table', label: '表格块', hint: '三线表', badge: '▦', cls: 'tab' },
-  { key: 'col-mark', label: '开始双栏区', hint: '本块之后左右两栏', badge: '◫', cls: 'cite' },
-  { key: 'col-end', label: '结束双栏区', hint: '本块逃出栏区回单栏', badge: '▪', cls: 'cite' },
+  { key: 'equation', label: '公式块', hint: '独立编号公式', badge: 'Ω', cls: 'eq' },
+  { key: 'annoeq', label: '注释公式块', hint: '引线标注', badge: '⌖', cls: 'eq' },
+  { key: 'figure', label: '图片块', hint: '弹窗选择图片', badge: '▣', cls: 'fig' },
+  { key: 'video', label: '视频块', hint: '弹窗选择视频', badge: '▶', cls: 'fig' },
+  { key: 'table', label: '表格块', hint: '三线表', badge: '▦', cls: 'tab' },
+  { key: 'colmark', label: '开始双栏区', hint: '本块之后左右两栏', badge: '◫', cls: 'cite' },
+  { key: 'colend', label: '结束双栏区', hint: '本块逃出栏区回单栏', badge: '▪', cls: 'cite' },
 ] as const;
 
 type SlashKey = typeof SLASH_ITEMS[number]['key'];
@@ -342,7 +343,7 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
   // 键盘与鼠标两路入口都必须吃同一禁用判定（键盘漏判会走 no-op mutate：
 // 幽灵撤销项 + redo 清空 + dirty 置位）
   const canColEnd = colRegionAt(slide.blocks, block.id) != null;
-  const slashDisabled = (key: SlashKey): boolean => key === 'col-end' && !canColEnd;
+  const slashDisabled = (key: SlashKey): boolean => key === 'colend' && !canColEnd;
 
   const applySlash = (key: SlashKey) => {
     if (!editor) return;
@@ -364,22 +365,10 @@ export function InlineBlockEditor({ slide, block }: { slide: Slide; block: Block
         del().toggleMark('colorSpan', { role: 'primary' }).run();
         break;
       // 块级插入统一走 insertBlockByKey（与块工具栏/首块菜单同一分发与载荷）
-      case 'block-eq':
-      case 'block-fig':
-      case 'block-video':
-      case 'block-table':
-      case 'col-mark':
-      case 'col-end': {
+      default:
         if (slashDisabled(key)) return;
         del().run();
-        const k: InsertKey = key === 'block-eq' ? 'equation'
-          : key === 'block-fig' ? 'figure'
-          : key === 'block-video' ? 'video'
-          : key === 'block-table' ? 'table'
-          : key === 'col-mark' ? 'colmark' : 'colend';
-        insertBlockByKey(slide.id, block.id, k);
-        break;
-      }
+        insertBlockByKey(slide.id, block.id, key);
     }
   };
 

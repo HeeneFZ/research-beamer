@@ -380,21 +380,32 @@ function findGhostscript() {
 // 解析示例/相对工程路径：开发时在应用目录；打包后在 resources，首次访问复制到 userData（可写，自动保存才能工作）
 // Editable copies are user projects. Template upgrades get a separate version directory.
 const EXAMPLE_VERSION = '8';
-function copyMissingExample(srcDir, writableDir) {
+async function copyMissingExample(srcDir, writableDir) {
   if (fs.existsSync(writableDir) || !fs.existsSync(srcDir)) return;
   const parent = path.resolve(path.dirname(writableDir));
-  fs.mkdirSync(parent, { recursive: true });
-  const temporary = fs.mkdtempSync(path.join(parent, '.beamer-example-'));
+  await fs.promises.mkdir(parent, { recursive: true });
+  const temporary = await fs.promises.mkdtemp(path.join(parent, '.beamer-example-'));
   try {
-    fs.cpSync(srcDir, temporary, { recursive: true });
-    if (!fs.existsSync(writableDir)) fs.renameSync(temporary, writableDir);
+    await fs.promises.cp(srcDir, temporary, { recursive: true });
+    for (let attempt = 0; !fs.existsSync(writableDir); attempt++) {
+      try {
+        await fs.promises.rename(temporary, writableDir);
+        return;
+      } catch (error) {
+        if (fs.existsSync(writableDir)) return;
+        // Windows can briefly lock a newly copied directory. Retry without recopying it.
+        if (process.platform !== 'win32' || attempt >= 5 || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+      }
+    }
   } finally {
     const resolved = path.resolve(temporary);
     if (path.dirname(resolved) !== parent || !path.basename(resolved).startsWith('.beamer-example-')) throw new Error('Invalid example cache cleanup path');
-    fs.rmSync(resolved, { recursive: true, force: true });
+    await fs.promises.rm(resolved, { recursive: true, force: true, maxRetries: 3 })
+      .catch((error) => console.warn('示例临时目录清理失败：', error));
   }
 }
-function resolveProjectFolder(relPath) {
+async function resolveProjectFolder(relPath) {
   if (path.isAbsolute(relPath)) return relPath;
   if (!app.isPackaged) return path.join(app.getAppPath(), relPath);
   const srcDir = path.join(process.resourcesPath, relPath);
@@ -405,19 +416,21 @@ function resolveProjectFolder(relPath) {
     let exampleRoot = path.join(app.getPath('userData'), 'examples');
     if (curVer !== EXAMPLE_VERSION) {
       exampleRoot = path.join(app.getPath('userData'), 'example-templates', 'v' + EXAMPLE_VERSION);
-      copyMissingExample(path.join(process.resourcesPath, 'examples'), exampleRoot);
+      await copyMissingExample(path.join(process.resourcesPath, 'examples'), exampleRoot);
     }
     // Both shipped examples remain discoverable through Open, even when startup selects zh.
-    for (const name of ['zh_talk', 'en_talk']) copyMissingExample(path.join(process.resourcesPath, 'examples', name), path.join(exampleRoot, name));
+    for (const name of ['zh_talk', 'en_talk']) {
+      await copyMissingExample(path.join(process.resourcesPath, 'examples', name), path.join(exampleRoot, name));
+    }
     writableDir = path.join(exampleRoot, relPath.replace(/^examples[\\/]?/, ''));
   }
-  copyMissingExample(srcDir, writableDir);
+  await copyMissingExample(srcDir, writableDir);
   return fs.existsSync(writableDir) ? writableDir : srcDir;
 }
 
 async function loadProjectPath(relPath) {
   try {
-    const folder = resolveProjectFolder(relPath);
+    const folder = await resolveProjectFolder(relPath);
     const project = await readProjectFromFolder(folder);
     return project.md == null ? null : project;
   } catch (e) {
@@ -543,7 +556,7 @@ ipcMain.handle('export:pdf', async (_e, { suggestedName }) => {
 });
 
 ipcMain.handle('shell:showItem', async (_e, absPath) => {
-  shell.showItemInFolder(absPath);
+  shell.showItemInFolder(path.normalize(absPath));
 });
 
 ipcMain.handle('win:min', () => mainWindow?.minimize());

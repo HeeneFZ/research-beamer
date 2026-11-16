@@ -189,5 +189,5 @@ export function katexHtml(tex: string, displayMode: boolean): string {
 export function InlineMath({ latex, palette }: { latex: string; palette: Palette }) {
   const { tex } = useMemo(() => preprocessMath(latex, palette), [latex, palette]);
   const html = useMemo(() => katexHtml(tex, false), [tex]);
-  return <span className="imath" dangerouslySetInnerHTML={{ __html: html }} />;
+  return <span className="imath" data-latex={latex} dangerouslySetInnerHTML={{ __html: html }} />;
 }

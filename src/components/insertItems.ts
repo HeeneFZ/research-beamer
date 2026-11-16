@@ -1,6 +1,4 @@
-// 块插入项与统一分发 —— 块工具栏 ＋ 菜单、空页首块菜单、斜杠菜单三入口的唯一事实源。
-// 原本三份近似列表 + 三份 init/分发逻辑已经漂移过一次（key 命名 block-eq vs equation），
-// 新增块类型或改默认载荷只改这里。
+// 块工具栏 ＋ 菜单和空页首块菜单共用插入项。斜杠菜单使用同一组块键和插入逻辑。
 
 import { useStore } from '../state/store';
 import { insertMediaBlock } from './BlockEditors';

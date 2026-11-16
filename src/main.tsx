@@ -2,9 +2,12 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import Present from './Present';
 import { installKatexRuleSnap, realignKatexRules } from './components/katexRuleSnap';
+import { copyRenderedMath } from './editor/clipboard';
 import { useStore } from './state/store';
 import 'katex/dist/katex.min.css';
 import './styles.css';
+
+document.addEventListener('copy', copyRenderedMath);
 
 // KaTeX 分数线/上下划线设备像素网格对齐（详见 katexRuleSnap.ts 模块注释）
 installKatexRuleSnap(() => {

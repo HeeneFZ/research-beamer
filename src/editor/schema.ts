@@ -112,7 +112,10 @@ export const InlineMath = Node.create({
   addAttributes: () => ({ latex: { default: '' } }),
   parseHTML: () => [{ tag: 'span[data-inline-math]', getAttrs: (el) => ({ latex: (el as HTMLElement).dataset.latex ?? '' }) }],
   renderHTML({ node }) {
-    return ['span', { 'data-inline-math': '', 'data-latex': node.attrs.latex }];
+    return ['span', { 'data-inline-math': '', 'data-latex': node.attrs.latex }, `$${node.attrs.latex}$`];
+  },
+  renderText({ node }) {
+    return `$${node.attrs.latex}$`;
   },
   addNodeView() {
     return ReactNodeViewRenderer(InlineMathView);

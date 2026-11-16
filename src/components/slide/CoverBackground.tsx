@@ -208,6 +208,7 @@ export function CoverBackground({ config, folder, mode, placement, slideId, acti
         onMouseDown={(e) => { e.stopPropagation(); activate(); }} onClick={(e) => e.stopPropagation()}>
         <button className="background-pick" title={image ? '更换背景图片' : '选择背景图片'} onClick={() => { void pick(); }}><IcoImage />{image ? '更换' : '选图'}</button>
         {image && <>
+          <button title="在文件管理器中定位背景图片" onClick={() => { void window.api.showItem(abs); }}>定位文件</button>
           <button className={moving ? 'on' : ''} aria-pressed={moving} title="拖动背景、左右手柄缩放" onClick={() => setMoving(!moving)}><IcoMove /></button>
           {(['x', 'y', 'w'] as const).map((field) => <NumberField key={field} label={field === 'x' ? 'X' : field === 'y' ? 'Y' : '宽'}
             title={field === 'x' ? '水平位置 %' : field === 'y' ? '垂直位置 %' : '宽度 %'} value={pos[field]} min={field === 'w' ? 1 : undefined}

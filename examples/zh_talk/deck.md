@@ -14,6 +14,12 @@ sectionPages: true
 fontSize: 16
 logo: media/高校logo.svg
 logoPos: null
+titleBackground:
+  src: media/图片1.png
+  opacity: 1
+endBackground:
+  src: media/图片1.png
+  opacity: 1
 palette:
   preset: academic-blue
   primary:
